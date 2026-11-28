@@ -185,8 +185,27 @@ check("saving and restoring") {
     let group = UUID(), other = UUID()
     let foreign = try JSONEncoder().encode(["grid": PaneLayout.pane(group)])
     expect((try? JSONDecoder().decode(WorkspaceLayout.self, from: foreign)) == nil, "incomplete data refused")
-    let doubled = #"{"grid":{"pane":{"_0":"\#(group)"}},"groups":["\#(group)",{"tabs":["\#(t[0])"],"selected":"\#(t[0])"},"\#(other)",{"tabs":["\#(t[0])"],"selected":"\#(t[0])"}],"focused":"\#(group)"}"#
-    expect((try? JSONDecoder().decode(WorkspaceLayout.self, from: Data(doubled.utf8))) == nil, "a group outside the grid or a tab in two groups is refused")
+    // Independent format fixture: both groups are present, with distinct tabs.
+    // Each rejection below changes exactly one ownership invariant, so a
+    // different guard cannot make the negative pass for the wrong reason.
+    let groups = #""\#(group)",{"tabs":["\#(t[0])"],"selected":"\#(t[0])"},"\#(other)",{"tabs":["\#(t[1])"],"selected":"\#(t[1])"}"#
+    let grid = #"{"split":{"_0":{"axis":"horizontal","children":[{"pane":{"_0":"\#(group)"}},{"pane":{"_0":"\#(other)"}}],"fractions":[0.5,0.5]}}}"#
+    let valid = #"{"grid":\#(grid),"groups":[\#(groups)],"focused":"\#(group)"}"#
+    let restored = try JSONDecoder().decode(WorkspaceLayout.self, from: Data(valid.utf8))
+    expect(restored.tabIDs == [t[0], t[1]] && restored.focused == group, "independent layout fixture is accepted")
+    func rejectsOwnership(_ json: String, _ message: String) {
+        do {
+            _ = try JSONDecoder().decode(WorkspaceLayout.self, from: Data(json.utf8))
+            expect(false, message)
+        } catch DecodingError.dataCorrupted(let context) {
+            expect(context.codingPath.last?.stringValue == "grid" && context.debugDescription == "工作区布局不完整",
+                   "\(message): must reach the layout ownership check")
+        } catch { expect(false, "\(message): unexpected decoding error \(error)") }
+    }
+    let outside = #"{"grid":{"pane":{"_0":"\#(group)"}},"groups":[\#(groups)],"focused":"\#(group)"}"#
+    rejectsOwnership(outside, "a distinct group outside the grid is refused")
+    let doubled = valid.replacingOccurrences(of: t[1].uuidString, with: t[0].uuidString)
+    rejectsOwnership(doubled, "a tab in two valid grid groups is refused")
     let side = layout.excluding([t[2], t[3]])
     expect(side.map { !$0.isSplit && $0.tabIDs == [t[0], t[1]] } == true, "temporary tabs and their emptied group dropped")
     expect(side?.isWhole == true, "still whole")
@@ -194,8 +213,20 @@ check("saving and restoring") {
 }
 
 check("random operations keep the layout whole") {
-    var generator = SystemRandomNumberGenerator()
-    for _ in 0..<200 {
+    // Fixed per-sequence seeds keep failures replayable without replacing
+    // the state-machine coverage with a hand-picked operation list.
+    struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9e3779b97f4a7c15
+            var value = state
+            value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9
+            value = (value ^ (value >> 27)) &* 0x94d049bb133111eb
+            return value ^ (value >> 31)
+        }
+    }
+    for seed in UInt64(0)..<200 {
+        var generator = SeededGenerator(state: seed)
         var layout = WorkspaceLayout(tab: UUID())
         for step in 0..<60 {
             let tabs = layout.tabIDs, groups = layout.groupIDs
@@ -212,7 +243,7 @@ check("random operations keep the layout whole") {
             case 7: layout.resize(at: layout.grid.path(to: group).map { Array($0.dropLast()) } ?? [], fractions: (0..<Int.random(in: 1...4, using: &generator)).map { _ in Double.random(in: -0.5...2, using: &generator) })
             default: layout.select(tab)
             }
-            expectSound(layout, "random step \(step)")
+            expectSound(layout, "seed \(seed), step \(step)")
             if failures.count > 20 { return }
         }
     }

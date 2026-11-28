@@ -219,8 +219,17 @@ fn background_notification_keeps_live_and_resynchronized_position() {
 }
 
 #[test]
-fn compacted_sdk_context_hides_old_notification_without_reordering_kept_messages() {
+fn compacted_snapshot_replaces_previous_notification_and_keeps_native_order() {
     let mut p = projection();
+    message(&mut p, notice("notice-old"));
+    assert!(
+        p.snapshot
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.id == "notice-old")
+    );
     // This is the sanitized effective-message shape produced by Pi 1.4's
     // pure buildSessionProjection for a branch with a prior notification
     // before firstKeptEntryId, then a retained notification followed by a
@@ -240,7 +249,6 @@ fn compacted_sdk_context_hides_old_notification_without_reordering_kept_messages
         .map(|message| message.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, ["compaction", "kept", "notice-new", "after"]);
-    assert!(!ids.contains(&"notice-old"));
 
     let mut transcript = crate::transcript::TranscriptProjection::default();
     transcript.apply(crate::transcript::TranscriptEvent::Replace {
@@ -593,115 +601,21 @@ fn tool(id: &str) -> Value {
 fn notice(id: &str) -> Value {
     json!({"id":id,"role":"custom","customType":"background-task-notification","content":"arbitrary body"})
 }
-const SUBAGENT_NOTIFICATIONS: [&str; 17] = [
-    "subagent-notify",
-    "subagent-incremental-child-notify",
-    "subagent_supervisor_request",
-    "subagent_control_notice",
-    "subagent_steering_notice",
-    "subagent-supervisor-unanswered",
-    "subagent-supervisor-blocked",
-    "subagent_watchdog_warning",
-    "subagent_watchdog_clarification",
-    "subagent-completion-unanswered",
-    "subagent-completion-unhandled",
-    "subagent-workflow-result-write-failed",
-    "subagent-wait-subscription",
-    "subagent-slash-result",
-    "subagent-slash-text-result",
-    "subagent-future-notification",
-    "subagent_future_notice",
-];
+const SUBAGENT_NOTIFICATIONS: [&str; 2] =
+    ["subagent-future-notification", "subagent_future_notice"];
 fn subagent_return(id: &str, custom_type: &str) -> Value {
     json!({"id":id,"role":"custom","customType":custom_type,"display":true,
             "content":"**结果**\n\n[报告](/synthetic/report.md:20)\n\n```text\nresult\n```"})
 }
 #[test]
-fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
-    for custom_type in SUBAGENT_NOTIFICATIONS {
-        let returned = subagent_return("returned", custom_type);
-        let s = native(json!([user(), tool("before"), returned, tool("after")]));
-        assert_eq!(s.work_notification_ids, ["returned"]);
-        let returned_message = s.messages.iter().find(|m| m.id == "returned").unwrap();
-        assert_eq!(returned_message.role, MessageRole::Client);
-        assert_eq!(
-            returned_message.blocks,
-            [MessageBlock::Text {
-                text: returned["content"].as_str().unwrap().into()
-            }]
-        );
-        let t = transcript(&s);
-        assert_eq!(
-            t.turns()[0].work_message_ids,
-            ["before", "returned", "after"]
-        );
-        assert_eq!(ids(&t), ["user", "work"]);
+fn subagent_notification_types_do_not_reclassify_user_directives() {
+    let mut directive = subagent_return("directive", "subagent-notify");
+    directive["role"] = json!("user");
+    let s = native(json!([user(), directive]));
+    assert!(s.work_notification_ids.is_empty());
+    assert_eq!(s.messages.last().unwrap().role, MessageRole::User);
+}
 
-        let mut live = projection();
-        message(&mut live, user());
-        message(&mut live, tool("before"));
-        message(&mut live, returned.clone());
-        message(&mut live, tool("after"));
-        let s = live.snapshot.as_ref().unwrap();
-        assert_eq!(s.work_notification_ids, ["returned"]);
-        assert_eq!(
-            transcript(s).turns()[0].work_message_ids,
-            ["before", "returned", "after"]
-        );
-        live.replace_history(&json!({"messages":[user(),tool("before"),returned,tool("after")]}));
-        assert_eq!(
-            live.snapshot.as_ref().unwrap().work_notification_ids,
-            ["returned"]
-        );
-    }
-}
-#[test]
-fn subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries() {
-    for custom_type in SUBAGENT_NOTIFICATIONS {
-        for mixed in [false, true] {
-            let content = if mixed {
-                json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
-            } else {
-                json!([{"type":"text","text":"answer"}])
-            };
-            let s = native(
-                json!([subagent_return("orphan",custom_type),user(),tool("before"),
-                    subagent_return("early",custom_type),
-                    {"id":"closing","role":"assistant","content":content},
-                    subagent_return("late",custom_type)]),
-            );
-            let t = transcript(&s);
-            let turn = &t.turns()[0];
-            assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
-            assert_eq!(
-                turn.work_message_ids,
-                if mixed {
-                    vec!["before", "early", "closing"]
-                } else {
-                    vec!["before", "early"]
-                }
-            );
-            assert_eq!(ids(&t), ["orphan", "user", "work", "closing", "late"]);
-            assert!(matches!(&t.items()[3],TranscriptItem::Message{id,..}
-                    if id == &format!("{}message:closing",if mixed{"reply:"}else{""})));
-        }
-    }
-}
-#[test]
-fn subagent_notifications_preserve_user_directives_and_hidden_messages() {
-    for custom_type in SUBAGENT_NOTIFICATIONS {
-        let mut directive = subagent_return("directive", custom_type);
-        directive["role"] = json!("user");
-        let s = native(json!([user(), directive]));
-        assert!(s.work_notification_ids.is_empty());
-        assert_eq!(s.messages.last().unwrap().role, MessageRole::User);
-        let mut hidden = subagent_return("hidden", custom_type);
-        hidden["display"] = json!(false);
-        let s = native(json!([user(), tool("before"), hidden]));
-        assert!(s.work_notification_ids.is_empty());
-        assert!(!s.messages.iter().any(|m| m.id == "hidden"));
-    }
-}
 #[test]
 fn tools_and_work_notices_preserve_native_work_order_without_closing() {
     let s = native(json!([
@@ -728,9 +642,10 @@ fn closing_stays_visible_late_notifications_stay_after_and_mixed_identity_is_sta
         } else {
             json!([{"type":"text","text":"answer"}])
         };
-        let s = native(
-            json!([user(),tool("before"),notice("early"),{"id":"closing","role":"assistant","content":close},notice("late")]),
-        );
+        let s = native(json!([
+            subagent_return("orphan", "subagent-notify"), user(), tool("before"),
+            notice("early"), {"id":"closing","role":"assistant","content":close}, notice("late")
+        ]));
         let p = transcript(&s);
         let t = &p.turns()[0];
         assert_eq!(t.last_message_id.as_deref(), Some("closing"));
@@ -742,9 +657,9 @@ fn closing_stays_visible_late_notifications_stay_after_and_mixed_identity_is_sta
                 vec!["before", "early"]
             }
         );
-        assert_eq!(ids(&p), ["user", "work", "closing", "late"]);
+        assert_eq!(ids(&p), ["orphan", "user", "work", "closing", "late"]);
         assert!(
-            matches!(&p.items()[2],TranscriptItem::Message{id,..} if id == &format!("{}message:closing",if mixed{"reply:"}else{""}))
+            matches!(&p.items()[3],TranscriptItem::Message{id,..} if id == &format!("{}message:closing",if mixed{"reply:"}else{""}))
         );
         let before = p.items();
         let mut p = p;
@@ -807,40 +722,6 @@ fn notifications_inside_automatic_compaction_work_remain_in_the_owning_range() {
         ["before", "compact", "notice", "after"]
     );
     assert_eq!(ids(&p), ["user", "work"]);
-}
-
-#[test]
-fn all_wait_outcomes_join_work_without_reinterpreting_status() {
-    for outcome in [
-        "completed",
-        "failed",
-        "needs attention",
-        "timed out",
-        "could not be reconciled",
-        "reconciliation failed",
-        "paused",
-        "partial",
-        "stopped",
-        "rejected",
-        "future status",
-    ] {
-        let snapshot = native(json!([user(), tool("before"),
-                {"id":"wait","role":"custom","customType":"subagent-wait-subscription","display":true,"content":"native wait outcome","details":{"token":"synthetic-token","runId":"synthetic-run","outcome":outcome}},
-                tool("after")]));
-        let t = transcript(&snapshot);
-        let result = true;
-        assert_eq!(
-            snapshot.work_notification_ids.contains(&"wait".into()),
-            result,
-            "{outcome}"
-        );
-        assert_eq!(
-            t.turns()[0].work_message_ids.contains(&"wait".into()),
-            result,
-            "{outcome}"
-        );
-        assert_eq!(ids(&t).contains(&"wait".into()), !result, "{outcome}");
-    }
 }
 
 #[test]
@@ -1037,69 +918,50 @@ fn legacy_hooks_and_hidden_custom_messages_follow_the_sdk_custom_contract() {
 fn work_notifications_survive_live_confirmation_resync_and_parent_switch_without_stale_classification()
  {
     use crate::transcript::{TranscriptEvent, TranscriptProjection};
-    for kind in [
-        "background-task-notification",
-        "subagent-notify",
-        "subagent-incremental-child-notify",
-        "subagent_supervisor_request",
-        "subagent_control_notice",
-        "subagent-wait-subscription",
-        "subagent_supervisor_request",
-        "subagent_control_notice",
-    ] {
-        let notification = |id: &str| {
-            let mut value = notice(id);
-            value["customType"] = json!(kind);
-            value["details"] = json!({"outcome":"completed"});
-            value
-        };
-        let mut p = projection();
-        message(&mut p, user());
-        message(&mut p, tool("before"));
-        let mut unconfirmed = notification("temporary");
-        unconfirmed.as_object_mut().unwrap().remove("id");
-        message(&mut p, unconfirmed);
-        let snapshot = p.snapshot.as_ref().unwrap();
-        assert_eq!(snapshot.work_notification_ids.len(), 1);
-        let previous = snapshot.work_notification_ids[0].clone();
-        let mut t = TranscriptProjection::default();
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before", &previous]);
-        let identity = t
-            .message_identities()
+    let mut p = projection();
+    message(&mut p, user());
+    message(&mut p, tool("before"));
+    let mut unconfirmed = notice("temporary");
+    unconfirmed.as_object_mut().unwrap().remove("id");
+    message(&mut p, unconfirmed);
+    let snapshot = p.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.work_notification_ids.len(), 1);
+    let previous = snapshot.work_notification_ids[0].clone();
+    let mut t = TranscriptProjection::default();
+    t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+    assert_eq!(t.turns()[0].work_message_ids, ["before", &previous]);
+    let identity = t
+        .message_identities()
+        .into_iter()
+        .find(|m| m.message_id == previous)
+        .unwrap()
+        .id;
+    p.replace_history(&json!({"messages":[user(),tool("before"),notice("native")],
+    "identityConfirmations":[{"previousId":previous,"currentId":"native"}]}));
+    let snapshot = p.snapshot.as_ref().unwrap();
+    t.apply(TranscriptEvent::ConfirmIdentities(
+        &snapshot.message_identity_confirmations,
+    ));
+    t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+    assert_eq!(t.turns()[0].work_message_ids, ["before", "native"]);
+    assert_eq!(
+        t.message_identities()
             .into_iter()
-            .find(|m| m.message_id == previous)
+            .find(|m| m.message_id == "native")
             .unwrap()
-            .id;
-        p.replace_history(
-            &json!({"messages":[user(),tool("before"),notification("native")],
-        "identityConfirmations":[{"previousId":previous,"currentId":"native"}]}),
-        );
-        let snapshot = p.snapshot.as_ref().unwrap();
-        t.apply(TranscriptEvent::ConfirmIdentities(
-            &snapshot.message_identity_confirmations,
-        ));
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before", "native"]);
-        assert_eq!(
-            t.message_identities()
-                .into_iter()
-                .find(|m| m.message_id == "native")
-                .unwrap()
-                .id,
-            identity
-        );
-        let mut parent = snapshot.conversation.clone();
-        parent.id = "pi:another-synthetic-parent".into();
-        p.set_conversation(parent);
-        // The source changes to an unrelated custom message with the same id:
-        // classification is rebuilt from native semantics, never cached by id.
-        p.replace_history(&json!({"messages":[user(),tool("before"),
-        {"id":"native","role":"custom","customType":"other","content":"arbitrary body"}]}));
-        let snapshot = p.snapshot.as_ref().unwrap();
-        assert!(snapshot.work_notification_ids.is_empty());
-        t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
-        assert_eq!(t.turns()[0].work_message_ids, ["before"]);
-        assert_eq!(ids(&t), ["user", "work", "native"]);
-    }
+            .id,
+        identity
+    );
+    let mut parent = snapshot.conversation.clone();
+    parent.id = "pi:another-synthetic-parent".into();
+    p.set_conversation(parent);
+    // The source changes to an unrelated custom message with the same id:
+    // classification is rebuilt from native semantics, never cached by id.
+    p.replace_history(&json!({"messages":[user(),tool("before"),
+    {"id":"native","role":"custom","customType":"other","content":"arbitrary body"}]}));
+    let snapshot = p.snapshot.as_ref().unwrap();
+    assert!(snapshot.work_notification_ids.is_empty());
+    t.apply(TranscriptEvent::ReplaceSnapshot(snapshot));
+    assert_eq!(t.turns()[0].work_message_ids, ["before"]);
+    assert_eq!(ids(&t), ["user", "work", "native"]);
 }

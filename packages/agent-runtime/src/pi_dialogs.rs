@@ -240,7 +240,7 @@ mod tests {
             assert_eq!(dialogs.interactions().len(), 1);
         }
         // Producing a reply does not consume the dialog before its native write
-        // succeeds. PiSession owns the removal after respond_extension_ui.
+        // succeeds. PiSession owns removal after the native reply is Written.
         let response = dialogs
             .response("input", RuntimeInteractionReply::Cancel)
             .unwrap();

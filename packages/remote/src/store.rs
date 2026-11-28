@@ -1,7 +1,7 @@
 //! One atomic ordinary-state file. Identity and business data have independent lifetimes.
 use crate::{
     identity::{atomic_write, read_private, validate_name},
-    trust::{ExecutionCapability, MembershipProof, TrustBundle, TrustContact, TrustState},
+    trust::{ExecutionCapability, TrustBundle, TrustContact, TrustState},
     *,
 };
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,8 @@ pub struct DeviceStore {
     changed: tokio::sync::watch::Sender<u64>,
 }
 impl DeviceStore {
-    pub fn memory() -> Self {
+    #[cfg(test)]
+    pub(crate) fn memory() -> Self {
         Self {
             network_settings: crate::settings::SettingsStore::memory(),
             path: None,
@@ -415,25 +416,9 @@ impl DeviceStore {
     pub fn is_member(&self, peer: &str) -> Result<bool> {
         self.lock_state()?.trust.is_member(peer)
     }
-    pub fn membership_proof(&self, peer: &str) -> Result<MembershipProof> {
+    #[cfg(test)]
+    pub(crate) fn membership_proof(&self, peer: &str) -> Result<crate::trust::MembershipProof> {
         self.lock_state()?.trust.membership_proof(peer)
-    }
-    pub fn verify_membership(&self, peer: &str, bundle: &TrustBundle) -> Result<MembershipProof> {
-        bundle.validate()?;
-        let state = self.lock_state()?;
-        let mut trust = state.trust.clone();
-        trust.merge(&bundle.statements)?;
-        trust.merge_memberships(&bundle.memberships)?;
-        trust.membership_proof(peer)
-    }
-    /// Revoke trust on this device. Other independent paths can still admit
-    /// other members, but no proof may end at or pass through this peer locally.
-    pub fn revoke_membership(&self, peer: &str) -> Result<()> {
-        parse_peer(peer)?;
-        self.change(|state| {
-            exclude_member(state, peer);
-            Ok(())
-        })
     }
     pub fn allows_control(&self, target: &str, operator: &str) -> Result<bool> {
         parse_peer(target)?;
@@ -444,27 +429,6 @@ impl DeviceStore {
             return Ok(false);
         }
         state.trust.is_member(operator)
-    }
-    pub fn import_contact(
-        &self,
-        peer: &str,
-        name: String,
-        locator: DeviceLocator,
-        via: &str,
-    ) -> Result<()> {
-        parse_peer(peer)?;
-        validate_name(&name)?;
-        locator.validate()?;
-        self.change(|state| {
-            if !trusted_source(state, via)? {
-                return Err(RemoteError::Unauthorized);
-            }
-            if state.trust.forgotten_contacts.contains(peer) {
-                return Err(RemoteError::Unauthorized);
-            }
-            state.trust.membership_proof(peer)?;
-            import_verified_contact(state, peer, name, locator, via)
-        })
     }
     pub fn introducers_for(&self, peer: &str) -> Result<Vec<String>> {
         parse_peer(peer)?;
@@ -485,9 +449,6 @@ impl DeviceStore {
             }
         }
         Ok(sources)
-    }
-    pub fn trusted_contact_via(&self, peer: &str) -> Result<Option<String>> {
-        Ok(self.introducers_for(peer)?.into_iter().next())
     }
     pub(crate) fn version(&self) -> u64 {
         *self.changed.borrow()

@@ -25,9 +25,9 @@ def notify(method, params): emit({'method':method,'params':params})
 def ack(request, result): emit({'id':request['id'],'result':result})
 def mark(name, text='1'):
     with (root / name).open('a') as f: f.write(text + '\n')
-def release_send(request, turn):
+def release_send(request, turn, marker="release-send"):
     deadline = time.monotonic() + 30
-    while not (root / 'release-send').exists():
+    while not (root / marker).exists():
         if time.monotonic() >= deadline:
             emit({'id':request['id'],'error':{'code':-32600,'message':'synthetic gate release timed out'}})
             return
@@ -64,6 +64,10 @@ for line in sys.stdin:
         turn_count += 1
         current_turn = 'turn-' + str(turn_count)
         mark('prompt-wire', str(os.getpid()))
+        if any(item.get('text') == 'one created submission' for item in request['params']['input']):
+            mark('created-send-entered')
+            threading.Thread(target=release_send, args=(request, current_turn, 'release-created-send'), daemon=True).start()
+            continue
         if any('created-failure' in item.get('text', '') for item in request['params']['input']):
             mark('rejected-send-wire')
             emit({'id':request['id'],'error':{'code':-32600,'message':'synthetic created Send rejected'}})

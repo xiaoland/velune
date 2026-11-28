@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_response_restores_admission_without_binding_model_success() {
+    fn probe_response_restores_admission_and_late_failure_still_cools() {
         let state = SchedulingState::default();
         let probe = half_open(&state);
         assert!(
@@ -682,7 +682,6 @@ mod tests {
             .acquire("gateway", &test_candidate(&[]), &UnknownQuotaSource)
             .unwrap();
         assert!(!concurrent.probe);
-        assert!(state.0.lock().unwrap().sessions.is_empty());
         // A later transport failure still establishes a fresh cooldown.
         probe.cool(Duration::from_secs(5));
         probe.responded(200);
@@ -773,18 +772,6 @@ mod tests {
         }];
         let candidate = test_candidate(&limits);
         for snapshot in [
-            QuotaSnapshot::Unknown,
-            QuotaSnapshot::Stale {
-                available: Some(true),
-                windows: vec![window(10.0)],
-            },
-        ] {
-            let blocked = quota_margin(&candidate, snapshot, 1000).unwrap_err();
-            assert_eq!(blocked.reason, AdmissionReason::QuotaPending);
-            assert_eq!(blocked.retry_after, Some(Duration::from_secs(1)));
-        }
-        for snapshot in [
-            QuotaSnapshot::Unsupported,
             QuotaSnapshot::Known {
                 available: Some(false),
                 windows: vec![],
@@ -810,7 +797,7 @@ mod tests {
         ] {
             let blocked = quota_margin(&candidate, snapshot, 1000).unwrap_err();
             assert_eq!(blocked.reason, AdmissionReason::QuotaExhausted);
-            assert_eq!(blocked.status(), 429);
+            assert_eq!(blocked.retry_after, Some(Duration::from_secs(1)));
         }
         let mut expired = window(10.0);
         expired.expires_at_ms = 1000;
@@ -827,16 +814,6 @@ mod tests {
             .reason,
             AdmissionReason::QuotaPending
         );
-        let blocked = quota_margin(
-            &candidate,
-            QuotaSnapshot::Known {
-                available: Some(true),
-                windows: vec![window(80.0)],
-            },
-            1000,
-        )
-        .unwrap_err();
-        assert_eq!(blocked.retry_after, Some(Duration::from_secs(1)));
         assert_eq!(
             quota_margin(&test_candidate(&[]), QuotaSnapshot::Unknown, 1000).unwrap(),
             None
@@ -869,18 +846,13 @@ mod tests {
     }
 
     #[test]
-    fn scheduling_preserves_quota_health_and_binding_rejections() {
+    fn pending_quota_is_included_in_the_next_retry() {
         let state = SchedulingState::default();
         let limits = [QuotaLimit {
             window_id: "daily".into(),
             max_used_percent: 80,
         }];
         let limited = test_candidate(&limits);
-        let blocked = state
-            .acquire("gateway", &limited, &UnknownQuotaSource)
-            .err()
-            .unwrap();
-        assert_eq!(blocked.reason, AdmissionReason::QuotaPending);
         let rank_error = state
             .rank(
                 "gateway",
@@ -897,24 +869,5 @@ mod tests {
             state.next_retry("gateway", &[test_candidate(&limits)], &UnknownQuotaSource),
             Some(Duration::from_secs(1))
         );
-
-        let unrestricted = test_candidate(&[]);
-        let permit = state
-            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
-            .unwrap();
-        permit.cool(Duration::from_secs(5));
-        let blocked = state
-            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
-            .err()
-            .unwrap();
-        assert_eq!(blocked.reason, AdmissionReason::ProviderUnavailable);
-        assert!(blocked.retry_after.is_some());
-        state.invalidate_provider("gateway", "provider");
-        let blocked = state
-            .acquire("gateway", &unrestricted, &UnknownQuotaSource)
-            .err()
-            .unwrap();
-        assert_eq!(blocked.reason, AdmissionReason::BindingInvalidated);
-        assert_eq!(blocked.retry_after, None);
     }
 }

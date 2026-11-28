@@ -318,7 +318,11 @@ fn restored_question_answers_with_the_recorded_native_model_without_a_velune_sen
 #[test]
 fn unknown_question_model_does_not_borrow_the_new_conversation_default() {
     let mut fixture = Fixture::new("unknown", None);
-    assert!(fixture.answer().is_err());
+    let error = fixture.answer().unwrap_err();
+    assert!(
+        error.to_string().contains("无法确认此问题所属会话的模型"),
+        "{error}"
+    );
     assert!(
         fixture
             .requests()
@@ -341,7 +345,8 @@ fn unknown_question_model_does_not_borrow_the_new_conversation_default() {
 fn rejected_question_answer_keeps_the_question_visible_and_unresolved() {
     let mut fixture = Fixture::new("rejected", Some("synthetic-current"));
     fs::write(fixture.root.join("reject"), "synthetic").unwrap();
-    assert!(fixture.answer().is_err());
+    let error = fixture.answer().unwrap_err();
+    assert!(error.to_string().contains("synthetic rejection"), "{error}");
     assert_eq!(
         fixture
             .application
@@ -402,7 +407,11 @@ fn confirmed_runtime_default_remains_a_valid_question_execution_selection() {
 fn ambiguous_api_model_does_not_choose_a_provider_for_the_question() {
     let mut fixture = Fixture::new("ambiguous", Some("shared-api-model"));
     fixture.add_api_models("shared-api-model");
-    assert!(fixture.answer().is_err());
+    let error = fixture.answer().unwrap_err();
+    assert!(
+        error.to_string().contains("无法确认此问题所属会话的模型"),
+        "{error}"
+    );
     assert!(
         fixture
             .requests()

@@ -46,7 +46,6 @@ pub enum PiOperation {
     Background(Value),
     Rewind(String),
     Fork(String),
-    Clone,
     NewSession,
     SetName(String),
     SwitchSession(PathBuf),
@@ -62,11 +61,7 @@ impl PiOperation {
     fn changes_scope(&self) -> bool {
         matches!(
             self,
-            Self::Fork(_)
-                | Self::Clone
-                | Self::NewSession
-                | Self::SwitchSession(_)
-                | Self::Rewind(_)
+            Self::Fork(_) | Self::NewSession | Self::SwitchSession(_) | Self::Rewind(_)
         )
     }
     fn command_type(&self) -> Result<&'static str> {
@@ -106,7 +101,6 @@ impl PiOperation {
                 "prompt"
             }
             Self::Fork(_) => "fork",
-            Self::Clone => "clone",
             Self::NewSession => "new_session",
             Self::SetName(_) => "set_session_name",
             Self::SwitchSession(_) => "switch_session",
@@ -718,7 +712,7 @@ impl Client {
         port.settle(); // latch before consuming even an already queued terminal
         let sequences = port.operations.keys().copied().collect::<Vec<_>>();
         // Reserved replies/cancellation get dispatch capacity before business writes.
-        for reserved in [true, false] {
+        'dispatch: for reserved in [true, false] {
             for seq in &sequences {
                 port.settle();
                 let writer_busy = port
@@ -778,6 +772,15 @@ impl Client {
                     {
                         Ok(receipt) => {
                             op.write = Some(receipt);
+                        }
+                        Err(rejected)
+                            if rejected.error.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            // The bounded writer has not accepted any bytes. Keep
+                            // the same queued frame, identity and deadline until
+                            // physical capacity returns; later controls cannot pass it.
+                            op.bytes = Some(rejected.frame.bytes);
+                            break 'dispatch;
                         }
                         Err(rejected) => {
                             // The writer returned the original buffer/deadline without

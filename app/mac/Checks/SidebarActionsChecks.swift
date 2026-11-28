@@ -32,92 +32,71 @@ import SwiftUI
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         NSApp.appearance = appearance
         for width: CGFloat in [240, 420] {
-            for mode in ["solo-left", "shared-left", "right", "window-content"] {
-                let application = DeviceStore(preview: true)
-                let model = ConversationWindowModel(application: application, kind: .workspace)
-                precondition(model.window == nil)
-                var layout = ToolWindowLayout()
-                if mode == "right" { layout[.list].place = .docked(.right) }
-                if mode == "shared-left" { layout[.outline] = ToolWindowState(place: .docked(.left)) }
-                // DetachedToolContent does not depend on the list's saved place. Keep
-                // its model docked: assigning .window would ask the window manager
-                // to synchronize a real tool window, which this layout check does not own.
-                if mode != "window-content" { model.tools = layout }
-                let content: AnyView
-                switch mode {
-                case "solo-left", "shared-left": content = AnyView(DockAreaView(window: model, side: .left))
-                case "right": content = AnyView(DockAreaView(window: model, side: .right))
-                case "window-content": content = AnyView(DetachedToolContent(kind: .list, window: model))
-                default: fatalError("unknown mode \(mode)")
-                }
-                let size = NSSize(width: width, height: 500)
-                let host = NSHostingView(rootView: content.applicationAppearance()
-                    .environment(\.colorScheme, dark ? .dark : .light)
-                    .frame(width: size.width, height: size.height))
-                host.frame = NSRect(origin: .zero, size: size)
-                host.appearance = appearance
-                let canvas = SidebarCheckCanvas(frame: host.frame)
-                canvas.appearance = appearance
-                canvas.addSubview(host)
-                host.layoutSubtreeIfNeeded()
-                RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-                host.layoutSubtreeIfNeeded()
-                precondition(host.window == nil && model.window == nil && NSApp.windows.isEmpty && !NSApp.isActive,
-                             "生产列表离屏布局不得隐式创建窗口")
-                let native = descendants(host)
-                let searchFields = native.compactMap { $0 as? NSSearchField }.filter { !$0.isHiddenOrHasHiddenAncestor }
-                let buttons = native.compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-                func label(_ button: NSButton) -> String {
-                    [button.title, button.accessibilityLabel() ?? "", button.toolTip ?? ""].joined(separator: " | ")
-                }
-                func top(_ button: NSButton) -> CGFloat {
-                    let rect = host.convert(button.bounds, from: button)
-                    return host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
-                }
-                // A shared list has the tool's title strip above its own row.
-                let rowLimit: CGFloat = mode == "shared-left" ? 52 + PaneChrome.barHeight : 52
-                let headerButtons = buttons.filter { top($0) >= -1 && top($0) < rowLimit }
-                let headerPopups = headerButtons.filter { $0 is NSPopUpButton }
-                let headerPlainButtons = headerButtons.filter { !($0 is NSPopUpButton) }
-                let records = buttons.map { button -> [String: Any] in
-                    let rect = host.convert(button.bounds, from: button)
-                    return ["type": String(describing: type(of: button)), "label": label(button),
-                            "x": rect.minX, "top": host.isFlipped ? rect.minY : host.bounds.height - rect.maxY,
-                            "width": rect.width, "height": rect.height]
-                }
-                let name = "sidebar-\(mode)-\(dark ? "dark" : "light")-\(Int(width))"
-                let item: [String: Any] = ["case": name, "width": width, "searchFields": searchFields.count,
-                    "headerPopups": headerPopups.count, "headerPlainButtons": headerPlainButtons.count,
-                    "buttons": records, "windows": NSApp.windows.count, "scope": "header-layout-only",
-                    "actionLabels": "unavailable-without-window", "listRows": "not-materialized",
-                    "semanticEvidence": "real-app AX and interactions are verified separately"]
-                evidence.append(item)
-                // Save diagnostics before asserting so an unsupported native host
-                // can be diagnosed without relaxing the expected action contract.
-                try! JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
-                    .write(to: home.appendingPathComponent("sidebar-check.json"))
-                guard let bitmap = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds) else { fatalError("无法绘制列表顶部布局") }
-                appearance.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: bitmap) }
-                try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
-                // The list is the same everywhere: its own search, filter and
-                // new conversation; sharing its area adds the tool's title strip above.
-                let shared = mode == "shared-left"
-                require(headerPopups.count == (shared ? 2 : 1) && headerPlainButtons.count == (shared ? 2 : 1),
-                        "顶部原生控件类型与数量：\(item)")
-                require(searchFields.count == 1, "列表在任何位置都有且只有自己的搜索框：\(item)")
-                for button in headerButtons {
-                    let rect = host.convert(button.bounds, from: button)
-                    require(rect.width > 0 && rect.height > 0 && rect.minX >= -1 && rect.maxX <= width + 1
-                        && top(button) + rect.height <= rowLimit, "原生控件应在自己的顶部行内：\(item)")
-                }
-                model.list.close()
-                model.focused.store.close()
+            let model = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
+            let content = DetachedToolContent(kind: .list, window: model)
+            let size = NSSize(width: width, height: 500)
+            let host = NSHostingView(rootView: content.applicationAppearance()
+                .environment(\.colorScheme, dark ? .dark : .light)
+                .frame(width: size.width, height: size.height))
+            host.frame = NSRect(origin: .zero, size: size)
+            host.appearance = appearance
+            let canvas = SidebarCheckCanvas(frame: host.frame)
+            canvas.appearance = appearance
+            canvas.addSubview(host)
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+            host.layoutSubtreeIfNeeded()
+            precondition(host.window == nil && model.window == nil && NSApp.windows.isEmpty && !NSApp.isActive,
+                         "生产列表离屏布局不得隐式创建窗口")
+            let native = descendants(host)
+            let searchFields = native.compactMap { $0 as? NSSearchField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+            let buttons = native.compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+            func label(_ button: NSButton) -> String {
+                [button.title, button.accessibilityLabel() ?? "", button.toolTip ?? ""].joined(separator: " | ")
             }
+            func top(_ button: NSButton) -> CGFloat {
+                let rect = host.convert(button.bounds, from: button)
+                return host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
+            }
+            let rowLimit: CGFloat = 52
+            let headerButtons = buttons.filter { top($0) >= -1 && top($0) < rowLimit }
+            let headerPopups = headerButtons.filter { $0 is NSPopUpButton }
+            let headerPlainButtons = headerButtons.filter { !($0 is NSPopUpButton) }
+            let records = buttons.map { button -> [String: Any] in
+                let rect = host.convert(button.bounds, from: button)
+                return ["type": String(describing: type(of: button)), "label": label(button),
+                        "x": rect.minX, "top": host.isFlipped ? rect.minY : host.bounds.height - rect.maxY,
+                        "width": rect.width, "height": rect.height]
+            }
+            let name = "sidebar-window-content-\(dark ? "dark" : "light")-\(Int(width))"
+            let item: [String: Any] = ["case": name, "width": width, "searchFields": searchFields.count,
+                "headerPopups": headerPopups.count, "headerPlainButtons": headerPlainButtons.count,
+                "buttons": records, "windows": NSApp.windows.count, "scope": "header-layout-only",
+                "actionLabels": "unavailable-without-window", "listRows": "not-materialized",
+                "semanticEvidence": "real-app AX and interactions are verified separately"]
+            evidence.append(item)
+            // Save diagnostics before asserting so an unsupported native host
+            // can be diagnosed without relaxing the expected action contract.
+            try! JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+                .write(to: home.appendingPathComponent("sidebar-check.json"))
+            guard let bitmap = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds) else { fatalError("无法绘制列表顶部布局") }
+            appearance.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: bitmap) }
+            try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
+            require(headerPopups.count == 1 && headerPlainButtons.count == 1,
+                    "顶部原生控件类型与数量：\(item)")
+            require(searchFields.count == 1, "列表在任何位置都有且只有自己的搜索框：\(item)")
+            for button in headerButtons {
+                let rect = host.convert(button.bounds, from: button)
+                require(rect.width > 0 && rect.height > 0 && rect.minX >= -1 && rect.maxX <= width + 1
+                    && top(button) + rect.height <= rowLimit, "原生控件应在自己的顶部行内：\(item)")
+            }
+            model.list.close()
+            model.focused.store.close()
         }
     }
     precondition(NSApp.windows.isEmpty && !NSApp.isActive)
     try! failures.joined(separator: "\n").write(to: home.appendingPathComponent("sidebar-failures.txt"), atomically: true, encoding: .utf8)
     precondition(failures.isEmpty, "列表离屏检查失败：\(failures.joined(separator: "\n"))")
-    FileHandle.standardError.write(Data("PASS sidebar layout-only: 16 unwindowed production list header captures (alone, shared, right, own window); native control type counts, search field counts, top-row bounds; zero windows/models. Action AX labels and List rows are unavailable without windows; semantic identity and behavior require separate real-app evidence. Floating content is not a panel interaction.\n".utf8))
+    FileHandle.standardError.write(Data("PASS sidebar layout-only: 4 unwindowed detached list header captures (light/dark at 240/420); native control type counts, search field counts, top-row bounds; zero windows/models. Action AX labels and List rows are unavailable without windows; semantic identity and behavior require separate real-app evidence. Floating content is not a panel interaction.\n".utf8))
 }
 #endif

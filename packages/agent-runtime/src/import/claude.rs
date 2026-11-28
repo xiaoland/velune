@@ -1,6 +1,16 @@
 use super::*;
 use std::collections::HashMap;
 
+/// A resumable native record that contributes no model or display message.
+pub(crate) fn empty_claude_record(session_id: &str, cwd: &Path) -> Result<Value> {
+    Ok(
+        json!({"type":"system","subtype":"turn_duration","durationMs":0,
+        "uuid":uuid4()?,"parentUuid":null,"isSidechain":false,
+        "sessionId":session_id,"cwd":cwd,"timestamp":iso_time(now_unix_ms()),
+        "veluneEmptyImport":true}),
+    )
+}
+
 fn content(blocks: &[Block], ids: &HashMap<&str, String>) -> Vec<Value> {
     blocks.iter().map(|block| match block {
         Block::Text { text } => json!({"type":"text","text":text}),
@@ -49,11 +59,9 @@ pub fn import_claude_conversation_owned(
     let mut parent = None;
     let now = now_unix_ms();
     if context.messages.is_empty() {
-        // A native non-message record gives history discovery a cwd/session
-        // identity. No fabricated human prompt enters the model context.
-        records.push(json!({"type":"queue-operation","operation":"dequeue",
-            "sessionId":session_id,"cwd":cwd,"timestamp":iso_time(now),
-            "veluneEmptyImport":true}));
+        // queue-operation alone is discoverable but newer CLIs refuse both
+        // --resume (no replay chain) and --session-id (already exists).
+        records.push(empty_claude_record(&session_id, cwd)?);
     }
     for (ordinal, message) in context.messages.iter().enumerate() {
         let uuid = uuid4()?;

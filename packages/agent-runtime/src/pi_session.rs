@@ -1677,14 +1677,6 @@ impl PiSession {
         Ok(())
     }
 
-    /// Enqueue a native branch; its completion, not admission, resets history.
-    pub fn fork_at(&mut self, entry_id: Option<&str>) -> Result<()> {
-        self.enqueue(
-            entry_id.map_or(PiOperation::Clone, |id| PiOperation::Fork(id.into())),
-            PendingAction::Branch,
-        )
-        .map(drop)
-    }
     pub fn new_session(&mut self) -> Result<()> {
         self.enqueue(PiOperation::NewSession, PendingAction::Branch)
             .map(drop)
@@ -1842,6 +1834,7 @@ impl PiSession {
                             .unwrap_or("Pi command rejected")
                             .into(),
                     ),
+                    PiReceiptPhase::Indeterminate(detail) => Error::Transport(detail.clone()),
                     _ => Error::Transport("Pi 编辑连接需要清理".into()),
                 }));
             }
@@ -2109,6 +2102,9 @@ impl PiSession {
                     return Err(Error::Sdk(
                         "Pi 编辑边界需要保真原生副本；原会话未修改".into(),
                     ));
+                }
+                if let Some(error) = outcome["error"].as_str().filter(|error| !error.is_empty()) {
+                    return Err(Error::CommandFailed(error.into()));
                 }
                 if response["data"]["disposition"] != "handled"
                     || outcome["entryId"] != id

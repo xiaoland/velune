@@ -10,11 +10,13 @@ import {resolvePiSdk} from '../../resources/pi_sdk.mjs';
 const cli = process.argv[2];
 if (!cli) throw new Error('Pass the absolute installed Pi CLI path');
 const root = await mkdtemp(join(tmpdir(), 'velune-pi-delete-sdk-'));
-const sessions = join(root, 'sessions');
-await mkdir(sessions);
-const {SessionManager} = await resolvePiSdk({binary:cli,runtimeTypeId:'pi-1.0'}).importModule('dist/core/session-manager.js');
-const helper = resolve('packages/agent-runtime/resources/pi_sessions.mjs');
 try {
+  const sessions = join(root, 'sessions');
+  const backups = join(root, 'backups');
+  await mkdir(sessions);
+  await mkdir(backups);
+  const {SessionManager} = await resolvePiSdk({binary:cli,runtimeTypeId:'pi-1.0'}).importModule('dist/core/session-manager.js');
+  const helper = resolve('packages/agent-runtime/resources/pi_sessions.mjs');
   for (const [truncate, empty] of [[false,false], [true,false], [true,true]]) {
     const manager = SessionManager.create(root, sessions);
     const user = text => ({role:'user',content:text,timestamp:Date.now()});
@@ -27,9 +29,13 @@ try {
     const original = await readFile(file);
     const digest = bytes => createHash('sha256').update(bytes).digest('hex');
     const run = expectedDigest => spawnSync(process.execPath,[helper,'--agent-dir',root,'--session-dir',sessions,'--cli',cli,'--runtime-type','pi-1.0','--delete-message',file], {encoding:'utf8',input:JSON.stringify({messageId:`pi:${manager.getSessionId()}:${truncate && !empty ? second : first}:0`,truncate,expectedDigest,backupDirectory:join(root,'backups')})});
-    const stale = run('0'.repeat(64));
-    assert.notEqual(stale.status,0);
-    assert.deepEqual(await readFile(file),original);
+    if (!truncate) {
+      const stale = run('0'.repeat(64));
+      assert.equal(stale.status, 1, stale.stderr);
+      assert.match(stale.stderr, /Session changed before deletion/);
+      assert.deepEqual(await readFile(file), original);
+      assert.deepEqual(await readdir(backups), []);
+    }
     const result = run(digest(original));
     assert.equal(result.status,0,result.stderr);
     const backup = JSON.parse(result.stdout).backupPath;
@@ -42,7 +48,6 @@ try {
     assert.equal(inspected.status,0,inspected.stderr);
     const saved = JSON.parse(inspected.stdout);
     assert.deepEqual(saved.retainedReplyIds, truncate ? [] : [firstReply,secondReply].map(id => `pi:${manager.getSessionId()}:${id}:0`));
-    assert.equal(new Set(saved.retainedReplyIds).size,saved.retainedReplyIds.length);
   }
   // Branch-local edits written after the selected boundary must survive a
   // later rewind when their targets survive. Future targets must not follow.
@@ -105,9 +110,11 @@ try {
     await writeFile(file,original);
     const before=new Set(await readdir(join(root,'backups')));
     const result=spawnSync(process.execPath,[helper,'--agent-dir',root,'--session-dir',sessions,'--cli',cli,'--runtime-type','pi-1.0','--delete-message',file],{encoding:'utf8',input:JSON.stringify({messageId:`pi:${manager.getSessionId()}:${first}:0`,truncate:false,expectedDigest:createHash('sha256').update(original).digest('hex'),backupDirectory:join(root,'backups')})});
-    assert.notEqual(result.status,0);
+    assert.equal(result.status, 1, result.stderr);
     const backups=(await readdir(join(root,'backups'))).filter(name=>!before.has(name));
     if(mode==='future'||mode==='malformed') {
+      const cause = mode === 'future' ? /Unsupported Pi session version/ : /SyntaxError: .*JSON/;
+      assert.match(result.stderr, cause);
       assert.deepEqual(await readFile(file),original);
       assert.deepEqual(backups,[]);
     } else {

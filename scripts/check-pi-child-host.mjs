@@ -41,7 +41,7 @@ const server = createServer(async (request, response) => {
     else if (last?.role === "user" && prompt.includes("NESTED_MIDDLE")) call = {agent:"leaf",task:"NESTED_LEAF",model:"velune/auto:high",async:false};
     else if (last?.role === "user" && prompt.includes("PARALLEL_ROOT")) call = {workflow:"parallel",args:{tasks:[{agent:"leaf",task:"PARALLEL_A",model:"velune/auto:high"},{agent:"leaf",task:"PARALLEL_B",model:"velune/auto:high"}]},async:false};
     else if (last?.role === "user" && prompt.includes("ASYNC_ROOT")) call = {agent:"leaf",task:"ASYNC_LEAF",model:"velune/auto:high",async:true};
-    const kind = prompt.includes("NESTED_LEAF") ? "nested-leaf" : prompt.includes("NESTED_MIDDLE") ? "nested-middle" : prompt.includes("ASYNC_LEAF") ? "async-leaf" : prompt.includes("PARALLEL_A") ? "parallel-a" : prompt.includes("PARALLEL_B") ? "parallel-b" : "parent-or-continuation";
+    const kind = prompt.includes("PLAIN_ROOT") ? "plain-legacy-plugin" : prompt.includes("NESTED_LEAF") ? "nested-leaf" : prompt.includes("NESTED_MIDDLE") ? "nested-middle" : prompt.includes("ASYNC_LEAF") ? "async-leaf" : prompt.includes("PARALLEL_A") ? "parallel-a" : prompt.includes("PARALLEL_B") ? "parallel-b" : "parent-or-continuation";
     requests.push({kind,model:body.model,toolCall:call?.agent ?? (call?.workflow ? "parallel" : null)});
     response.writeHead(200,{"Content-Type":"text/event-stream"});
     const envelope = {id:`fixture-${requests.length}`,object:"chat.completion.chunk",created:1,model:body.model};
@@ -190,9 +190,15 @@ try {
   await writeFile(join(agent,"settings.json"),JSON.stringify({extensions:[join(legacy,"index.mjs")],packages:[]}));
   const afterLegacy=events.length;startRPC();await send({type:"get_state"});
   await wait(event=>events.indexOf(event)>=afterLegacy&&event.type==="extension_ui_request"&&event.statusKey==="velune.child-capabilities"&&JSON.parse(event.statusText??"{}").requiredExtensions==="unavailable");
-  const afterPlain=events.length;await send({type:"prompt",message:"PLAIN_ROOT"});
-  await wait(event=>events.indexOf(event)>=afterPlain&&event.type==="agent_end");
-  assert(requests.length>=9,"ordinary Pi did not reach the loopback model with the old optional plugin");
+  const afterPlain=events.length, beforePlainRequests=requests.length;
+  await send({type:"prompt",message:"PLAIN_ROOT"});
+  const plainEnd=await wait(event=>events.indexOf(event)>=afterPlain&&event.type==="agent_end");
+  assert.deepEqual(requests.slice(beforePlainRequests),[{kind:"plain-legacy-plugin",model:"child-host-fixture",toolCall:null}],
+    "ordinary Pi must make its own successful loopback request with the old optional plugin");
+  const plainReply=plainEnd.messages.at(-1);
+  assert.equal(plainReply?.role,"assistant");
+  assert.equal(plainReply.stopReason,"stop","the old optional plugin request did not complete normally");
+  assert.equal(text(plainReply.content),"SYNTHETIC_CHILD_OK");
   if(failure)throw failure;
   const result={passed:true,piVersion:installation.version,subagentsVersion:pluginVersion,realModelCalls:0,loopbackRequests:requests,foregroundAndNestedVirtualRoute:true,parallelVirtualRouteAndDiscovery:true,detachedSdkHostAndVirtualRoute:true,childRouteIsolatedFromParentSelection:true,sessionRegistrationDisposalIsolated:true,asyncRunnerExitObserved:true,olderOptionalPluginPreservesOrdinaryPi:true,currentLayoutDiscovery:true,discoveredChildCount:linked.length};
   const output=resolve(argument("--output")??join(repository,"target/checks/pi-child-host"));await mkdir(output,{recursive:true});await writeFile(join(output,"result.json"),JSON.stringify(result,null,2)+"\n");

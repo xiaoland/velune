@@ -187,11 +187,6 @@ impl NativeSession {
         Ok((command, has_overlay))
     }
 
-    #[cfg(test)]
-    pub(super) fn dsh_initialize(&mut self) -> Result<()> {
-        initialize(&mut self.rpc, !self.config.mcp_servers.is_empty())
-    }
-
     fn dsh_close_active(&mut self) -> Result<()> {
         if let Some(id) = &self.native_id {
             self.rpc
@@ -506,7 +501,7 @@ impl NativeSession {
                     .get("id")
                     .cloned()
                     .ok_or_else(|| Error::new("ACP 权限请求缺少身份"))?;
-                if params["sessionId"].as_str() != self.dsh_routing_identity() {
+                if params["sessionId"].as_str() != self.native_id.as_deref() {
                     return self.dsh_auto_reply(
                         &request_id,
                         &json!({"outcome":{"outcome":"cancelled"}}),
@@ -541,7 +536,6 @@ impl NativeSession {
                         option.approval_kind = None;
                     }
                 }
-                self.dsh_permission_capacity(&request_id)?;
                 self.add_interaction(
                     PendingRequest {
                         background: false,
@@ -560,9 +554,8 @@ impl NativeSession {
                         options,
                     },
                 );
-                self.dsh_capture_permission_deadline();
             } else if method == "session/update" {
-                if params["sessionId"].as_str() == self.dsh_routing_identity() {
+                if params["sessionId"].as_str() == self.native_id.as_deref() {
                     self.dsh_update(&params["update"])?;
                 }
             } else if let Some(id) = record.get("id") {
@@ -606,7 +599,7 @@ impl NativeSession {
                     .executions
                     .finish(crate::acp::prompt_outcome(&response.stop_reason));
             }
-            self.finish_turn(if self.dsh_dispatch_blocked() {
+            self.finish_turn(if self.failed {
                 RunState::Failed
             } else {
                 RunState::Idle
@@ -724,6 +717,19 @@ impl NativeSession {
         Ok(())
     }
 
+    fn dsh_auto_reply(
+        &mut self,
+        id: &Value,
+        result: &Value,
+        rejection: Option<&str>,
+    ) -> Result<()> {
+        if let Some(message) = rejection {
+            self.rpc.reject(id, message)
+        } else {
+            self.rpc.respond(id, result)
+        }
+    }
+
     pub(super) fn dsh_reply(
         &mut self,
         pending: &PendingRequest,
@@ -738,7 +744,7 @@ impl NativeSession {
         reply: RuntimeInteractionReply,
     ) -> Result<Value> {
         if pending.method != "session/request_permission"
-            || pending.payload["sessionId"].as_str() != self.dsh_routing_identity()
+            || pending.payload["sessionId"].as_str() != self.native_id.as_deref()
         {
             return Err(Error::new("此权限请求不属于当前原生会话"));
         }
@@ -885,3 +891,6 @@ fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
 
 #[cfg(all(test, unix))]
 mod question_reconciliation_tests;
+
+#[cfg(all(test, unix))]
+mod tests;

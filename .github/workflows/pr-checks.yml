@@ -27,19 +27,7 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "$BASE_REF"
           git diff --check "$BASE_SHA...HEAD"
-          python3 - "$BASE_SHA" "$GITHUB_OUTPUT" <<'PY'
-          import subprocess,sys
-          base,output=sys.argv[1:]
-          names=subprocess.check_output(['git','diff','--name-only',f'{base}...HEAD'],text=True).splitlines()
-          rust_files={'Cargo.lock','Cargo.toml','rust-toolchain.toml','clippy.toml','.cargo/config.toml','.github/workflows/pr-checks.yml'}
-          rust=any(
-              name.endswith('.rs') or name in rust_files or name.endswith('/Cargo.toml')
-              or name.startswith('packages/ai-provider/relaykit-bridge/')
-              for name in names
-          )
-          with open(output,'a') as stream:
-              stream.write(f'rust={str(rust).lower()}\n')
-          PY
+          python3 scripts/ci-inputs.py "$BASE_SHA" "$GITHUB_OUTPUT"
       - name: Validate release metadata
         run: |
           set -euo pipefail
@@ -61,7 +49,10 @@ jobs:
       - name: Check shell syntax and whitespace
         run: |
           set -euo pipefail
-          bash -n scripts/build-macos.sh scripts/build-ios.sh scripts/build-ios-native.sh scripts/build-android.sh scripts/build-android-native.sh
+          for script in scripts/build-macos.sh scripts/build-ios.sh scripts/build-ios-native.sh \
+                        scripts/build-android.sh scripts/build-android-native.sh; do
+            bash -n "$script"
+          done
       - name: Set up Node for the runtime helper checks
         uses: actions/setup-node@v4
         with:
@@ -69,14 +60,14 @@ jobs:
       - name: Run the synthetic script checks
         run: |
           set -euo pipefail
-          for check in build-cache build-support claude-history composer-migration runtime-start-policy \
+          for check in ci-inputs macos-composer-runner build-cache build-support claude-history composer-migration runtime-start-policy \
                        service-tier-migration macos-dev; do
             python3 "scripts/check-$check.py"
           done
           for check in pi-background-work pi-subagent-metadata runtime-background-tasks; do
             node "scripts/check-$check.mjs"
           done
-          python3 -B tests/acceptance/test_runner.py
+          python3 -B -m unittest discover -s tests/acceptance -p 'test_*.py'
       - name: Set up Go for the Linux RelayKit link prerequisite
         if: steps.changes.outputs.rust == 'true'
         uses: actions/setup-go@v5
@@ -111,9 +102,9 @@ jobs:
             echo "$forbidden"
             exit 1
           fi
-      - name: Link the shared Rust core and bindings on Linux
-        if: steps.changes.outputs.rust == 'true'
-        run: cargo build --locked --package velune-bindings --lib
       - name: Run the Rust workspace tests
         if: steps.changes.outputs.rust == 'true'
         run: cargo test --locked --workspace --no-fail-fast
+      - name: Link the Rust core and run acceptance through the generated Python bindings
+        if: steps.changes.outputs.rust == 'true'
+        run: python3 tests/acceptance/run.py --build

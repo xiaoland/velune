@@ -84,10 +84,14 @@ import ObjectiveC
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         safe()
     }
-    func wait(_ ready: () -> Bool) {
+    func wait(polling presented: ConversationStore? = nil, line: UInt = #line, _ ready: () -> Bool) {
         let end = Date().addingTimeInterval(20)
-        while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)); safe() }
-        precondition(ready(), "离屏编辑器检查超时")
+        while !ready(), Date() < end {
+            presented?.checkAccess.pollProjection()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            safe()
+        }
+        precondition(ready(), "离屏编辑器检查超时", line: line)
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
     var measurements: [[String: Any]] = []
@@ -150,11 +154,14 @@ import ObjectiveC
     let workspace = ConversationWindowModel(application: device, kind: .workspace)
     let source = workspace.focused
     source.store.start(loadFirstConversation: false, opening: conversationID)
-    wait { source.store.loadedConversationID == conversationID && !source.store.isLoading && source.store.editability(of: messageID)?.inPlace == true && source.store.nextTurn != nil }
+    wait(polling: source.store) { source.store.loadedConversationID == conversationID && !source.store.isLoading && source.store.editability(of: messageID)?.inPlace == true && source.store.nextTurn != nil }
     let ordinary = workspace.composer(for: source)
     let draftFile = home.appendingPathComponent("ordinary-draft.txt")
     try! Data("ordinary draft attachment".utf8).write(to: draftFile)
     ordinary.restore("普通输入草稿必须保留", attachments: [draftFile])
+    // The remote snapshot and the device configuration have independent reads.
+    // A user can only choose a runtime after it appears in the menu.
+    wait { device.enabledRuntimeInstances.contains { $0.id == "review" } }
     ComposerContext(tab: source, model: ordinary).selectNextTurnRuntime("review")
     wait { source.store.nextTurn?.runtimeId == "review" }
     let originalChoice = source.store.nextTurn?.choice
@@ -179,7 +186,7 @@ import ObjectiveC
         let session = MessageEditingSession(source: source.store, request: .init(message: source.store.message(id: messageID)!, conversationID: conversationID,
             inPlace: eligibility.inPlace, isLast: source.store.isLastUserMessage(messageID), revision: eligibility.revision), presentation: presentation)
         session.start()
-        wait { session.store.loadedConversationID == conversationID && !session.store.isLoading && session.next != nil && session.store.editability(of: messageID) != nil }
+        wait(polling: session.store) { session.store.loadedConversationID == conversationID && !session.store.isLoading && session.next != nil && session.store.editability(of: messageID) != nil }
         return session
     }
     // A captured initial control check may offer fork-only while this private
@@ -192,7 +199,7 @@ import ObjectiveC
         precondition(result.placement == .fork)
         if explicitFork { result.placement = .fork }
         result.start()
-        wait { result.store.editability(of: messageID)?.inPlace == true && !result.store.isLoading }
+        wait(polling: result.store) { result.store.editability(of: messageID)?.inPlace == true && !result.store.isLoading }
         return result
     }
     let untouchedDefault = preparingSession(explicitFork: false)
@@ -210,7 +217,7 @@ import ObjectiveC
     latest.start()
     wait { latest.store.loadedConversationID == conversationID && !latest.store.isLoading }
     latest.loadTargetCatalog()
-    wait { latest.canSubmit }
+    wait(polling: latest.store) { latest.canSubmit }
     precondition(latest.placement == .inPlace && latest.needsPlacement && latest.target.submitTitle == "替换并发送" && !latest.historyChanged,
                  "最后一条消息必须明确默认原会话，并保留切换新会话的入口；placement=\(String(describing: latest.placement)), changed=\(latest.historyChanged)")
     let latestHost = capture(MessageEditorView(session: latest, window: workspace, source: source).applicationAppearance(),
@@ -229,6 +236,51 @@ import ObjectiveC
     precondition(placementPicker.titleOfSelectedItem == "原会话（替换后续内容）", "原生picker必须显示原会话选择")
     wait { latest.placement == .inPlace && latest.canSubmit }
     latest.cancel()
+
+    // Keep the peer's turn ACK pending while the user changes tabs or closes
+    // the editing session. Read the saved result from another Core client.
+    let reader = DeviceStore(transport: transport)
+    reader.composerInputs.poll(force: true)
+    for cancelEditor in [false, true] {
+        let prompt = cancelEditor ? "closed fork edit" : "background fork edit"
+        let marker = home.appendingPathComponent(prompt)
+        preference(.sheet)
+        source.edit(messageID: latestMessage.id)
+        guard let branch = source.editing else { fatalError("分叉编辑器未打开") }
+        branch.placement = .fork
+        wait { branch.store.loadedConversationID == conversationID && !branch.store.isLoading }
+        branch.loadTargetCatalog()
+        let chosen = ModelSelection.native(providerId: "openai", modelId: "synthetic-editor-model")
+        branch.target.chooseModel(chosen)
+        let editorView = capture(MessageEditorView(session: branch, window: workspace, source: source).applicationAppearance(),
+                                 name: cancelEditor ? "fork-edit-before-close" : "fork-edit-before-navigation", width: 560)
+        let nativeEditor = descendants(editorView).compactMap { $0 as? ComposerTextView }.first!
+        nativeEditor.insertText(prompt, replacementRange: NSRange(location: 0, length: (nativeEditor.string as NSString).length))
+        precondition(branch.editor.submission == prompt, "消息编辑提交必须使用原生编辑器中替换后的正文")
+        wait(polling: branch.store) { branch.canSubmit }
+        branch.send(in: workspace)
+        wait { FileManager.default.fileExists(atPath: marker.path) || branch.failure != nil }
+        precondition(branch.failure == nil, branch.failure ?? "分叉编辑未到达合成执行端")
+        let forkID = runtimeID + ":" + (try! String(contentsOf: marker, encoding: .utf8))
+        let before = workspace.tabCount
+        if cancelEditor { source.finishMessageEditing(branch.id) } else { workspace.openInNewTab() }
+        try! Data().write(to: marker.appendingPathExtension("release"))
+        wait {
+            reader.composerInputs.poll(force: true)
+            return !branch.store.isLoading && reader.composerInputs.targetRecord(for: forkID)?.choices.choices.contains {
+                $0.runtimeId == runtimeID && $0.choice.model == chosen
+            } == true
+        }
+        precondition(branch.failure == nil && source.editing == nil && source.store.loadedConversationID == conversationID)
+        let targets = workspace.conversationTabs.filter { $0.store.loadedConversationID == forkID }
+        if cancelEditor {
+            precondition(targets.isEmpty && workspace.tabCount == before, "关闭编辑器不能复活分叉 UI")
+        } else {
+            precondition(targets.count == 1 && workspace.focused === targets[0] && workspace.tabCount == before + 2,
+                         "原标签离开焦点后，回执仍须只打开一次分叉")
+        }
+        workspace.selectTab(source.id)
+    }
     // Image restoration is an input concern; no image is sent to the fake Codex.
     let pixel = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -245,7 +297,7 @@ import ObjectiveC
     }
     let imageEdit = imageSession(png.base64EncodedString())
     let restoredImage = imageEdit.editor.attachments[0]
-    wait { (try? Data(contentsOf: restoredImage)) == png && imageEdit.canSubmit }
+    wait(polling: imageEdit.store) { (try? Data(contentsOf: restoredImage)) == png && imageEdit.canSubmit }
     precondition(restoredImage.path.contains("/message-edits/"))
     _ = capture(MessageEditorView(session: imageEdit, window: workspace, source: source).applicationAppearance(), name: "sheet-original-image", width: 560)
     imageEdit.cancel()
@@ -259,7 +311,7 @@ import ObjectiveC
     wait { unreadable.target.issue?.hasPrefix("无法保留原附件") == true }
     precondition(unreadable.editor.attachments == [unreadableURL], "重试必须沿用同一个附件 chip")
     unreadable.editor.removeAttachment(unreadableURL)
-    wait { unreadable.canSubmit }
+    wait(polling: unreadable.store) { unreadable.canSubmit }
     unreadable.cancel()
     unchanged()
     let filePreview = ConversationWindowModel(application: DeviceStore(preview: true), kind: .workspace)
@@ -292,7 +344,7 @@ import ObjectiveC
     precondition(edit.placement == .inPlace && edit.choices.runtimeID == "review")
     context.selectNextTurnRuntime(runtimeID)
     edit.placement = .inPlace
-    wait { edit.canSubmit }
+    wait(polling: edit.store) { edit.canSubmit }
     let attachment = home.appendingPathComponent("review-notes.md")
     try! Data("synthetic review notes".utf8).write(to: attachment)
     edit.editor.addAttachments([attachment])
@@ -316,8 +368,8 @@ import ObjectiveC
     edit.send(in: workspace)
     wait { edit.failure != nil }
     precondition(!closed && edit.editor.submission == long && !edit.submitting)
-    wait { edit.historyChanged }
-    wait { edit.canSubmit }
+    wait(polling: edit.store) { edit.historyChanged }
+    wait(polling: edit.store) { edit.canSubmit }
     precondition(edit.confirmationRevision != nil && !edit.submitting && !closed,
                  "CAS失败重读后应直接提供二次确认，并保留编辑副本")
     let confirmedRevision = edit.confirmationRevision
@@ -328,7 +380,7 @@ import ObjectiveC
         _ = try transport.sendTurn(sourceRuntimeID: runtimeID, conversationID: conversationID, targetRuntimeID: runtimeID, selection: nil,
             turn: ComposedTurn(text: "SECOND CONCURRENT MESSAGE", effort: nil, permissionMode: nil, attachments: []))
     } catch { fatalError("第二次合成写入失败：\(error.localizedDescription)") }
-    wait { edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
+    wait(polling: edit.store) { edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
     edit.send(in: workspace)
     precondition(edit.confirmationRevision != confirmedRevision && !edit.submitting && !closed,
                  "再次变化必须再次确认，不能无条件覆盖")
@@ -336,7 +388,7 @@ import ObjectiveC
     let fresh = edit
     let ready = capture(MessageEditorView(session: fresh, window: workspace, source: source).applicationAppearance(), name: "sheet-resend", width: 560)
     fresh.editor.textView!.insertText("OFFSCREEN EDITED MESSAGE", replacementRange: NSRange(location: 0, length: (fresh.editor.textView!.string as NSString).length))
-    wait { fresh.canSubmit }
+    wait(polling: fresh.store) { fresh.canSubmit }
     closed = false
     fresh.onClose = { closed = true }
     // A conflict also has a copy button. Address the production submit control
@@ -360,9 +412,9 @@ import ObjectiveC
         fresh.send(in: workspace)
     }
     wait { closed }
-    wait { source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
+    wait(polling: source.store) { source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
     precondition(source.store.loadedConversationID == conversationID)
-    wait { source.store.nextTurn?.runtimeId == runtimeID }
+    wait(polling: source.store) { source.store.nextTurn?.runtimeId == runtimeID }
     precondition((source.store.keptComposerChoices.choices[runtimeID] ?? TurnChoice()) == (fresh.choices.choices[runtimeID] ?? TurnChoice()),
                  "接受编辑后，执行配置必须传给继续的普通目标")
     unchanged(checkExecution: false)
@@ -482,7 +534,7 @@ import ObjectiveC
     let peer = home.appendingPathComponent("synthetic-editor-codex")
     let script = #"""
 #!/usr/bin/python3
-import json, pathlib, sys, uuid
+import json, pathlib, sys, time, uuid
 root = pathlib.Path(__file__).parent
 path = root / 'editor-native.json'
 if '--version' in sys.argv:
@@ -493,7 +545,9 @@ def turn(n, text):
     return {'id':'turn-' + str(n), 'status':'completed', 'startedAt':n, 'completedAt':n + 1,
             'items':[{'id':'user-' + str(n), 'type':'userMessage', 'content':[{'type':'text','text':text}]},
                      {'id':'assistant-' + str(n), 'type':'agentMessage', 'text':'Synthetic reply ' + str(n)}]}
-if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
+if '--prepare-fixture' in sys.argv:
+    if not path.exists(): save({'11111111-1111-4111-8111-111111111111':[turn(1,'EDIT THIS EARLIER MESSAGE'),turn(2,'KEEP LATER MESSAGE UNTIL CONFIRMED')]})
+    sys.exit(0)
 def emit(value): print(json.dumps(value), flush=True)
 def notify(method, params): emit({'method':method,'params':params})
 def thread(db, identity):
@@ -518,6 +572,11 @@ for line in sys.stdin:
     elif method == 'thread/start':
         current = str(uuid.uuid4()); db[current] = []; save(db)
         result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
+    elif method == 'thread/fork':
+        index = next(i for i, t in enumerate(db[identity]) if t['id'] == p['lastTurnId'])
+        current = str(uuid.uuid4())
+        db[current] = db[identity][:index + 1]; save(db)
+        result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
     elif method == 'thread/revert':
         index = next(i for i,t in enumerate(db[identity]) if t['id'] == p['beforeTurnId'])
         db[identity] = db[identity][:index]; save(db); result = {'thread':thread(db,identity)}
@@ -525,6 +584,12 @@ for line in sys.stdin:
         n = max([int(t['id'].split('-')[-1]) for t in db[identity]] + [0]) + 1
         text = '\n'.join(i.get('text','') for i in p.get('input',[]) if i.get('type') == 'text')
         value = turn(n,text); value['items'][0]['content'] = p.get('input',[]); db[identity].append(value); save(db)
+        if text in ('closed fork edit', 'background fork edit'):
+            (root / text).write_text(identity)
+            deadline = time.monotonic() + 20
+            while not (root / (text + '.release')).exists():
+                if time.monotonic() >= deadline: sys.exit('fork edit ACK was not released')
+                time.sleep(.01)
         emit({'id':request['id'],'result':{'turn':{'id':value['id']}}})
         notify('turn/started',{'threadId':identity,'turn':{'id':value['id']}})
         for item in value['items']:
@@ -535,6 +600,14 @@ for line in sys.stdin:
 """#
     try Data(script.utf8).write(to: peer)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: peer.path)
+    // Both runtime histories can open concurrently on cold startup. Publish
+    // their starting archive before either synthetic peer is admitted.
+    let prepare = try Process.run(peer, arguments: ["--prepare-fixture"])
+    prepare.waitUntilExit()
+    guard prepare.terminationStatus == 0 else {
+        throw NSError(domain: "Velune.EditorCheck", code: Int(prepare.terminationStatus),
+                      userInfo: [NSLocalizedDescriptionKey: "无法准备合成编辑历史"])
+    }
     let transport = Transport(stateDirectory: stateDirectory, resourcesDirectory: Bundle.main.resourceURL!)
     let defaults = try transport.list()
     for runtime in ["editor", "review"] {

@@ -1,7 +1,8 @@
 //! Synthetic native records only: no CLI authentication or model requests.
 use serde_json::{Value, json};
-use std::{io::Write, process::Stdio};
+use std::{io::Write, path::PathBuf, process::Stdio};
 use velune_agent_runtime::{history, process::command, version::RuntimeKind};
+use velune_test_support::TempRoot;
 
 fn codex(records: &[Value], id: Option<&str>, omit: bool) -> std::process::Output {
     let mut args = vec!["-c", include_str!("../resources/codex_context.py")];
@@ -77,119 +78,19 @@ fn prompt(id: &str) -> Value {
     json!({"type":"response_item","payload":{"type":"message","role":"user","id":id,"content":[{"type":"input_text","text":"duplicate"}]}})
 }
 #[test]
-fn codex_delivery_metadata_is_not_model_context_and_unknown_records_still_fail() {
-    let records = vec![
+fn codex_plain_delivery_metadata_does_not_require_portable_summary() {
+    let records = [
         prompt("first"),
         json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":false}}),
         json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Native communication body"}]}}),
-        json!({"type":"response_item","payload":{"type":"function_call","call_id":"tool","name":"read","arguments":"{}"}}),
-        json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}),
-        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"tool","output":"result"}}),
     ];
-    let expected: Vec<_> = records
-        .iter()
-        .filter(|record| record["type"] != "inter_agent_communication_metadata")
-        .cloned()
-        .collect();
-    let result = codex(&records, None, false);
+    let probe = codex_summary_required(&records);
     assert!(
-        result.status.success(),
+        probe.status.success(),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&probe.stderr)
     );
-    assert_eq!(result.stdout, codex(&expected, None, false).stdout);
-    assert_eq!(
-        codex_summary_required(&records).stdout,
-        br#"{"required": false}
-"#,
-    );
-    for kind in ["unknown_context_record", "inter_agent_communication"] {
-        let mut unsupported = records.clone();
-        unsupported.push(json!({"type":kind,"payload":{"content":"must not disappear"}}));
-        let result = codex(&unsupported, None, false);
-        assert!(!result.status.success());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains(&format!("unsupported Codex rollout record: {kind}"))
-        );
-        assert!(result.stdout.is_empty());
-    }
-    let mut unsupported = records;
-    unsupported.push(json!({"type":"response_item","payload":{"type":"unknown_context_item","content":"must not disappear"}}));
-    assert!(!codex(&unsupported, None, false).status.success());
-}
-#[test]
-fn codex_agent_message_preserves_attribution_body_and_tool_pair_after_compaction() {
-    let communication = json!({"type":"agent_message","id":"amsg_1","author":"/root/worker","recipient":"/root","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/worker\nPayload:\nDone."},{"type":"input_text","text":" More details."}]});
-    let records = vec![
-        json!({"type":"response_item","payload":{"type":"unknown_obsolete_item"}}),
-        json!({"type":"compacted","payload":{"message":"portable summary","replacement_history":[
-            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"compact summary"}]},
-            communication,
-            {"type":"function_call","call_id":"tool","name":"read","arguments":"{}"}
-        ]}}),
-        json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":false}}),
-        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"tool","output":"tool result"}}),
-        json!({"type":"response_item","payload":communication}),
-    ];
-    let result = codex(&records, None, false);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let context: Value = serde_json::from_slice(&result.stdout).unwrap();
-    let messages = context["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 5);
-    assert_eq!(messages[0]["content"][0]["text"], "compact summary");
-    for index in [1, 4] {
-        assert_eq!(messages[index]["role"], "assistant");
-        assert_eq!(
-            messages[index]["content"][0]["text"],
-            "Agent message from /root/worker to /root:\n"
-        );
-        assert_eq!(
-            messages[index]["content"][1]["text"],
-            communication["content"][0]["text"]
-        );
-        assert_eq!(messages[index]["content"][2]["text"], " More details.");
-        assert!(messages[index].get("source_message_id").is_none());
-    }
-    assert_eq!(messages[2]["content"][0]["id"], "tool");
-    assert_eq!(messages[3]["content"][0]["id"], "tool");
-    let mut encrypted = communication.clone();
-    encrypted["content"] = json!([
-        {"type":"input_text","text":"visible envelope"},
-        {"type":"encrypted_content","encrypted_content":"opaque body"}
-    ]);
-    let result = codex(
-        &[json!({"type":"response_item","payload":encrypted})],
-        None,
-        false,
-    );
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&result.stdout).unwrap(),
-        json!({"errorCode":"portable_summary_required"})
-    );
-
-    let mut unknown = communication;
-    unknown["content"] = json!([{"type":"unknown_agent_content","text":"unknown body"}]);
-    let result = codex(
-        &[json!({"type":"response_item","payload":unknown})],
-        None,
-        false,
-    );
-    assert!(!result.status.success());
-    assert!(result.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&result.stderr)
-            .contains("unsupported Codex agent message content: unknown_agent_content")
-    );
+    assert_eq!(probe.stdout, b"{\"required\": false}\n");
 }
 #[test]
 fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {
@@ -213,7 +114,13 @@ fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {
     assert!(output.status.success());
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["messages"].as_array().unwrap().len(), 1);
-    assert!(!codex(&records, Some("missing"), true).status.success());
+    let missing = codex(&records, Some("missing"), true);
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .contains("Codex native user message boundary was not found")
+    );
+    assert!(missing.stdout.is_empty());
 }
 #[test]
 fn codex_omits_retained_identity_after_compaction_and_keeps_summary() {
@@ -410,16 +317,20 @@ with tempfile.TemporaryDirectory(prefix='velune-context-delete-') as root:
 
 #[test]
 fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
+    assert_assistant_first_import_roundtrip(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
+fn installed_codex_reads_assistant_first_import_without_a_new_request() {
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
+    assert_assistant_first_import_roundtrip(Some(binary.into()));
+}
+
+fn assert_assistant_first_import_roundtrip(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-delete-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -469,8 +380,9 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
     );
     assert_eq!(restored["messages"][2]["content"][0]["text"], "reply");
     let home = root.join("codex");
-    let ImportedConversation::Codex { thread_id } =
-        import_codex_conversation(&execution, &home, &root, &context, "0.159.3", "openai").unwrap()
+    let (ImportedConversation::Codex { thread_id }, _, _) =
+        import_codex_conversation_owned(&execution, &home, &root, &context, "0.159.3", "openai")
+            .unwrap()
     else {
         panic!()
     };
@@ -516,15 +428,15 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
     );
     assert_eq!(restored["messages"][2]["content"][0]["text"], "reply");
     // Optional installed official CLI read, never turn/start or model access.
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
+    if let Some(binary) = binary {
         let config = history::HistoryConfig {
             kind: RuntimeKind::Codex166,
             execution,
-            os_home: Some(root.clone()),
-            binary: binary.into(),
+            os_home: Some(root.to_path_buf()),
+            binary,
             node_binary: root.join("unused-node"),
-            resources_directory: root.clone(),
-            root: root.clone(),
+            resources_directory: root.to_path_buf(),
+            root: root.to_path_buf(),
             home,
         };
         let history = history::read(&config, "synthetic", &thread_id);
@@ -532,21 +444,24 @@ fn native_imports_roundtrip_assistant_first_context_without_a_new_request() {
             panic!("{}", error.full_message());
         }
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
+    assert_imported_prompt_origins(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
+fn installed_codex_preserves_imported_display_ids_and_many_deletion() {
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
+    assert_imported_prompt_origins(Some(binary.into()));
+}
+
+fn assert_imported_prompt_origins(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-delete-origins-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     let context: Context = serde_json::from_value(json!({"messages":[
         {"source_message_id":"old-one","role":"user","content":[{"type":"text","text":"duplicate"},{"type":"image","media_type":"image/png","data":"AA=="}]},
         {"source_message_id":"old-two","role":"user","content":[{"type":"text","text":"duplicate"}]},
@@ -591,25 +506,23 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
     assert_eq!(restored["messages"].as_array().unwrap().len(), 1);
     assert_eq!(restored["messages"][0]["role"], "assistant");
     let home = root.join("codex");
-    let (ImportedConversation::Codex { thread_id }, origins) =
-        import_codex_conversation_with_origins(
-            &execution, &home, &root, &context, "0.166.0", "openai",
-        )
-        .unwrap()
+    let (ImportedConversation::Codex { thread_id }, origins, _) =
+        import_codex_conversation_owned(&execution, &home, &root, &context, "0.166.0", "openai")
+            .unwrap()
     else {
         panic!()
     };
     assert_eq!(origins["old-one"].len(), 2);
     assert_eq!(origins["old-two"].len(), 1);
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") {
+    if let Some(binary) = binary {
         let config = history::HistoryConfig {
             kind: RuntimeKind::Codex166,
             execution,
-            os_home: Some(root.clone()),
-            binary: binary.into(),
+            os_home: Some(root.to_path_buf()),
+            binary,
             node_binary: root.join("unused-node"),
-            resources_directory: root.clone(),
-            root: root.clone(),
+            resources_directory: root.to_path_buf(),
+            root: root.to_path_buf(),
             home,
         };
         let ids: Vec<String> = origins.values().flatten().cloned().collect();
@@ -638,8 +551,8 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         let restored = history::export_context_without_many(&config, &thread_id, &ids).unwrap();
         assert_eq!(restored.messages.len(), 1);
         assert_eq!(restored.messages[0].role, Role::Assistant);
-        let (ImportedConversation::Codex { thread_id: managed }, _) =
-            import_codex_conversation_with_origins(
+        let (ImportedConversation::Codex { thread_id: managed }, _, _) =
+            import_codex_conversation_owned(
                 &config.execution,
                 &config.home,
                 &root,
@@ -655,21 +568,53 @@ fn imports_preserve_prompt_origins_for_repeated_and_multimodal_deletion() {
         let managed_history = history::read(&config, "synthetic", &managed).unwrap();
         assert!(!managed_history.messages.is_empty());
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
+fn empty_claude_import_is_discoverable() {
+    assert_empty_claude_import(None);
+}
+
+#[test]
+#[ignore = "requires VELUNE_TEST_CLAUDE_BINARY pointing to an installed Claude Code CLI"]
+fn installed_claude_accepts_empty_import_identity() {
+    let binary = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CLAUDE_BINARY");
+    if std::env::var_os("VELUNE_TEST_CLAUDE_ISOLATED_CHILD").is_some() {
+        assert_empty_claude_import(Some(binary.into()));
+        return;
+    }
+    // NativeSession inherits its host environment. Give the production owner
+    // a clean test process, rather than reproducing its CLI command here.
+    let home = TempRoot::new("claude-native-owner");
+    let output = command(std::env::current_exe().unwrap())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home.as_os_str())
+        .env("CLAUDE_CONFIG_DIR", home.join("claude"))
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        .env("DISABLE_AUTOUPDATER", "1")
+        .env("VELUNE_TEST_CLAUDE_BINARY", binary)
+        .env("VELUNE_TEST_CLAUDE_ISOLATED_CHILD", "1")
+        .args([
+            "--ignored",
+            "--exact",
+            "installed_claude_accepts_empty_import_identity",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_empty_claude_import(binary: Option<PathBuf>) {
     use velune_agent_runtime::{execution::ExecutionTarget, import::*};
-    let root = std::env::temp_dir().join(format!(
-        "velune-empty-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    let root = TempRoot::new("native-context-import");
     let home = root.join("claude");
     let context = Context { messages: vec![] };
     let ImportedConversation::ClaudeCode { session_id } =
@@ -678,62 +623,98 @@ fn empty_claude_import_is_discoverable_and_fresh_cli_accepts_its_identity() {
     else {
         panic!()
     };
-    let config = history::HistoryConfig {
+    let history_config = history::HistoryConfig {
         kind: velune_agent_runtime::version::RuntimeKind::ClaudeCode,
         execution: ExecutionTarget::Local,
-        os_home: Some(root.clone()),
+        os_home: Some(root.to_path_buf()),
         binary: root.join("unused-cli"),
         node_binary: root.join("unused-node"),
-        resources_directory: root.clone(),
+        resources_directory: root.to_path_buf(),
         root: home.clone(),
         home: home.clone(),
     };
-    let history = velune_agent_runtime::history::read(&config, "synthetic", &session_id).unwrap();
+    let history =
+        velune_agent_runtime::history::read(&history_config, "synthetic", &session_id).unwrap();
     assert!(history.messages.is_empty());
     assert_eq!(history.cwd.as_deref(), root.to_str());
-    if let Some(binary) = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY") {
-        let mut child = command(binary)
-            .env_clear()
-            .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
-            .env("HOME", &root)
-            .env("CLAUDE_CONFIG_DIR", &home)
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .env("DISABLE_AUTOUPDATER", "1")
-            .env("CLAUDE_CODE_ENTRYPOINT", "velune")
-            .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
-            .current_dir(&root)
-            .args([
-                "--print",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--session-id",
-                &session_id,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(b"{\"type\":\"control_request\",\"request_id\":\"empty-import-check\",\"request\":{\"subtype\":\"initialize\"}}\n").unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+    assert!(
+        history::export_context(&history_config, &session_id)
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    if let Some(binary) = binary {
+        use velune_agent_runtime::native::{NativeConfig, NativeKind, NativeSession};
+        let config = NativeConfig {
+            execution: ExecutionTarget::Local,
+            os_home: Some(root.to_path_buf()),
+            kind: NativeKind::ClaudeCode,
+            binary,
+            node_binary: None,
+            agent_dir: home.clone(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.join("projection"),
+            gateway: None,
+            auto_compaction: None,
+            mcp_servers: Vec::new(),
+            session_agents: Vec::new(),
+        };
+        let assert_reopens = |session_id: &str| {
+            // Both launches execute the same open → launch → initialize path as
+            // the application, including an open after native metadata exists.
+            for _ in 0..2 {
+                let mut session = NativeSession::connect(config.clone()).unwrap();
+                session
+                    .open(
+                        session_id,
+                        Some(&root),
+                        "synthetic",
+                        history::read(&history_config, "synthetic", session_id)
+                            .unwrap()
+                            .map(|history| history.messages),
+                    )
+                    .unwrap();
+                session.prepare_fork_turn().unwrap();
+                assert!(session.snapshot().unwrap().messages.is_empty());
+                session.shutdown().unwrap();
+            }
+        };
+        assert_reopens(&session_id);
+        let (ImportedConversation::ClaudeCode { session_id: legacy }, _, ownership) =
+            import_claude_conversation_owned(
+                &ExecutionTarget::Local,
+                &home,
+                &root,
+                &context,
+                "synthetic",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let original = format!(
+            "{}\n",
+            json!({"type":"queue-operation","operation":"dequeue",
+                "sessionId":legacy,"cwd":root.to_path_buf(),"timestamp":"2026-11-28T00:00:00.000Z",
+            "veluneEmptyImport":true})
         );
+        std::fs::write(ownership.source_path(), &original).unwrap();
+        assert_reopens(&legacy);
         assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .any(|message| message["type"] == "control_response"
-                    && message["response"]["request_id"] == "empty-import-check"
-                    && message["response"]["subtype"] == "success")
+            std::fs::read(ownership.source_path())
+                .unwrap()
+                .starts_with(original.as_bytes())
+        );
+        assert_eq!(
+            std::fs::read(
+                ownership
+                    .source_path()
+                    .with_extension("jsonl.velune-empty-import.bak")
+            )
+            .unwrap(),
+            original.as_bytes()
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

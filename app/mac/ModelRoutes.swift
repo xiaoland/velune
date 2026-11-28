@@ -228,7 +228,9 @@ private struct RouteMemberStatus: View {
 struct ModelRouteEditor: View {
     @ObservedObject var store: DeviceStore
     let route: ModelRoute
+#if VELUNE_DEV_CHECKS
     var observeModelCompactionForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
+#endif
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var strategy: RoutingStrategy = .smart
@@ -246,9 +248,12 @@ struct ModelRouteEditor: View {
             Form {
                 Section { TextField("名称", text: $name, prompt: Text("在模型选择中显示")).focused($nameFocused) }
                 Section {
-                    ModelAutoCompactionLink(store: store,
-                                            target: ModelAutoCompactionTarget.managed(route.recordKey, title: route.name, in: store),
-                                            observeForCheck: observeModelCompactionForCheck)
+                    let link = ModelAutoCompactionLink(store: store,
+                        target: ModelAutoCompactionTarget.managed(route.recordKey, title: route.name, in: store))
+                    link
+#if VELUNE_DEV_CHECKS
+                        .onAppear { observeModelCompactionForCheck?(link.target) }
+#endif
                 }
                 Section {
                     Picker("策略", selection: $strategy) { ForEach(RoutingStrategy.allCases) { Text($0.label).tag($0) } }

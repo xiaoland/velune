@@ -21,14 +21,24 @@
 
 默认层必须确定、离线，不读取真实 HOME、凭据或已安装的 Harness，在 Linux CI 与开发机上结果一致。依赖外部程序的测试归真实运行时层，用 `#[ignore = "<原因与启用条件>"]` 标出，由验收入口或开发者显式运行；它们不能是某个行为唯一的保护。
 
+缺少真实运行时条件不能直接从默认测试返回并记作通过。默认合成用例与显式运行的 CLI 用例分别报告；显式启用后仍缺少必需条件时应失败并说明条件，不能再次静默跳过。
+
 测试守护的是 owner 边界上的契约，而不是复刻一次缺陷的调用路径。修复缺陷时，先判断它违反了哪条契约：契约由类型能表达就改类型；不能表达的，在该 owner 的组件测试中补上能捕获这一类违反的用例。不为单个现象新增专用入口、深度计数或只服务本次修复的检查，也不用局部测试代替结构收敛（[S81](../sources/development.md#s81)）。
 
 ### 布局与共享基建
 
 - 单元测试放在被测模块旁的 `<module>/tests.rs` 或 `<module>_tests.rs`，由 `#[cfg(test)] mod tests;` 引入。仅有几行的检查可以内联，生产文件中不保留大段测试代码。
-- 组件与契约测试放在 crate 的 `tests/`，只经公开入口驱动。需要私有状态才能观察的契约，说明 owner 缺少可观察的投影，应先补投影，而不是放宽可见性。
+- 组件与跨 unit 契约测试放在 crate 的 `tests/`，经公开入口驱动。模块内部算法与状态机的不变式可在模块内验证；不为测试私有状态新增生产导出。产品消费者需要的投影由 owner 提供，测试不能用内部状态代替调用者实际收到的结果。
 - 临时目录、合成运行时实例、假 Harness 进程、事件序列等夹具归共享的测试支持 crate，作为 dev-dependency 引入；不在每个测试文件中重新编写，也不内联假进程脚本。
 - 期望值较多的规则用已提交的表或快照表达，例如命令特性的 TSV 表与网关配置快照；变更期望时在同一提交中更新表并说明原因。
+
+### 测试价值与回归证明
+
+新增、重写或删除测试时，沿实际调用者确认它保护的行为、内部不变式或独立契约，以及会使其失败的可信回归。每个契约指定主要测试归属；另一层只有承担不同的协议、生成语言、持久化或生命周期风险时才另设覆盖。删除前读完整用例及参数表，指出剩余保护或已不存在的契约，不按测试数量、运行时长、静态检查或负向断言的标签决定去留。
+
+期望值应来自独立样例或规范，不能由被测决策生成。负向用例以有效输入为对照，单独触发目标检查，并核对错误类型、阶段或关键诊断。恢复承诺须经过真实写入、关闭、重开和结果消费；同一内存对象或预置文件不能证明这条路径。外部 I/O 可以替换为合成上游，但请求组装、响应处理和提交决定必须经过生产 owner，不能另写一套测试实现。
+
+缺陷回归尽量用同一用例取得修复前因目标缺陷失败、修复后通过的证据。无法运行旧版时记录原因和未证明部分；编译环境失败不能充当目标回归。保留确定性时钟、假进程、故障注入等有独立作用的接缝。验证先跑受影响 owner 与相邻契约，只有新输入、失败或具体缺口才扩大范围。
 
 ## 验收套件
 
@@ -64,7 +74,7 @@ cargo tree --locked -p velune-bindings --no-default-features --features remote
 cargo test --locked --workspace
 ```
 
-改动 Rust 的 PR 由 [`PR checks`](../../.github/workflows/pr-checks.yml) 在 Linux 上执行上述格式、Clippy 与依赖树检查，并运行默认层测试；`cargo check` 由 Clippy 覆盖。真实运行时层不进入 CI。
+改动 Rust 构建或测试输入的 PR 由 [`PR checks`](../../.github/workflows/pr-checks.yml) 在 Linux 上执行上述格式、Clippy 与依赖树检查，并运行默认层测试及生成 Python 绑定上的合成验收；`cargo check` 由 Clippy 覆盖。输入路由由 [`ci-inputs.py`](../../scripts/ci-inputs.py) 维护，包含 crate 内嵌 helper、fixture、规则表、绑定配置与验收代码，不仅是 `.rs`。真实运行时层不进入 CI，验收清单中的 CLI 用例缺条件时明确标记为跳过。
 
 `scripts/check-*` 中只用合成数据、不需要外部 CLI 的检查覆盖迁移脚本、构建支持、开发实例和 Pi bridge 等随仓库发布的工具，每个 PR 都在同一 workflow 中运行，清单以 workflow 为准。需要已安装 Codex 或 Pi CLI 的检查属于真实运行时层，清单与用法见[运行时升级](runtime-upgrades.md#2-用真实运行时复验)，升级运行时或改动对应 helper 时手动运行。新增的端到端检查写成[验收用例](../../tests/acceptance/README.md)，不再新增独立的端到端脚本。
 
@@ -74,7 +84,7 @@ cargo test --locked --workspace
 
 ## 平台与界面
 
-平台代码的第一道检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析。Mac 的额度呈现检查需要优化开发包，先运行 `svc run build-macos-release`，再运行 `bash scripts/check-account-quota.sh`。
+平台代码的第一道检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析。Mac 的额度展示、来源和时区在开发包的 `controls` 入口检查。
 
 Mac 的程序化检查只编入定义 `VELUNE_DEV_CHECKS` 的开发构建，由 `app/mac/Checks/` 中的分派表按生命周期阶段启动，日常构建不含这些入口。界面证据分为四种覆盖范围，记录时写明属于哪一种：离屏渲染只证明布局与绘制；本地控件调用证明模型与控件连接，不经过事件分发；系统键盘输入经过真实的事件与焦点链；AX 查询证明辅助功能树的结构与顺序。前一种不能代替后一种的结论。Apple 原生控件的系统明暗适配不另设完整验收矩阵，自绘 logo、固定色位图、阴影与边框则按所在背景核对可见性。
 
@@ -82,4 +92,4 @@ Mac 的程序化检查只编入定义 `VELUNE_DEV_CHECKS` 的开发构建，由 
 
 ### Mac 读取恢复复验
 
-用开发包运行仓库内的检查脚本，`--help` 列出入口，`--app` 可指定优化开发包。`background --dark` 检查后台任务的深色状态，`aggregated-list`、`pagination`、`archived` 分别核对搜索、分页和归档。冷打开用 `experience --workspace-only`，侧栏及工具栏布局用 `sidebar-toolbar`，提供商用量呈现用 `provider-analytics`。脚本用隔离副本与合成数据复验，结果可通过 `--output` 留存。视觉检查根据生成的截图判断。 [检查脚本](../../scripts/check-macos-composer.py) [Mac 进程与焦点约束](../../app/mac/AGENTS.md)
+用开发包运行仓库内的检查脚本，`--help` 列出入口，`--app` 可指定优化开发包。`background --dark` 检查后台任务的深色状态，`aggregated-list`、`pagination`、`archived` 分别核对搜索、分页和归档。冷打开用 `navigation`，跨进程窗口恢复用 `experience`，侧栏及工具栏布局用 `sidebar-toolbar`，提供商用量呈现用 `provider-analytics`。脚本用隔离副本与合成数据复验，结果可通过 `--output` 留存。视觉检查根据生成的截图判断。 [检查脚本](../../scripts/check-macos-composer.py) [Mac 进程与焦点约束](../../app/mac/AGENTS.md)

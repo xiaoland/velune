@@ -809,12 +809,7 @@ pub(crate) async fn read_provider_account_data(
     endpoint: AccountDataEndpoint,
     codex_client_version: &str,
 ) -> Result<Value, CredentialResolutionError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .build()
-        .map_err(|_| failure())?;
+    let client = account_data_client(reqwest::Client::builder().timeout(Duration::from_secs(20)))?;
     let mut auth = resolve(home.clone(), id.clone(), generation, None).await?;
     for attempt in 0..2 {
         let velune_gateway::CredentialMaterial::Http {
@@ -865,56 +860,28 @@ pub(crate) async fn read_provider_account_data(
             .await;
             return Err(CredentialResolutionError::AuthenticationExpired);
         }
-        if !response.status().is_success() {
-            return Err(failure());
-        }
-        let mut response = response;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
-            if bytes.len() + chunk.len() > endpoint.body_limit() {
-                return Err(CredentialResolutionError::InvalidContract);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        return serde_json::from_slice(&bytes)
-            .map_err(|_| CredentialResolutionError::InvalidContract);
+        return account_data_body(response, endpoint).await;
     }
     Err(failure())
 }
 
-#[cfg(test)]
-pub(crate) async fn read_provider_account_data_at_for_test(
-    url: &str,
-    endpoint: AccountDataEndpoint,
-    access_token: &str,
-    account_id: &str,
-    codex_client_version: &str,
-) -> Result<Value, CredentialResolutionError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .no_proxy()
+fn account_data_client(
+    builder: reqwest::ClientBuilder,
+) -> Result<reqwest::Client, CredentialResolutionError> {
+    builder
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .build()
-        .map_err(|_| failure())?;
-    let mut bearer = reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
-        .map_err(|_| CredentialResolutionError::InvalidContract)?;
-    bearer.set_sensitive(true);
-    let response = account_data_request(
-        &client,
-        url,
-        bearer,
-        account_id,
-        endpoint,
-        codex_client_version,
-    )
-    .send()
-    .await
-    .map_err(|_| failure())?;
+        .map_err(|_| failure())
+}
+
+async fn account_data_body(
+    mut response: reqwest::Response,
+    endpoint: AccountDataEndpoint,
+) -> Result<Value, CredentialResolutionError> {
     if !response.status().is_success() {
         return Err(failure());
     }
-    let mut response = response;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
         if bytes.len() + chunk.len() > endpoint.body_limit() {
@@ -1075,3 +1042,7 @@ mod account_analytics_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "subscription_auth_http_tests.rs"]
+mod account_http_tests;

@@ -217,9 +217,13 @@ import VeluneBindings
     precondition(catalog.save([linked]))
     var duplicateFolder = linked
     duplicateFolder.folders.append(duplicateFolder.folders[0])
-    precondition(!catalog.save([duplicateFolder]), "同项目重复目录身份不能被接受")
+    duplicateFolder.folders[2].path = "/work/another"
+    precondition(!catalog.save([duplicateFolder]) && catalog.failure == "目录身份重复。",
+                 "不同合法目录仍不能共用同一个目录身份")
     duplicateFolder.folders[2].id = UUID()
-    precondition(!catalog.save([duplicateFolder]), "同设备重复目录不能被接受")
+    duplicateFolder.folders[2].path = linked.folders[0].path
+    precondition(!catalog.save([duplicateFolder]) && catalog.failure == "同一设备的目录不能重复。",
+                 "不同目录身份仍不能在同设备上指向重复目录")
     precondition(catalog.save([linked]))
     let projectLocal = DeviceStore(preview: true)
     let windows = DeviceStore(preview: true, peerID: "synthetic-windows")

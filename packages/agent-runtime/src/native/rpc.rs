@@ -1,6 +1,6 @@
 //! Bounded stdio JSON-RPC transport. Native protocols remain in their adapters.
 use super::{Error, Result};
-use crate::creation::{CreationBudget, ReadAccount, ReadLease, ReadRecord, Retained};
+use crate::creation::{ReadAccount, ReadLease, ReadRecord, Retained};
 use crate::{
     process_tree::ProcessTree,
     transport::{NotAdmitted, OwnedFrame, WriteClass, WriteReceipt},
@@ -293,11 +293,7 @@ impl RpcClient {
                         Ok(None) => Err(Error::with_code("运行时进程已退出", "transport")),
                         Err(error) => Err(Error::with_code(
                             crate::creation::detail(error),
-                            if reader_account.active() {
-                                "creation_read_budget"
-                            } else {
-                                "transport"
-                            },
+                            "transport",
                         )),
                     };
                     let failed = result.is_err();
@@ -321,29 +317,6 @@ impl RpcClient {
             stderr,
         })
     }
-    pub(crate) fn creation_cleanup_lease(&self) -> Arc<ReadAccount> {
-        self.read_account.clone()
-    }
-    pub(crate) fn arm_creation(&mut self, budget: &CreationBudget) -> Result<()> {
-        self.read_account
-            .arm(budget)
-            .map_err(|error| Error::with_code(error.to_string(), "queue_full"))
-    }
-    pub(crate) fn cancel_creation_admission(&mut self, budget: &CreationBudget) {
-        let _ = self.read_account.finish(budget, true);
-    }
-    pub(crate) fn complete_creation(&mut self, budget: &CreationBudget) -> Result<()> {
-        if !self.read_account.same(budget) || self.queued.iter().next().is_some() {
-            return Err(Error::with_code(
-                "creation has pending interleaved results",
-                "queue_full",
-            ));
-        }
-        // Returned values/native fields own their charges, not this poll call.
-        self.read_account
-            .finish(budget, false)
-            .map_err(|error| Error::with_code(error.to_string(), "queue_full"))
-    }
     fn deliver(&mut self, record: ReadRecord) -> Retained<Value> {
         Retained::from_record(record.value, record.lease)
     }
@@ -353,13 +326,7 @@ impl RpcClient {
             .lock()
             .ok()
             .map(|bytes| {
-                // Creation keeps diagnostics in its finite retained policy too;
-                // legacy callers retain their existing diagnostic display limit.
-                let limit = if self.read_account.active() {
-                    1024
-                } else {
-                    MAX_STDERR_BYTES
-                };
+                let limit = MAX_STDERR_BYTES;
                 let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(limit)])
                     .trim()
                     .to_owned();
@@ -506,41 +473,6 @@ impl RpcClient {
         Ok(id)
     }
 
-    /// Typed command owners retain both request correlation and flush evidence.
-    pub(crate) fn enqueue_request_receipt(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        deadline: Instant,
-    ) -> Result<(u64, crate::transport::WriteReceipt)> {
-        self.enqueue_request_receipt_with_class(method, params, WriteClass::Ordinary, deadline)
-    }
-
-    pub(crate) fn enqueue_request_receipt_with_class(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        class: WriteClass,
-        deadline: Instant,
-    ) -> Result<(u64, crate::transport::WriteReceipt)> {
-        let id = self.next;
-        let next = id
-            .checked_add(1)
-            .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
-        let receipt = self.enqueue_owned_frame(
-            &RequestFrame {
-                jsonrpc: "2.0",
-                id: Some(id),
-                method,
-                params,
-            },
-            class,
-            deadline,
-        )?;
-        self.next = next;
-        Ok((id, receipt))
-    }
-
     /// Claude stream-json has its own envelope, not JSON-RPC. The port
     /// reserves the actual encoded allocation until the writer completes.
     pub(crate) fn enqueue_claude_frame_receipt(
@@ -567,55 +499,6 @@ impl RpcClient {
 
     pub(crate) fn enqueue_claude_automatic_reply(&mut self, frame: &Value) -> Result<()> {
         self.enqueue_automatic_reply(frame)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enqueue_notification_receipt(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        deadline: Instant,
-    ) -> Result<crate::transport::WriteReceipt> {
-        self.enqueue_notification_receipt_with_class(method, params, WriteClass::Ordinary, deadline)
-    }
-
-    pub(crate) fn enqueue_notification_receipt_with_class(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        class: WriteClass,
-        deadline: Instant,
-    ) -> Result<crate::transport::WriteReceipt> {
-        self.enqueue_owned_frame(
-            &RequestFrame {
-                jsonrpc: "2.0",
-                id: None,
-                method,
-                params,
-            },
-            class,
-            deadline,
-        )
-    }
-
-    pub(crate) fn enqueue_rejection_receipt(
-        &mut self,
-        id: &Value,
-        message: &str,
-        deadline: Instant,
-    ) -> Result<crate::transport::WriteReceipt> {
-        self.enqueue_owned_frame(
-            &RejectionFrame {
-                jsonrpc: "2.0",
-                id,
-                error: Rejection {
-                    code: -32601,
-                    message,
-                },
-            },
-            WriteClass::ProtocolReplyCancel,
-            deadline,
-        )
     }
 
     /// Legacy receipt pressure hint only; physical count/byte admission is authoritative.
@@ -748,7 +631,7 @@ impl RpcClient {
 
     /// Budget-aware codec bridge for typed owners. The borrowed source is not
     /// copied into an intermediate Value; failure/slot checks precede encoding.
-    pub(crate) fn encode_frame(
+    fn encode_frame(
         &self,
         frame: &impl serde::Serialize,
         class: WriteClass,
@@ -762,7 +645,7 @@ impl RpcClient {
     /// Retry this owned frame unchanged after local rejection. Every class
     /// crosses the same recorded terminal barrier before physical admission.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn try_enqueue_owned_frame(
+    fn try_enqueue_owned_frame(
         &self,
         frame: OwnedFrame,
         class: WriteClass,

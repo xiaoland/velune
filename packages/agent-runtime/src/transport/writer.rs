@@ -302,12 +302,6 @@ impl WriteReceipt {
         *terminal = Some(outcome);
         Some(snapshot)
     }
-    // Production owners use timestamped outcomes; regression tests retain
-    // coverage of the former polling facade's mapping.
-    #[cfg(test)]
-    pub(crate) fn try_complete(&self) -> Option<io::Result<()>> {
-        self.try_outcome().map(WriteOutcome::into_result)
-    }
     pub(crate) fn wait(self) -> io::Result<()> {
         if let Some(outcome) = self.terminal.into_inner().expect("pipe receipt outcome") {
             return outcome.into_result();

@@ -211,7 +211,12 @@ fn abandoned_tool_results_do_not_repair_a_rewound_branch() {
     records.push(json!({"type":"user","uuid":"replacement","parentUuid":"a2","message":{"content":"different branch"}}));
     records.push(json!({"type":"assistant","uuid":"replacement-answer","parentUuid":"replacement","message":{"id":"api-replacement","content":"new answer"}}));
     f.save(&records);
-    assert!(export_context(&f.config(), SESSION).is_err());
+    assert_eq!(
+        export_context(&f.config(), SESSION)
+            .unwrap_err()
+            .to_string(),
+        "原生上下文的工具结果不完整，未交接"
+    );
 }
 
 #[test]
@@ -224,7 +229,12 @@ fn compaction_does_not_resurrect_summarized_away_sibling_results() {
         json!({"type":"assistant","uuid":"after-compact","parentUuid":"summary","message":{"id":"api-after-compact","content":"answer"}}),
     ]);
     f.save(&records);
-    assert!(export_context(&f.config(), SESSION).is_err());
+    assert_eq!(
+        export_context(&f.config(), SESSION)
+            .unwrap_err()
+            .to_string(),
+        "原生上下文的工具结果不完整，未交接"
+    );
     records[6]["compactMetadata"]["preservedMessages"]["uuids"] = json!(["a1", "a2", "r1", "r2"]);
     f.save(&records);
     export_context(&f.config(), SESSION).unwrap();
@@ -249,7 +259,13 @@ fn foreign_late_and_ambiguous_siblings_remain_excluded() {
             _ => unreachable!(),
         }
         f.save(&records);
-        assert!(export_context(&f.config(), SESSION).is_err(), "{mode}");
+        assert_eq!(
+            export_context(&f.config(), SESSION)
+                .unwrap_err()
+                .to_string(),
+            "原生上下文的工具结果不完整，未交接",
+            "{mode}"
+        );
     }
 }
 

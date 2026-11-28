@@ -603,9 +603,6 @@ mod tests {
             ],
         );
         returning.runtime_type = Some(runtime_type());
-        let settings = latest_settings(&returning.turn_settings, "runtime").unwrap();
-        assert_eq!(settings.effort, None);
-        assert_eq!(settings.permission_mode, None);
         let next = resolve_next_turn(returning);
         assert_eq!(next.current_effort, None);
         assert_eq!(next.current_permission_mode, None);

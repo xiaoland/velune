@@ -1187,35 +1187,6 @@ impl CoreRuntime {
         Ok(())
     }
 
-    /// Send `turn` in place of the user message `message_id`, continuing as
-    /// `placement` says. A fork's result is the new conversation's snapshot.
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)] // Keeps the test helper aligned with the command.
-    pub(crate) fn edit_message_with_runtime(
-        &mut self,
-        runtime_id: &str,
-        conversation_id: &str,
-        message_id: &str,
-        placement: EditPlacement,
-        requested_runtime_id: Option<&str>,
-        selection: Option<crate::ModelSelection>,
-        turn: crate::ComposedTurn,
-    ) -> Result<crate::SnapshotResult, RuntimeError> {
-        let revision = self
-            .current_snapshot()
-            .and_then(|snapshot| self.edit_revision(&snapshot));
-        self.edit_message_with_revision(
-            runtime_id,
-            conversation_id,
-            message_id,
-            placement,
-            requested_runtime_id,
-            revision.as_deref(),
-            selection,
-            turn,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)] // Mirrors the public edit command.
     pub(crate) fn edit_message_with_revision(
         &mut self,

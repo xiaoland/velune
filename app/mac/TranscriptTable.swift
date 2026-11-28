@@ -2225,13 +2225,6 @@ private struct TurnSettingsPopover: View {
 
 #if VELUNE_DEV_CHECKS
 extension TranscriptTableController {
-    var messageEntryIDsForCheck: [String] {
-        entries.compactMap { entry in
-            if case .message(let row) = entry { return row.id }
-            return nil
-        }
-    }
-
     var selectionOutlineIsFrontmostForCheck: Bool { document?.subviews.last === selectionOutline }
 }
 #endif

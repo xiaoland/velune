@@ -1,15 +1,13 @@
 """History and delivery caches under memory pressure.
 
 A read-only fake Codex app-server serves synthetic rollout files, so no
-installed Agent or model is involved. Nine 10 MiB histories exceed the 64 MiB
+installed Agent or model is involved. Eight 10 MiB histories exceed the 64 MiB
 byte budgets, nine tiny ones exceed the eight-view delivery cap, and two
-40 MiB histories test observed panes. Source reloads are counted from the
-application's own `runtime_history_read` log events.
+40 MiB histories test observed panes. The fake server records each history read at the source.
 """
 from __future__ import annotations
 
 import json
-import resource
 import subprocess
 import sys
 import time
@@ -36,6 +34,8 @@ def thread(native_id):
             "createdAt":1,"updatedAt":2,"path":row["path"],"status":{"type":"idle"},
             "modelProvider":"synthetic"}
 def history(native_id):
+    with (HOME / "history-reads").open("a") as trace:
+        print(native_id, file=trace)
     result = []
     for line in pathlib.Path(threads[native_id]["path"]).read_text().splitlines():
         row = json.loads(line)
@@ -105,18 +105,6 @@ def write_histories(agent: Path, project: Path, count: int, message_mib: int) ->
     return rows
 
 
-def source_reads(state: Path) -> int:
-    count = 0
-    for path in (state / "logs").glob("*.jsonl"):
-        for line in path.read_text(errors="replace").splitlines():
-            try:
-                fields = json.loads(line).get("fields", {})
-            except (ValueError, TypeError, AttributeError):
-                continue
-            count += fields.get("event") == "runtime_history_read" and fields.get("phase") == "native_read"
-    return count
-
-
 def access(snapshot) -> str:
     value = snapshot.actions.input_access
     name = getattr(value, "name", None) or type(value).__name__
@@ -132,12 +120,16 @@ def run(ctx: Context) -> None:
     fake.write_text(f"#!{sys.executable}\nimport pathlib\nHOME = pathlib.Path({str(agent)!r})\n" + FAKE_CODEX)
     fake.chmod(0o700)
 
-    byte_rows = write_histories(agent, project, 9, 10)
+    byte_rows = write_histories(agent, project, 8, 10)
     pane_rows = write_histories(agent, project, 2, 40)
     count_rows = write_histories(agent, project, 9, 0)
     app = b.bindings.VeluneApplication.open(b.bindings.BindingOptions(
         home_directory=str(state), resources_directory=str(ctx.isolated.resources)))
     lock_holder = None
+
+    def source_reads():
+        trace = agent / "history-reads"
+        return trace.read_text().splitlines() if trace.exists() else []
 
     def wait_snapshot(read, label):
         result, deadline = read(), time.monotonic() + 2 * ctx.timeout
@@ -169,7 +161,7 @@ def run(ctx: Context) -> None:
             time.sleep(0.05)
         raise AssertionError(f"control did not reach {wanted}; observed={seen[-12:]}")
 
-    def unchanged(conversation_id, cursor):
+    def poll(conversation_id, cursor):
         update = app.snapshot_update(RUNTIME, conversation_id, cursor)
         assert not update.is_ABSENT(), "observed conversation became absent"
         return update
@@ -189,7 +181,7 @@ def run(ctx: Context) -> None:
             api.RuntimeExecution(transport=api.RuntimeTransport.LOCAL(),
                 home=api.RuntimeHome.EXISTING(path=str(ctx.isolated.home)), remote_resources_directory=None))
 
-        # Byte budget: after nine 10 MiB views the oldest payload is gone.
+        # Eight views fit the count cap. Only the byte budget can evict a payload.
         first_native, first_id, _ = byte_rows[0]
         first = open_ready(first_id)
         assert access(first) == "checkingcontrol", f"first watch did not start pending: {access(first)}"
@@ -200,9 +192,9 @@ def run(ctx: Context) -> None:
         assert payload_kept(byte_rows[-1][1], byte_rows[-1][0]), "byte budget dropped the newest payload"
         ctx.passed("byte_budget_evicts_the_oldest_payload")
 
-        before = source_reads(state)
+        before = source_reads()
         cold = cold_ready(first_id)
-        assert source_reads(state) > before, "evicted history was served without a source reload"
+        assert source_reads() == [*before, first_native], "evicted history was served without a source reload"
         assert f"user-{first_native}" in [m.id for m in cold.messages], "cold reload lost the message"
         _, resumed = poll_access(first_id, cold, "editable", 3.0)
         ctx.facts["control_after_cold_reload"] = resumed
@@ -233,53 +225,37 @@ def run(ctx: Context) -> None:
         assert sum(path.stat().st_size for *_, path in pane_rows) > BUDGET
         observe([a_id, b_id])
         cursors = {cid: poll_access(cid, open_ready(cid), "editable", 10.0)[0].cursor for cid in (a_id, b_id)}
-        before = source_reads(state)
+        before = source_reads()
         for _ in range(6):
             for cid in (a_id, b_id):
-                assert unchanged(cid, cursors[cid]).is_UNCHANGED(), "observed pane cursor was rebuilt"
-        assert source_reads(state) == before, "observed panes re-read history while polling"
+                assert poll(cid, cursors[cid]).is_UNCHANGED(), "observed pane cursor was rebuilt"
+        assert source_reads() == before, "observed panes re-read history while polling"
         ctx.passed("observed_panes_stay_hot_over_budget")
 
         # Dropping a pane makes it reclaimable; showing it again reloads it
         # exactly once while its sibling stays hot.
         observe([a_id])
-        assert unchanged(a_id, cursors[a_id]).is_UNCHANGED(), "remaining pane lost its cursor"
-        before = source_reads(state)
+        assert poll(a_id, cursors[a_id]).is_UNCHANGED(), "remaining pane lost its cursor"
+        before = source_reads()
         observe([a_id, b_id])
-        assert unchanged(a_id, cursors[a_id]).is_UNCHANGED(), "re-observing rebuilt the retained pane"
-        assert source_reads(state) == before, "re-observing loaded history before it was read"
-        update = unchanged(b_id, cursors[b_id])
-        assert source_reads(state) == before + 1, "re-displayed pane did not reload exactly once"
+        assert poll(a_id, cursors[a_id]).is_UNCHANGED(), "re-observing rebuilt the retained pane"
+        assert source_reads() == before, "re-observing loaded history before it was read"
+        update = poll(b_id, cursors[b_id])
+        assert source_reads() == [*before, pane_rows[1][0]], "re-displayed pane did not reload exactly once"
         settled = update.snapshot.cursor if update.is_CHANGED() else cursors[b_id]
-        assert unchanged(b_id, settled).is_UNCHANGED(), "re-displayed pane did not settle"
-        assert unchanged(a_id, cursors[a_id]).is_UNCHANGED(), "sibling reload evicted the observed pane"
-        assert source_reads(state) == before + 1, "polling repeated the reload"
+        assert poll(b_id, settled).is_UNCHANGED(), "re-displayed pane did not settle"
+        assert poll(a_id, cursors[a_id]).is_UNCHANGED(), "sibling reload evicted the observed pane"
+        assert source_reads() == [*before, pane_rows[1][0]], "polling repeated the reload"
         observe([])
         ctx.passed("redisplayed_pane_reloads_once")
 
         # Count cap: nine tiny views keep only the newest eight payloads.
         for native, conversation_id, _ in count_rows:
             assert f"user-{native}" in [m.id for m in open_ready(conversation_id).messages], "small message missing"
-        assert not payload_kept(count_rows[0][1], count_rows[0][0]), "delivery kept more than eight views"
-        assert payload_kept(count_rows[-1][1], count_rows[-1][0]), "count cap dropped the newest view"
+        retained = [native for native, cid, _ in count_rows if payload_kept(cid, native)]
+        assert retained == [native for native, _, _ in count_rows[1:]], f"wrong set of retained views: {retained}"
         ctx.passed("count_cap_keeps_the_newest_eight_views")
 
-        stable = []
-        for _, conversation_id, _ in byte_rows[-6:]:
-            snapshot, _ = poll_access(conversation_id, open_ready(conversation_id), "editable", 10.0)
-            stable.append((conversation_id, snapshot.cursor))
-        before, usage, started = source_reads(state), resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
-        for _ in range(6):
-            for conversation_id, cursor in stable:
-                assert app.snapshot_update(RUNTIME, conversation_id, cursor).is_UNCHANGED(), "stable poll changed"
-                time.sleep(0.02)
-        after = resource.getrusage(resource.RUSAGE_SELF)
-        assert source_reads(state) == before, "unchanged polls re-read native history"
-        # CPU is evidence only; no machine-independent limit is claimed.
-        ctx.facts["unchanged_poll"] = {
-            "updates": 6 * len(stable), "wall_seconds": round(time.monotonic() - started, 3),
-            "cpu_seconds": round(after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime, 3)}
-        ctx.passed("unchanged_polls_read_no_history")
     finally:
         if lock_holder is not None:
             lock_holder.terminate()

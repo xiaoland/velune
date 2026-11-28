@@ -14,14 +14,36 @@
 
 按适配器原有能力选择下表中的检查。通用 ACP 还要核对界面提供的操作与本次连接协商的能力一致。
 
-经 Velune 的回归先跑[验收用例](../../tests/acceptance/README.md)中声明了该 CLI 的用例。以下脚本不经 Velune，只用合成上游核对已安装 CLI 本身仍符合适配器依赖的行为，适合先判断差异是否来自上游：
+经 Velune 的回归先跑[验收用例](../../tests/acceptance/README.md)中声明了该 CLI 的用例。Codex 接续摘要另有[安装版适配器回归](../../packages/agent-runtime/tests/codex_handoff_summary.rs)，检查分叉、原生压缩、归档与源历史保全。以下脚本用已安装的 Pi 或 SDK 检查 Velune 运行资源与上游的配合。
 
 | 脚本 | 核对的上游行为 |
 | --- | --- |
-| `scripts/check-codex-sampling-route.py --codex <路径>` | Codex 持久分叉与采样请求的路由 |
 | `scripts/check-pi-child-host.mjs --pi <路径>` | Pi 与 pi-subagents 的前台、嵌套、并行与后台子任务托管 |
 | `scripts/check-pi-child-history.py --pi <路径>` | Pi 子任务历史的写出格式 |
 | `scripts/check-pi-projection-snapshot.mjs <路径>` | Pi 会话投影快照 |
+
+Pi 历史改写和取消通知另有三个直接调用 Velune 运行资源的检查。在仓库根目录用目标 Pi 和其支持的 Node 执行。删除与编辑会创建临时会话、操作后用官方 SDK 重新打开，取消检查用本地合成对端观察协议终态。
+
+```sh
+node packages/agent-runtime/tests/scripts/pi_message_deletion.mjs /absolute/path/to/pi
+node packages/agent-runtime/tests/scripts/pi_message_editing.mjs /absolute/path/to/pi
+node packages/agent-runtime/tests/scripts/pi_notification_cancellation.mjs /absolute/path/to/pi
+```
+
+Rust 中需要已安装 CLI 的导入／读取检查使用 `#[ignore]`，默认测试不执行它们。显式启用后必须提供对应的绝对路径；缺条件会失败，不能作为通过记录。例如：
+
+```sh
+VELUNE_TEST_CODEX_BINARY=/absolute/path/to/codex cargo test --locked -p velune-agent-runtime --test native_import_ownership -- --ignored
+VELUNE_TEST_CODEX_BINARY=/absolute/path/to/codex cargo test --locked -p velune-agent-runtime --test native_context_deletion installed_codex -- --ignored
+VELUNE_TEST_CLAUDE_BINARY=/absolute/path/to/claude cargo test --locked -p velune-agent-runtime --test native_context_deletion installed_claude -- --ignored
+```
+
+设置 `VELUNE_TEST_PI_BINARY` 和 `VELUNE_TEST_NODE_BINARY` 后，下列检查会把仓库随附的三轮合成会话写入各自的临时目录。`pi_background_cold` 观察实际 SDK 的冷读取、后台任务和回环模型请求数。应用层检查通过 Core 删除消息，关闭子进程后重新读取原生历史。[合成会话](../../packages/test-support/fixtures/pi/three-turns.jsonl)
+
+```sh
+cargo test --locked -p velune-agent-runtime --test pi_background_cold -- --ignored
+cargo test --locked -p velune-application real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns -- --ignored
+```
 
 | 检查项 | 通过依据 |
 | --- | --- |

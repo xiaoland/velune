@@ -9,8 +9,6 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-#[allow(dead_code, reason = "Staged links metadata domain")]
-pub(crate) mod links_metadata;
 mod migration;
 pub(crate) use migration::prepare_migrations;
 
@@ -215,85 +213,24 @@ pub(crate) struct Repository {
 /// The application owner keeps this lease from initial acquisition through
 /// execution cleanup, including failed startup before a Repository exists.
 pub(crate) struct HomeLock {
-    inner: std::sync::Arc<HomeLockInner>,
-}
-struct HomeLockInner {
     file: File,
-    state: std::sync::Mutex<HomeLockState>,
+    unlocked: std::sync::atomic::AtomicBool,
 }
-#[derive(Default)]
-struct HomeLockState {
-    unlocked: bool,
-    owner_dropped: bool,
-    disk_leases: usize,
-    links_claimed: bool,
-}
-impl HomeLockInner {
-    fn release_if_unleased(&self, state: &mut HomeLockState) -> Result<(), RuntimeError> {
-        if !state.unlocked && state.disk_leases == 0 {
-            // Explicit unlock is essential even if a fork inherited this file description.
+impl HomeLock {
+    fn unlock(&self) -> Result<(), RuntimeError> {
+        if !self.unlocked.load(std::sync::atomic::Ordering::Acquire) {
             self.file.unlock()?;
-            state.unlocked = true;
+            self.unlocked
+                .store(true, std::sync::atomic::Ordering::Release);
         }
         Ok(())
     }
 }
-impl HomeLock {
-    fn unlock(&self) -> Result<(), RuntimeError> {
-        let mut state = self.inner.state.lock().unwrap();
-        if state.disk_leases != 0 || state.links_claimed {
-            return Err(RuntimeError::invalid(
-                "conversation links metadata has not drained",
-            ));
-        }
-        self.inner.release_if_unleased(&mut state)
-    }
-    fn claim_links(&self) -> Result<std::sync::Arc<LinksHomeGate>, RuntimeError> {
-        let mut state = self.inner.state.lock().unwrap();
-        if state.unlocked || state.owner_dropped || state.links_claimed {
-            return Err(RuntimeError::invalid(
-                "conversation links target unavailable",
-            ));
-        }
-        state.links_claimed = true;
-        Ok(std::sync::Arc::new(LinksHomeGate(self.inner.clone())))
-    }
-}
 impl Drop for HomeLock {
     fn drop(&mut self) {
-        let mut state = self.inner.state.lock().unwrap();
-        state.owner_dropped = true;
-        // Only controlled disk jobs extend an abnormal owner's lock lifetime.
-        // An ordinary inherited descriptor or idle worker does not.
-        if let Err(error) = self.inner.release_if_unleased(&mut state) {
-            tracing::warn!(target: "velune_application", event = "application_home_unlock_failed", detail = %error);
-        }
-    }
-}
-struct LinksHomeGate(std::sync::Arc<HomeLockInner>);
-impl LinksHomeGate {
-    fn disk_lease(&self) -> Result<LinksDiskLease, RuntimeError> {
-        let mut state = self.0.state.lock().unwrap();
-        if state.unlocked || state.owner_dropped {
-            return Err(RuntimeError::invalid("application HOME owner has closed"));
-        }
-        state.disk_leases += 1;
-        Ok(LinksDiskLease(self.0.clone()))
-    }
-}
-impl Drop for LinksHomeGate {
-    fn drop(&mut self) {
-        self.0.state.lock().unwrap().links_claimed = false;
-    }
-}
-struct LinksDiskLease(std::sync::Arc<HomeLockInner>);
-impl Drop for LinksDiskLease {
-    fn drop(&mut self) {
-        let mut state = self.0.state.lock().unwrap();
-        state.disk_leases -= 1;
-        if state.owner_dropped
-            && let Err(error) = self.0.release_if_unleased(&mut state)
-        {
+        // close alone can leave a Unix open-file-description lock held by a
+        // descriptor inherited during another thread's fork/exec window.
+        if let Err(error) = self.unlock() {
             tracing::warn!(target: "velune_application", event = "application_home_unlock_failed", detail = %error);
         }
     }
@@ -329,10 +266,8 @@ impl Repository {
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
         Ok(HomeLock {
-            inner: std::sync::Arc::new(HomeLockInner {
-                file: home_lock,
-                state: std::sync::Mutex::new(HomeLockState::default()),
-            }),
+            file: home_lock,
+            unlocked: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -366,20 +301,6 @@ impl Repository {
     }
     pub(crate) fn unlock(&self) -> Result<(), RuntimeError> {
         self.home_lock.unlock()
-    }
-    /// Construction only: callers must switch all links writes before installing this domain.
-    #[allow(dead_code, reason = "Staged links metadata domain")]
-    pub(crate) fn links_metadata(
-        &self,
-        limits: links_metadata::LinksLimits,
-        current: &Vec<crate::config::ConversationLink>,
-    ) -> Result<links_metadata::LinksMetadata, RuntimeError> {
-        links_metadata::LinksMetadata::new(
-            self.home.clone(),
-            self.home_lock.claim_links()?,
-            limits,
-            current,
-        )
     }
     pub(crate) fn store(&self, config: &PersistedConfig) -> Result<(), RuntimeError> {
         commit(
@@ -846,11 +767,11 @@ mod persistence_version_tests {
     fn repository_drop_unlocks_even_while_an_inherited_description_survives() {
         let home = Home::new();
         let startup = Repository::lock_home(&home.0).unwrap();
-        let startup_description = startup.inner.file.try_clone().unwrap();
+        let startup_description = startup.file.try_clone().unwrap();
         drop(startup); // A failed startup has not constructed a Repository yet.
         let (repository, _) = Repository::open(&home.0).unwrap();
         drop(startup_description);
-        let inherited = repository.home_lock.inner.file.try_clone().unwrap();
+        let inherited = repository.home_lock.file.try_clone().unwrap();
         assert!(
             Repository::open(&home.0).is_err(),
             "a live owner retains its lock"
@@ -868,31 +789,44 @@ mod persistence_version_tests {
     }
 
     #[test]
-    fn generic_config_rejects_old_future_and_corrupt_without_rewrite() {
-        for bytes in [
-            br#"{"schemaVersion":10,"synthetic":"preserve"}"#.as_slice(),
-            br#"{"schemaVersion":12,"synthetic":"preserve"}"#,
-            br#"{"schemaVersion":11,"unknown":"preserve"}"#,
-            br#"{"schemaVersion":11"#,
-        ] {
+    fn generic_config_rejects_unsupported_unknown_and_corrupt_without_rewrite() {
+        let valid = serde_json::to_value(PersistedConfig::default()).unwrap();
+        let mut cases = Vec::new();
+        for version in [9, 12] {
+            let mut value = valid.clone();
+            value["schemaVersion"] = version.into();
+            cases.push((
+                serde_json::to_vec(&value).unwrap(),
+                format!("schema {version} 不受支持"),
+            ));
+        }
+        let mut nested = valid.clone();
+        nested["conversationBrowserPreferences"]["future"] = "retain".into();
+        cases.push((
+            serde_json::to_vec_pretty(&nested).unwrap(),
+            "普通配置含当前 schema 未知字段；原文件保留".into(),
+        ));
+        let mut unknown = valid;
+        unknown["unknown"] = "preserve".into();
+        cases.push((
+            serde_json::to_vec(&unknown).unwrap(),
+            "unknown field `unknown`".into(),
+        ));
+        cases.push((br#"{"schemaVersion":11"#.to_vec(), "EOF".into()));
+        for (bytes, diagnostic) in cases {
             let home = Home::new();
             let path = home.0.join("generic-config.json");
-            fs::write(&path, bytes).unwrap();
-            assert!(Repository::open(&home.0).is_err());
+            fs::write(&path, &bytes).unwrap();
+            let error = match Repository::open(&home.0) {
+                Ok(_) => panic!("invalid config was accepted: {diagnostic}"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(&diagnostic),
+                "{diagnostic}: {error}"
+            );
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
-    }
-
-    #[test]
-    fn generic_config_rejects_unknown_nested_preferences_without_rewrite() {
-        let home = Home::new();
-        let mut value = serde_json::to_value(PersistedConfig::default()).unwrap();
-        value["conversationBrowserPreferences"]["future"] = serde_json::json!("retain");
-        let bytes = serde_json::to_vec_pretty(&value).unwrap();
-        let path = home.0.join("generic-config.json");
-        fs::write(&path, &bytes).unwrap();
-        assert!(Repository::open(&home.0).is_err());
-        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 
     #[test]

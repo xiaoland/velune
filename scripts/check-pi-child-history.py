@@ -108,6 +108,11 @@ process.on('exit', () => console.error('fixture-directory-reads=' + count));
         return subprocess.run([*helper_command, '--inspect-session', str(path), '--with-summary', *options],
                               env=env, text=True, capture_output=True)
 
+    def rejects_source(path, *options):
+        result = read(path, *options)
+        assert result.returncode != 0, f'unverified direct source was admitted: {path}'
+        assert 'Pi session is not in the configured history source' in result.stderr, result.stderr
+
     summary_fields = ('path', 'parentPath', 'cwd', 'name', 'createdUnixMs', 'modifiedUnixMs', 'firstMessage')
     indexed = {row['path']: row for row in listing['sessions']}
     for valid in [parent, child, ordinary, modern, modern_second, nested]:
@@ -121,16 +126,16 @@ process.on('exit', () => console.error('fixture-directory-reads=' + count));
             assert summary['modifiedUnixMs'] == 1794355201000
     for invalid in [mismatch, modern_mismatch, stray, wrong_run, wrong_name, overflow_slot,
                     padded_slot, negative_slot, *symlink_cases]:
-        assert read(invalid).returncode != 0, f'unverified direct source was admitted: {invalid}'
+        rejects_source(invalid)
     custom = root / 'custom'
     custom.mkdir()
     custom_session = custom / 'custom.jsonl'
     custom_session.write_text(parent.read_text())
-    assert read(custom_session).returncode != 0
+    rejects_source(custom_session)
     result = read(custom_session, '--session-dir', str(custom))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['summary']['path'] == str(custom_session)
-    assert read(parent, '--session-dir', str(custom)).returncode != 0
+    rejects_source(parent, '--session-dir', str(custom))
 
     # Cold inspection must recover child metadata from persisted native
     # entries even when compaction has removed the launch from effective model

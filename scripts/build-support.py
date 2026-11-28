@@ -105,6 +105,19 @@ def sync(source, destination, prune=False, includes=()):
                     path.rmdir()
 
 
+def stage_runtime_scripts(destination, prune=False):
+    package = ROOT / "packages/agent-runtime"
+    names = (package / "resource-scripts.txt").read_text().splitlines()
+    destination = Path(destination)
+    for name in names:
+        copy(package / "resources" / name, destination / name)
+    if prune:
+        staged_names = {os.path.normcase(name) for name in names}
+        for old in destination.glob("*.mjs"):
+            if os.path.normcase(old.name) not in staged_names and (old.is_file() or old.is_symlink()):
+                old.unlink()
+
+
 def ensure_bindgen():
     subprocess.run(["cargo", "build", "--locked", "--target-dir", "target/build-tools", "-p", "velune-build-tools", "--bin", "velune-bindgen", "-j", os.environ.get("CARGO_BUILD_JOBS", "2")], cwd=ROOT, check=True)
     return ROOT / "target/build-tools/debug" / ("velune-bindgen.exe" if os.name == "nt" else "velune-bindgen")
@@ -331,7 +344,12 @@ def artifact_identity(platform, profile, command, purpose="development"):
     else:
         paths = {
             "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
+            # Xcode Debug's executable is a launcher; Swift code lives in this
+            # dylib. Release normally has only the executable. Record each
+            # existing output rather than treating the unchanged launcher as code.
+            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
+                    f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune",
+                    f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune.debug.dylib"],
         }[platform]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
 
@@ -414,6 +432,9 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     p = actions.add_parser("copy"); p.add_argument("source"); p.add_argument("destination")
     p = actions.add_parser("sync"); p.add_argument("source"); p.add_argument("destination"); p.add_argument("--prune", action="store_true"); p.add_argument("--include", action="append", default=[])
+    p = actions.add_parser("stage-runtime-scripts")
+    p.add_argument("destination")
+    p.add_argument("--prune", action="store_true")
     p = actions.add_parser("write"); p.add_argument("path")
     actions.add_parser("source-provenance")
     for name in ("bindgen", "verify-bindings"):
@@ -423,6 +444,7 @@ def main():
     try:
         if args.action == "copy": copy(args.source, args.destination)
         elif args.action == "sync": sync(args.source, args.destination, args.prune, args.include)
+        elif args.action == "stage-runtime-scripts": stage_runtime_scripts(args.destination, args.prune)
         elif args.action == "write": write(args.path, sys.stdin.buffer.read())
         elif args.action == "source-provenance": print(json.dumps(source_provenance(), sort_keys=True))
         elif args.action in ("bindgen", "verify-bindings"): bindings(args, args.action == "verify-bindings")
