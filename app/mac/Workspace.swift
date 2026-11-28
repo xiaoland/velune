@@ -895,10 +895,10 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
     func openNewConversationTab(device: DeviceStore? = nil, runtimeID: String? = nil, cwd: String? = nil, project: NewConversationProject? = nil) -> ConversationTab? {
         let device = device ?? application
         let store = ConversationStore(device: device)
-        guard store.createConversation(runtimeID: runtimeID, cwd: cwd, project: project) else { return nil }
         let tab = ConversationTab(store: store, start: {
             store.start(loadFirstConversation: false, newConversation: false)
         })
+        guard store.createConversation(runtimeID: runtimeID, cwd: cwd, project: project) else { return nil }
         insertTab(tab, at: afterShownTab)
         navigateComposer(to: tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation", tab: tab)
         objectWillChange.send()

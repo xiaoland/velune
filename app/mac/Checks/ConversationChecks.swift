@@ -33,8 +33,14 @@ import VeluneBindings
     let draft = window.focused
     precondition(draft !== source && source.store.loadedConversationID == "sample-0" && draft.store.isUnsentConversation
                  && window.tabCount == originalCount + 1 && window.composerContext().nextTurnRuntimeID == "sample-instance")
+    precondition(draft.store.loadedConversationID == draft.store.unsentContextID, "新建草稿与标签必须从第一次打开就使用同一个身份")
     let input = window.composer(for: draft)
-    input.restore("GROUP SHARED DRAFT", attachments: [])
+    let attachment = MacExecutionContext.admitted.stateDirectory.appendingPathComponent("group-draft.txt")
+    try! FileManager.default.createDirectory(at: attachment.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let bytes = Data("synthetic group attachment".utf8)
+    try! bytes.write(to: attachment)
+    defer { try? FileManager.default.removeItem(at: attachment) }
+    input.restore("GROUP SHARED DRAFT", attachments: [attachment])
     window.createConversation(in: .runtime(runtimeId: "sample-review"))
     precondition(window.focused === draft && window.composerContext().nextTurnRuntimeID == "sample-review")
     window.createConversation(in: .project(path: project.path))
@@ -43,7 +49,8 @@ import VeluneBindings
     let id = draft.store.loadedConversationID
     window.createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
     precondition(window.focused === draft && window.tabCount == originalCount + 1 && draft.store.loadedConversationID == id
-                 && window.composer(for: draft) === input && input.submission == "GROUP SHARED DRAFT")
+                 && window.composer(for: draft) === input && input.submission == "GROUP SHARED DRAFT"
+                 && input.attachments == [attachment] && (try? Data(contentsOf: attachment)) == bytes)
     window.createConversation(in: .project(path: nativeID))
     let expected = NewConversationProject(key: nativeID, name: "Native workspace", runtimeID: "sample-instance", directories: nativeFolders)
     precondition(draft.store.unsentConversation?.creationProject == expected && draft.store.loadedConversationWorkingDirectory == "/tmp/native-primary"
