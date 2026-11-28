@@ -58,6 +58,11 @@ import VeluneBindings
         }
         let device = DeviceStore(transport: transport)
         device.start()
+        // This check continues an existing configured runtime. Opening its
+        // history can invalidate a concurrent first list read.
+        guard until({ device.enabledRuntimeInstances.contains { $0.id == runtimeID } }) else {
+            fail("已配置的 Claude 运行时未出现在设备列表")
+        }
         let workspace = ConversationWindowModel(application: device, kind: .workspace)
         let source = workspace.focused
         source.store.start(loadFirstConversation: false, opening: sourceID)
