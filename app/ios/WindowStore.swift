@@ -42,6 +42,33 @@ private struct WindowRecord: Codable {
     var selected: ConversationTarget?
     var composers: [String: ComposerState] = [:]
     var drafts: [String: ConversationTarget] = [:]
+
+    static func decodeKnown(_ value: Any) throws -> Self {
+        guard let data = value as? Data else { throw CocoaError(.coderReadCorrupt) }
+        let record = try JSONDecoder().decode(Self.self, from: data)
+        let source = try JSONSerialization.jsonObject(with: data)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(record))
+        guard record.composers.values.allSatisfy({ $0.composerSchema == nil || $0.composerSchema == 2 }),
+              hasOnlyEncodedKeys(source, encoded: encoded) else {
+            throw CocoaError(.coderReadCorrupt, userInfo: [NSLocalizedDescriptionKey: "恢复点含未知版本或字段"])
+        }
+        return record
+    }
+
+    /// The shipped encoder omits nil optionals. Preserve records containing fields it
+    /// would discard, including explicit nulls whose field identity cannot be verified.
+    private static func hasOnlyEncodedKeys(_ source: Any, encoded: Any) -> Bool {
+        if let source = source as? [String: Any], let encoded = encoded as? [String: Any] {
+            return source.allSatisfy { key, value in
+                guard let saved = encoded[key] else { return false }
+                return hasOnlyEncodedKeys(value, encoded: saved)
+            }
+        }
+        if let source = source as? [Any], let encoded = encoded as? [Any] {
+            return source.count == encoded.count && zip(source, encoded).allSatisfy { hasOnlyEncodedKeys($0.0, encoded: $0.1) }
+        }
+        return true
+    }
 }
 
 @MainActor
@@ -49,6 +76,9 @@ final class DeviceStore: ObservableObject {
     let id: String
     let client: RemoteClient
     let directory: DeviceDirectory
+    private let defaults: UserDefaults
+    private let storageKey: String
+    private let canPersist: Bool
     @Published var peer: String? {
         didSet {
             if oldValue != peer { selected = nil; history.removeAll(); persist() }
@@ -76,14 +106,23 @@ final class DeviceStore: ObservableObject {
     var currentModel: ConversationModel? { selected.flatMap { models[key($0)] } }
     var deviceName: String { state?.contacts.first { $0.peerId == peer }?.name ?? "设备" }
 
-    init(route: WindowRoute, directory: DeviceDirectory) {
+    init(route: WindowRoute, directory: DeviceDirectory, defaults: UserDefaults = .standard) {
         id = route.id; client = RemoteClient(viewID: "ios-" + route.id); self.directory = directory
-        if let data = UserDefaults.standard.data(forKey: "workspace." + id) {
-            do {
-                let saved = try JSONDecoder().decode(WindowRecord.self, from: data)
-                peer = saved.peer; selected = saved.selected; composers = saved.composers; drafts = saved.drafts
-            } catch { ProblemStore.shared.record(error, source: "恢复窗口") }
-        } else { peer = route.peer; selected = route.target }
+        self.defaults = defaults
+        let storageKey = "workspace." + route.id
+        self.storageKey = storageKey
+        let routeRecord = WindowRecord(peer: route.peer, selected: route.target)
+        let saved: WindowRecord
+        do {
+            saved = try defaults.object(forKey: storageKey).map(WindowRecord.decodeKnown) ?? routeRecord
+            canPersist = true
+        } catch {
+            saved = routeRecord
+            canPersist = false
+            ProblemStore.shared.record("原恢复点已保留。此次打开的窗口可继续使用，但不会保存新的恢复点。\(error.localizedDescription)",
+                                       source: "恢复窗口", context: route.id)
+        }
+        peer = saved.peer; selected = saved.selected; composers = saved.composers; drafts = saved.drafts
         observation = directory.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         if let selected, peer != nil { _ = model(for: selected) }
     }
@@ -146,9 +185,10 @@ final class DeviceStore: ObservableObject {
         persist()
     }
     func persist() {
+        guard canPersist else { return }
         do {
             let data = try JSONEncoder().encode(WindowRecord(peer: peer, selected: selected, composers: composers, drafts: drafts))
-            UserDefaults.standard.set(data, forKey: "workspace." + id)
+            defaults.set(data, forKey: storageKey)
         } catch { ProblemStore.shared.record(error, source: "保存窗口", context: deviceName) }
     }
     func refresh() async { await directory.refresh() }

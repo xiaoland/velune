@@ -135,6 +135,42 @@ import Foundation
     }
     note("PASS workspace journal accepts current drafts and preserves snapshots with unsupported local or remote draft schemas")
 
+    do {
+        let batchHome = home.appendingPathComponent("workspace-batch-failure-check", isDirectory: true)
+        let batchSnapshots = batchHome.appendingPathComponent("mac-window-workspaces", isDirectory: true)
+        let firstReport = DispatchSemaphore(value: 1)
+        defer { firstReport.signal() }
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let batchFailures = DispatchSemaphore(value: 0)
+        let batchJournal = WindowWorkspaceJournal(directory: batchHome) { _ in
+            if firstReport.wait(timeout: .now()) == .success {
+                entered.signal()
+                precondition(release.wait(timeout: .now() + 10) == .success)
+            } else { batchFailures.signal() }
+        }
+        let failingIDs = (0..<3).map { _ in UUID().uuidString }
+        for id in failingIDs { batchJournal.save(localLayout, id: id) }
+        batchJournal.flush()
+        // Replace already validated files with directories so the atomic write fails.
+        for id in failingIDs {
+            let target = batchSnapshots.appendingPathComponent(id + ".json")
+            try! FileManager.default.removeItem(at: target)
+            try! FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        }
+        batchJournal.save(localLayout, id: failingIDs[0])
+        precondition(entered.wait(timeout: .now() + 10) == .success)
+        // The first report holds the drain until both failures and a healthy write are pending.
+        for id in failingIDs.dropFirst() { batchJournal.save(localLayout, id: id) }
+        let healthyID = UUID().uuidString
+        batchJournal.save(localLayout, id: healthyID)
+        release.signal()
+        batchJournal.flush()
+        for _ in 0..<2 { precondition(batchFailures.wait(timeout: .now()) == .success, "同批次中每个窗口均要尝试写入") }
+        precondition(batchJournal.restore(id: healthyID, recoverLatest: false) == localLayout)
+        note("PASS workspace journal attempts every window in a batch after individual write failures")
+    }
+
     let orderedDirectory = home.appendingPathComponent("workspace-legacy-order-check", isDirectory: true)
     let orderedJournal = WindowWorkspaceJournal(directory: orderedDirectory) { fatalError($0) }
     let orderedSnapshots = orderedDirectory.appendingPathComponent("mac-window-workspaces", isDirectory: true)
@@ -153,6 +189,11 @@ import Foundation
                                                ofItemAtPath: orderedSnapshots.appendingPathComponent(id + ".json").path)
     }
     let expectedDate = Date(timeIntervalSince1970: 20.0)
+    precondition(orderedJournal.restore(id: olderID, recoverLatest: false) == olderLayout,
+                 "系统重开的窗口按自己的 UUID 恢复，而不是选更近的窗口")
+    let unrelatedBackup = orderedSnapshots.appendingPathComponent(newerID + ".json.before-beta.bak")
+    precondition(!FileManager.default.fileExists(atPath: unrelatedBackup.path),
+                 "按 UUID 恢复不能读取或迁移其他窗口的恢复点")
     precondition(orderedJournal.restore(id: UUID().uuidString, recoverLatest: true) == newerLayout,
                  "未版本化快照首次恢复按原始修改时间选最新窗口")
     precondition(orderedJournal.restore(id: UUID().uuidString, recoverLatest: true) == newerLayout,

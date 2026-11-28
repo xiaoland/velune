@@ -8,6 +8,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [String: Data] = [:]
     private var scheduled = false
+    // Accessed only on queue, alongside file reads and writes.
     private var blockedIDs: Set<String> = []
     private var checkedIDs: Set<String> = []
 
@@ -42,79 +43,86 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             if batch.isEmpty { return }
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                for (id, data) in batch {
-                    guard prepareForWrite(id: id) else { continue }
-                    try data.write(to: directory.appendingPathComponent(id + ".json"), options: .atomic)
-                }
-            } catch { report(error.localizedDescription) }
+            } catch {
+                report(error.localizedDescription)
+                continue
+            }
+            for (id, data) in batch {
+                let target = directory.appendingPathComponent(id + ".json")
+                guard prepareForWrite(at: target, id: id) else { continue }
+                do { try data.write(to: target, options: .atomic) }
+                catch { report("无法保存恢复点 \(target.lastPathComponent)：\(error.localizedDescription)") }
+            }
         }
     }
     func flush() { queue.sync {} }
 
     func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil, aggregatingDevices: Bool = false) -> SavedWindowLayout? {
         guard let directory else { return nil }
-        flush()
-        do {
-            guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
-            let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])
-                .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil }
-            let snapshots = files.compactMap { url -> (id: String, date: Date, layout: SavedWindowLayout)? in
-                let fileID = url.deletingPathExtension().lastPathComponent
-                do {
-                    let bytes = try Data(contentsOf: url)
-                    var layout = try SavedWindowLayout.decodeKnown(bytes)
-                    try upgrade(&layout, from: bytes, at: url, id: fileID)
-                    if aggregatingDevices, kind == .workspace, device == nil, layout.windowKind != .single,
-                       case .remote(_)? = layout.windowDevice {
-                        try backupLegacy(Data(contentsOf: url), id: fileID, suffix: "before-aggregation")
-                        layout = layout.migratingToAggregatedWorkspace()
-                    }
-                    lock.withLock { _ = checkedIDs.insert(fileID) }
-                    return (fileID, try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast, layout)
-                } catch {
-                    block(url.deletingPathExtension().lastPathComponent)
-                    report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)；原文件保留，后续保存已禁用。升级到支持该格式的版本，或在确认后使用对应的 .bak 副本恢复")
-                    return nil
-                }
-            }.sorted { $0.date < $1.date }
+        return queue.sync {
             // Remote transports share this Mac's state directory. A local
             // arrangement must never resolve remote IDs against another core.
             let scope = SavedWindowLayout.ExecutionDevice(device)
+            let aggregate = aggregatingDevices && kind == .workspace && device == nil
             // A window's own entry may be a snapshot from before kinds were
             // recorded. Unqualified recovery must never borrow another kind.
-            let chosen = snapshots.first { $0.id == id && ($0.layout.windowDevice == nil || $0.layout.windowDevice == scope) && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
-                ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
-            // Shared content is authoritative. A window snapshot restores its cursor
-            // and any explicitly pending edit; never copy text between input identities.
-            return chosen?.layout
-        } catch { report(error.localizedDescription); return nil }
-    }
-
-    private func block(_ id: String) {
-        lock.withLock { _ = blockedIDs.insert(id) }
-    }
-
-    private func prepareForWrite(id: String) -> Bool {
-        guard let directory else { return false }
-        let state = lock.withLock { (blockedIDs.contains(id), checkedIDs.contains(id)) }
-        if state.0 { return false }
-        if state.1 { return true }
-        let target = directory.appendingPathComponent(id + ".json")
-        guard FileManager.default.fileExists(atPath: target.path) else {
-            lock.withLock { _ = checkedIDs.insert(id) }
-            return true
+            let exact = directory.appendingPathComponent(id + ".json")
+            if UUID(uuidString: id) != nil, FileManager.default.fileExists(atPath: exact.path),
+               let snapshot = readSnapshot(at: exact, aggregatingDevices: aggregate),
+               snapshot.layout.windowDevice == nil || snapshot.layout.windowDevice == scope,
+               snapshot.layout.windowKind == nil || snapshot.layout.windowKind == kind {
+                return snapshot.layout
+            }
+            guard recoverLatest, FileManager.default.fileExists(atPath: directory.path) else { return nil }
+            do {
+                let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])
+                let snapshots = files.compactMap { url -> (date: Date, layout: SavedWindowLayout)? in
+                    let fileID = url.deletingPathExtension().lastPathComponent
+                    guard url.pathExtension == "json", fileID != id, UUID(uuidString: fileID) != nil else { return nil }
+                    return readSnapshot(at: url, aggregatingDevices: aggregate)
+                }.sorted { $0.date < $1.date }
+                return snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind }?.layout
+            } catch { report(error.localizedDescription); return nil }
         }
+    }
+
+    private func readSnapshot(at url: URL, aggregatingDevices: Bool) -> (date: Date, layout: SavedWindowLayout)? {
+        let id = url.deletingPathExtension().lastPathComponent
         do {
-            let bytes = try Data(contentsOf: target)
-            var layout = try SavedWindowLayout.decodeKnown(bytes)
-            try upgrade(&layout, from: bytes, at: target, id: id)
-            lock.withLock { _ = checkedIDs.insert(id) }
+            var layout = try readLayout(at: url, id: id)
+            if aggregatingDevices, layout.windowKind != .single, case .remote(_)? = layout.windowDevice {
+                try backupLegacy(Data(contentsOf: url), id: id, suffix: "before-aggregation")
+                layout = layout.migratingToAggregatedWorkspace()
+            }
+            let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
+            checkedIDs.insert(id)
+            return (date, layout)
+        } catch {
+            blockedIDs.insert(id)
+            report("无法读取恢复点 \(url.lastPathComponent)：\(error.localizedDescription)；原文件保留，后续保存已禁用。升级到支持该格式的版本，或在确认后使用对应的 .bak 副本恢复")
+            return nil
+        }
+    }
+
+    private func prepareForWrite(at target: URL, id: String) -> Bool {
+        if blockedIDs.contains(id) { return false }
+        if checkedIDs.contains(id) { return true }
+        do {
+            if FileManager.default.fileExists(atPath: target.path) { _ = try readLayout(at: target, id: id) }
+            checkedIDs.insert(id)
             return true
         } catch {
-            block(id)
+            blockedIDs.insert(id)
             report("无法保存恢复点 \(id).json：\(error.localizedDescription)；原文件保留，恢复该窗口的写入已禁用")
             return false
         }
+    }
+
+    private func readLayout(at url: URL, id: String) throws -> SavedWindowLayout {
+        let bytes = try Data(contentsOf: url)
+        var layout = try SavedWindowLayout.decodeKnown(bytes)
+        try upgrade(&layout, from: bytes, at: url, id: id)
+        return layout
     }
 
     /// Known older formats (the pre-beta shape, floating tools) are backed
