@@ -43,7 +43,7 @@ static class ProviderFlows
             .Select(template => ((Choice)new Choice.Template(template), template.Name, template.Summary)));
         Group("API", page.Templates.Where(template => template.Kind == ProviderTemplateKind.Api)
             .Select(template => ((Choice)new Choice.Template(template), template.Name, template.Summary)));
-        Group("导入", [(new Choice.Import(), "从 Agent 运行时导入…", "读取 Codex 或 Claude Code 运行时已配置的提供商、模型与认证来源，逐项选择导入。")]);
+        Group("导入", new[] { ((Choice)new Choice.Import(), "从 Agent 运行时导入…", "读取 Codex 或 Claude Code 运行时已配置的提供商、模型与认证来源，逐项选择导入。") });
 
         var disclosure = new InfoBar { Severity = InfoBarSeverity.Warning, IsClosable = false };
         var panel = new StackPanel { Spacing = 12, MinWidth = 440 };

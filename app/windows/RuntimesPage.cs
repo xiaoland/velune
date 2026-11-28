@@ -50,7 +50,7 @@ sealed partial class RuntimesPage : UserControl
                 Edit(Chosen());
             }
         };
-        Content = Ui.ListPage("Agent 运行时", new StackPanel { Spacing = 8, Children = { failure, offer } }, list, [add, import, remove], [edit]);
+        Content = Ui.ListPage("Agent 运行时", new StackPanel { Spacing = 8, Children = { failure, offer } }, list, new[] { add, import, remove }, new[] { edit });
         ShowActions();
         Loaded += (_, _) => Reload();
     }

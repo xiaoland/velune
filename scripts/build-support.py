@@ -184,19 +184,34 @@ def bindings(args, verify=False):
         print(f"绑定已更新：{directory}")
 
 
-def source_snapshot(platform):
-    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
+def source_inputs(platform):
+    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", "LICENSE", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
              "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
+    if platform in ("macos", "windows"):
+        paths += ["THIRD_PARTY_NOTICES.md", "scripts/install-runtime-support.sh", "scripts/install-xurl.py"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
         paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
-                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c"]
+                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c", "scripts/install-xurl.sh"]
     elif platform == "windows":
-        paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
+        paths += ["global.json", ".gitattributes", "assets", "app/mac/Licenses", "scripts/build-windows.ps1", "scripts/render-windows-icon.ps1",
+                  "scripts/dotnet-licenses.py", "scripts/install-xurl.ps1"]
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
+    return paths
+
+
+def is_build_input(relative):
+    return (
+        relative.rsplit("/", 1)[-1] not in ("README.md", "AGENTS.md", "AGENTS.local.md")
+        and relative not in ("app/windows/PARITY.md", "app/windows/TDD.md")
+    )
+
+
+def source_snapshot(platform):
+    paths = source_inputs(platform)
     if is_git_checkout():
         output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
         selected = [os.fsdecode(name) for name in sorted(set(output.split(b"\0")) - {b""})]
@@ -219,7 +234,7 @@ def source_snapshot(platform):
     snapshot = {}
     for key in sorted(set(selected)):
         path = ROOT / key
-        if path.name in ("README.md", "AGENTS.md", "AGENTS.local.md"):
+        if not is_build_input(key):
             continue
         if path.is_symlink():
             info = path.lstat()
@@ -328,11 +343,13 @@ def artifact_identity(platform, profile, command, purpose="development"):
     elif platform == "android":
         apk, output_metadata = android_apk_output(profile)
         paths = ["target/android-native/arm64-v8a/libvelune_bindings.so", str(apk.relative_to(ROOT)), str(output_metadata.relative_to(ROOT))]
+    elif platform == "windows":
+        app = "target/windows-dev/Velune" if profile == "dev" else "target/windows/Velune"
+        paths = [f"target/host-rust/{native_profile}/velune_bindings.dll",
+                 f"{app}/Velune.exe", f"{app}/Velune.dll"]
     else:
-        paths = {
-            "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
-        }[platform]
+        paths = [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
+                 f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
 
 
@@ -434,4 +451,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Redirected Windows streams can otherwise use a legacy code page.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main())

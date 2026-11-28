@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -53,6 +54,16 @@ class BuildSupportChecks(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError): support.bindings(args)
         self.assertEqual((directory/'Probe.swift').read_text(), 'same interface')
         with self.assertRaises(ValueError): support.bindings(args, verify=True)
+
+        command = [sys.executable, '-B', support.__file__]
+        options = ['--library', str(library), '--language', 'cs', '--generator', str(generator), '--out-dir', str(directory)]
+        legacy_console = {**os.environ, 'PYTHONIOENCODING': 'cp1252'}
+        failure = subprocess.run([*command, 'verify-bindings', *options], capture_output=True, env=legacy_console)
+        self.assertEqual(failure.returncode, 1)
+        self.assertIn('构建失败', failure.stderr.decode('utf-8'))
+        library.write_text('new build')
+        success = subprocess.run([*command, 'bindgen', *options], check=True, capture_output=True, env=legacy_console)
+        self.assertIn('绑定已更新', success.stdout.decode('utf-8'))
     def test_packaged_artifact_is_part_of_pair(self):
         directory=self.root/'generated'; directory.mkdir(); (directory/'Probe.swift').write_text('interface')
         artifact=self.root/'packaged.so'; artifact.write_text('paired')
@@ -60,6 +71,25 @@ class BuildSupportChecks(unittest.TestCase):
         self.assertTrue(support.generated_valid(directory,stamp))
         artifact.write_text('wrong native copy')
         self.assertFalse(support.generated_valid(directory,stamp))
+    def test_windows_receipt_detects_a_managed_assembly_change_with_the_same_apphost(self):
+        old_root = support.ROOT
+        support.ROOT = self.root
+        try:
+            for profile, output in [('dev', 'windows-dev'), ('release', 'windows')]:
+                with self.subTest(profile=profile):
+                    app = Path('target') / output / 'Velune'
+                    (self.root / app).mkdir(parents=True)
+                    executable = app / 'Velune.exe'
+                    assembly = app / 'Velune.dll'
+                    (self.root / executable).write_text('unchanged apphost')
+                    (self.root / assembly).write_text('old managed application')
+                    before = support.artifact_identity('windows', profile, ())
+                    (self.root / assembly).write_text('new managed application')
+                    after = support.artifact_identity('windows', profile, ())
+                    self.assertEqual(before[executable.as_posix()], after[executable.as_posix()])
+                    self.assertNotEqual(before[assembly.as_posix()], after[assembly.as_posix()])
+        finally:
+            support.ROOT = old_root
     def test_changed_input_cannot_publish_current_success(self):
         old_root, old_state = support.ROOT, support.STATE
         support.ROOT, support.STATE = self.root, self.root/'target/build-state'

@@ -170,7 +170,8 @@ public sealed partial class WorkspaceWindow
         }
         var commands = Commands;
         Section("命令", Commands.Table.Where(entry => commands.Shortcut(entry.Key).Length > 0).Select(entry => (commands.Shortcut(entry.Key), entry.Value.Name)));
-        Section("输入区", [
+        Section("输入区", new[]
+        {
             (commands.SendKey, "发送；运行中加入发送队列"),
             (commands.SteerKey, "插入本轮；运行时不支持时加入队列"),
             (commands.NewLineKey, "换行"),
@@ -178,16 +179,18 @@ public sealed partial class WorkspaceWindow
             ("/", "Velune 命令"),
             ("@", "工作目录中的文件"),
             ("Esc", "关闭候选列表，否则停止生成"),
-        ]);
-        Section("命令面板", [("↑ ↓", "选择"), ("Enter", "执行"), ("Ctrl+Enter", "在新标签页打开会话"), ("Esc", "关闭")]);
-        Section("审批与提问卡片", [
+        });
+        Section("命令面板", new[] { ("↑ ↓", "选择"), ("Enter", "执行"), ("Ctrl+Enter", "在新标签页打开会话"), ("Esc", "关闭") });
+        Section("审批与提问卡片", new[]
+        {
             ("1–9", "选择对应的选项"),
             ("Ctrl+Backspace", "取消请求"),
             ("Enter", "回答完毕后提交提问"),
             ("Tab", "在字段之间移动"),
             ("Esc", "回到输入区"),
-        ]);
-        Section("消息列表", [
+        });
+        Section("消息列表", new[]
+        {
             ("↑ ↓", "在消息之间移动"),
             ("Alt+↑ ↓", "在用户消息之间跳转"),
             ("Home End", "第一条、最后一条"),
@@ -195,8 +198,8 @@ public sealed partial class WorkspaceWindow
             ("Ctrl+C", "拷贝所选消息"),
             ("Ctrl+Shift+C", "拷贝其中最后一个代码块"),
             ("E", "编辑所选的用户消息"),
-        ]);
-        Section("会话列表", [("↑ ↓", "选择并打开会话"), ("F2", "重命名"), ("Delete", "删除，需确认"), ("输入文字", "转到搜索框")]);
+        });
+        Section("会话列表", new[] { ("↑ ↓", "选择并打开会话"), ("F2", "重命名"), ("Delete", "删除，需确认"), ("输入文字", "转到搜索框") });
         var dialog = new ContentDialog
         {
             Title = "快捷键速查",

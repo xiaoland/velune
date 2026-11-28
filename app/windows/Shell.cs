@@ -85,7 +85,7 @@ sealed class Shell
             .Select(command => (Command: command, Keys: Commands.Bound(command)))
             .Where(entry => entry.Keys != null)
             .ToList();
-        var failed = Native.SetHotKeys(hotKeyHost, [.. bound.Select(entry => entry.Keys!.Value)], index =>
+        var failed = Native.SetHotKeys(hotKeyHost, bound.Select(entry => entry.Keys!.Value).ToArray(), index =>
             dispatcher.TryEnqueue(() => GlobalPressed(bound[index].Command)));
         Commands.GlobalFailed.Clear();
         foreach (var index in failed)

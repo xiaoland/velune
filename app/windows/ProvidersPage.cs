@@ -51,7 +51,7 @@ sealed class ProvidersPage : UserControl
                 Edit(Chosen());
             }
         };
-        providerList = Ui.ListPage("AI提供商", notice, list, [add, remove], [edit]);
+        providerList = Ui.ListPage("AI提供商", notice, list, new[] { add, remove }, new[] { edit });
         templateList = new ModelTemplatesList(this);
 
         tabs.Items.Add(new SelectorBarItem { Text = "提供商", IsSelected = true });

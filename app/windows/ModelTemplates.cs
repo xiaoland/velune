@@ -30,7 +30,7 @@ sealed class ModelTemplatesList : UserControl
                 EditChosen();
             }
         };
-        Content = Ui.ListPage("模型模板", null, list, [add, remove], [edit]);
+        Content = Ui.ListPage("模型模板", null, list, new[] { add, remove }, new[] { edit });
         ShowActions();
     }
 
