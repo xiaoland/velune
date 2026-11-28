@@ -34,19 +34,26 @@ private struct ProviderAccountReader: View {
 
     var body: some View {
         Section {
+            if let problem {
+                HStack(alignment: .firstTextBaseline) {
+                    Label(problem, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    Button("重试", action: refresh).disabled(reading)
+                }
+            }
             if let status {
-                ProviderAccountSnapshot(status: status)
+                ProviderAccountSnapshot(status: status, retry: problem == nil && !reading ? refresh : nil)
             } else if reading {
                 ProgressView("正在读取账户…")
             } else if problem == nil {
                 Text("尚未取得账户快照").foregroundStyle(.secondary)
             }
-            if let problem { Label(problem, systemImage: "exclamationmark.triangle").textSelection(.enabled) }
         } header: {
             HStack {
                 Text("订阅账户")
                 Spacer()
-                Button(reading ? "正在读取…" : "刷新") { refreshID += 1 }.disabled(reading).controlSize(.small)
+                Button("刷新账户", systemImage: "arrow.clockwise", action: refresh)
+                    .labelStyle(.iconOnly).controlSize(.small).disabled(reading).help("刷新订阅账户")
             }
         } footer: {
             Text("credits 按提供商原始单位显示；重置权益是可用次数，均不计入 Token 或费用，也不影响使用上限。")
@@ -54,9 +61,10 @@ private struct ProviderAccountReader: View {
         }
         .task(id: "\(providerID):\(refreshID)") { await read(refresh: refreshID > 0) }
     }
+    private func refresh() { refreshID += 1 }
+
     private func read(refresh: Bool) async {
         reading = true
-        problem = nil
         defer { if !Task.isCancelled { reading = false } }
         // Refresh once. Subsequent bounded reads only follow the core's cached job.
         for attempt in 0..<24 {
@@ -66,6 +74,7 @@ private struct ProviderAccountReader: View {
             guard !Task.isCancelled else { return }
             switch result {
             case .success(let value):
+                problem = nil
                 status = value
                 if !value.refreshing { return }
             case .failure(let error): problem = error.localizedDescription; return
@@ -78,6 +87,7 @@ private struct ProviderAccountReader: View {
 
 struct ProviderAccountSnapshot: View {
     let status: ProviderAccountStatus
+    var retry: (() -> Void)? = nil
     var body: some View {
         Group {
             LabeledContent("状态", value: ProviderReportFormatting.accountState(status.state))
@@ -91,8 +101,14 @@ struct ProviderAccountSnapshot: View {
                 Text("已过期：" + status.staleSources.map(ProviderReportFormatting.accountFailureSource).joined(separator: "、"))
                     .uiFont(.caption).foregroundStyle(.secondary)
             }
-            ForEach(Array(status.failures.enumerated()), id: \.offset) { _, failure in
-                Label("\(ProviderReportFormatting.accountFailureSource(failure.source))：\(failure.message)", systemImage: "exclamationmark.triangle").textSelection(.enabled)
+            ForEach(Array(status.failures.enumerated()), id: \.offset) { index, failure in
+                HStack(alignment: .firstTextBaseline) {
+                    Label("\(ProviderReportFormatting.accountFailureSource(failure.source))：\(failure.message)", systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                    if index == 0, let retry, status.state == .failed || status.state == .partialFailure {
+                        Spacer(minLength: 8)
+                        Button("重试", action: retry)
+                    }
+                }
             }
         }
     }

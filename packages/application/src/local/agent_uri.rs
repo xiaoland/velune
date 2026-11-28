@@ -5,7 +5,7 @@ use crate::{AgentUriResolution, HistoryFailure};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct AgentUri {
-    pub provider: String,
+    pub family: UriFamily,
     pub session: Option<String>,
     pub child: Option<String>,
     pub query: Option<String>,
@@ -23,12 +23,55 @@ fn uuid(value: &str) -> bool {
         })
 }
 
-pub(super) fn provider(kind: RuntimeKind) -> Option<&'static str> {
-    match kind {
-        RuntimeKind::Codex166 => Some("codex"),
-        RuntimeKind::ClaudeCode => Some("claude"),
-        RuntimeKind::Pi => Some("pi"),
-        RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
+/// The Harness families an `agents://` address can name. Parsing the address
+/// selects one, and every later decision matches on it exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UriFamily {
+    Codex,
+    Claude,
+    Pi,
+}
+
+impl UriFamily {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
+            "pi" => Some(Self::Pi),
+            _ => None,
+        }
+    }
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Pi => "pi",
+        }
+    }
+
+    pub(super) fn of(kind: RuntimeKind) -> Option<Self> {
+        match kind {
+            RuntimeKind::Codex166 => Some(Self::Codex),
+            RuntimeKind::ClaudeCode => Some(Self::Claude),
+            RuntimeKind::Pi => Some(Self::Pi),
+            RuntimeKind::DeepSeek | RuntimeKind::Acp => None,
+        }
+    }
+
+    /// The normalized child segment, or `None` when this family has no
+    /// child address of that shape. Claude children may carry the `agent-`
+    /// file prefix; Pi entries are addressed only through the xurl CLI.
+    fn child(self, raw: &str) -> Option<String> {
+        match self {
+            Self::Codex => uuid(raw).then(|| raw.to_ascii_lowercase()),
+            Self::Claude => (raw.len() <= 128
+                && raw
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+            .then(|| raw.strip_prefix("agent-").unwrap_or(raw).to_string()),
+            Self::Pi => None,
+        }
     }
 }
 
@@ -42,16 +85,16 @@ impl AgentUri {
         }
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let parts: Vec<_> = path.split('/').collect();
-        if !matches!(parts.first(), Some(&"codex" | &"claude" | &"pi")) {
+        let Some(family) = parts.first().copied().and_then(UriFamily::parse) else {
             return Err(RuntimeError::Unsupported("Velune 地址入口目前支持 codex、claude、pi；其他 Harness、路径与角色查询请使用官方 xurl CLI".into()));
-        }
+        };
         if parts.len() > 3 || parts.iter().any(|part| part.is_empty()) {
             return Err(RuntimeError::invalid(
                 "会话地址应为 agents://Harness/会话ID[/子会话ID]",
             ));
         }
         let mut result = Self {
-            provider: parts[0].into(),
+            family,
             session: None,
             child: None,
             query: None,
@@ -66,26 +109,12 @@ impl AgentUri {
             result.session = Some(id.to_ascii_lowercase());
         }
         if let Some(child) = parts.get(2) {
-            let valid = match result.provider.as_str() {
-                "codex" => uuid(child),
-                "claude" => {
-                    child.len() <= 128
-                        && child
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                }
-                _ => false,
-            };
-            if !valid {
+            let Some(child) = family.child(child) else {
                 return Err(RuntimeError::invalid(
                     "此子会话地址不受支持；Pi 条目地址请使用 xurl CLI",
                 ));
-            }
-            result.child = Some(if result.provider == "codex" {
-                child.to_ascii_lowercase()
-            } else {
-                child.strip_prefix("agent-").unwrap_or(child).to_string()
-            });
+            };
+            result.child = Some(child);
             if result.child.as_deref() == Some("") {
                 return Err(RuntimeError::invalid("子会话 ID 不能为空"));
             }
@@ -140,24 +169,22 @@ impl CoreRuntime {
             return None;
         }
         let runtime = self.runtime_instance(&summary.runtime_id).ok()?;
-        let family = provider(runtime.type_id)?;
+        let family = UriFamily::of(runtime.type_id)?;
         let prefix = format!("{}:", runtime.id);
         let native = summary.id.strip_prefix(&prefix)?;
-        let id = if family == "pi" {
-            self.indexed_session_id(runtime, &summary.id)?
-        } else if family == "codex" {
-            match summary
+        let id = match family {
+            UriFamily::Pi => self.indexed_session_id(runtime, &summary.id)?,
+            UriFamily::Codex => match summary
                 .parent_conversation_id
                 .as_deref()
                 .and_then(|id| id.strip_prefix(&prefix))
             {
                 Some(parent) => format!("{parent}/{native}"),
                 None => native.into(),
-            }
-        } else {
-            native.replace("/agent-", "/")
+            },
+            UriFamily::Claude => native.replace("/agent-", "/"),
         };
-        let uri = format!("agents://{family}/{id}");
+        let uri = format!("agents://{}/{id}", family.name());
         AgentUri::parse(&uri).ok().map(|_| uri)
     }
 
@@ -170,7 +197,7 @@ impl CoreRuntime {
         let runtimes: Vec<_> = self
             .runtime_instances
             .iter()
-            .filter(|r| r.enabled && provider(r.type_id) == Some(uri.provider.as_str()))
+            .filter(|r| r.enabled && UriFamily::of(r.type_id) == Some(uri.family))
             .filter(|r| runtime_id.is_none_or(|id| r.id == id))
             .collect();
         if runtimes.is_empty() {
@@ -232,7 +259,7 @@ impl CoreRuntime {
         runtime: &RuntimeInstance,
     ) -> Result<Vec<ListedSource>, RuntimeError> {
         self.index_history(runtime)?;
-        if uri.provider == "codex"
+        if uri.family == UriFamily::Codex
             && let Some(session) = &uri.session
         {
             let native = uri.child.as_ref().unwrap_or(session);
@@ -265,7 +292,7 @@ impl CoreRuntime {
         }
         let entries = self.indexed(runtime);
         let ids: Vec<String> = if let Some(session) = &uri.session {
-            if uri.provider == "pi" {
+            if uri.family == UriFamily::Pi {
                 entries
                     .iter()
                     .filter(|entry| {

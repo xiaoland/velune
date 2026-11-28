@@ -442,7 +442,7 @@ impl CoreRuntime {
             let Some(origin) = link.segments.first() else {
                 continue;
             };
-            let mut summary = original
+            let summary = original
                 .iter()
                 .find(|s| s.id == origin.native_conversation_id)
                 .cloned()
@@ -1004,7 +1004,7 @@ impl CoreRuntime {
             mut executions,
             sealed_sources,
             mut work_notification_ids,
-            mut retention,
+            retention,
         ) = if let Some(projection) = &self.session.logical_projection {
             // Re-read every sealed segment before carrying context into another runtime.
             let (_, checked) = self.read_link(&projection.link)?;
@@ -1297,7 +1297,7 @@ impl CoreRuntime {
             mut executions,
             sealed_sources,
             mut work_notification_ids,
-            mut retention,
+            retention,
         ) = if let Some(projection) = &self.session.logical_projection {
             // Re-read every sealed segment before carrying context into another runtime.
             let (_, checked) = self.read_link(&projection.link)?;

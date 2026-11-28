@@ -49,6 +49,24 @@ pub(crate) fn edit_provider(
             authentication: edit,
             quota_authentication: quota_edit,
         } => {
+            if cfg!(windows)
+                && matches!(
+                    &draft.execution_backend,
+                    ExecutionBackend::AntigravityCli {
+                        ssh_destination: Some(_),
+                        ..
+                    }
+                )
+            {
+                return Err(Error::invalid(crate::antigravity_cli::SSH_UNSUPPORTED));
+            }
+            if draft.authentication_source == ProviderAuthenticationSource::AntigravityCli
+                && matches!(edit, AuthenticationEdit::Clear)
+            {
+                return Err(Error::invalid(
+                    "Antigravity 登录由官方 agy 管理，可删除此提供商来解除绑定",
+                ));
+            }
             if draft.id.is_empty() {
                 draft.id = crate::new_record_key();
             }
@@ -82,12 +100,19 @@ pub(crate) fn edit_provider(
                         account_label: None,
                         identity: None,
                     },
+                    ProviderAuthenticationSource::AntigravityCli => {
+                        AuthenticationMaterial::AntigravityCli
+                    }
                     ProviderAuthenticationSource::RuntimeProvider => {
                         return Err(Error::invalid("运行时认证来源只能由提供商导入建立"));
                     }
                 };
             }
             let changed = reset
+                || (matches!(
+                    authentication.material,
+                    AuthenticationMaterial::AntigravityCli
+                ) && previous.is_some_and(|p| p.execution_backend != draft.execution_backend))
                 || (target_changed
                     && matches!(
                         authentication.material,
@@ -175,6 +200,12 @@ pub(crate) fn edit_provider(
                 billing: previous.map(|p| p.billing.clone()).unwrap_or_default(),
                 models,
                 quota_limits: draft.quota_limits,
+                codex_client_version: draft
+                    .codex_client_version
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|version| !version.is_empty())
+                    .map(str::to_owned),
             };
             if provider.billing.settings.as_ref().is_some_and(|settings| {
                 crate::billing::supported(&provider) != Some(settings.service)
@@ -292,6 +323,189 @@ pub(crate) fn summaries(gateways: &[GatewayConfig]) -> Vec<GatewaySummary> {
     gateways.iter().map(GatewaySummary::from).collect()
 }
 
+#[cfg(test)]
+mod antigravity_tests {
+    use super::*;
+    use crate::authentication_resolver::ProviderResolver;
+    use serde_json::json;
+    use velune_gateway::{CredentialMaterial, CredentialResolutionError, CredentialTarget};
+
+    fn draft(id: &str, binary: &str) -> ProviderDraft {
+        let template = crate::provider_templates()
+            .into_iter()
+            .find(|template| template.id == "antigravityCliSubscription")
+            .unwrap();
+        ProviderDraft {
+            id: id.into(),
+            name: id.into(),
+            protocol: template.protocol,
+            endpoint: template.endpoint,
+            execution_backend: ExecutionBackend::AntigravityCli {
+                binary: std::env::temp_dir().join(binary).to_str().unwrap().into(),
+                ssh_destination: None,
+            },
+            request_profile: template.request_profile,
+            authentication_source: template.authentication_source,
+            quota_source: template.quota_source,
+            models: Vec::new(),
+            quota_limits: Vec::new(),
+            codex_client_version: None,
+        }
+    }
+
+    fn save(gateways: &mut Vec<GatewayConfig>, provider: ProviderDraft) -> Result<(), Error> {
+        edit_provider(
+            gateways,
+            "default",
+            ProviderEdit::Save {
+                provider,
+                authentication: AuthenticationEdit::Keep,
+                quota_authentication: None,
+            },
+            &|_| unreachable!(),
+        )
+    }
+
+    #[test]
+    fn antigravity_snapshot_binds_to_the_saved_target_without_credentials() {
+        let mut gateways = Vec::new();
+        let original = draft("agy", "fixture-agy");
+        save(&mut gateways, original.clone()).unwrap();
+        let saved = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(
+            saved["providers"][0]["authentication"],
+            json!({"material": {"kind": "antigravityCli"}, "generation": 1}),
+        );
+        assert_eq!(
+            saved["providers"][0]["executionBackend"],
+            json!(original.execution_backend)
+        );
+        let loaded: GatewayConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded, gateways[0]);
+        let summary = GatewaySummary::from(&loaded).providers.remove(0);
+        assert_eq!(
+            summary.authentication_source,
+            ProviderAuthenticationSource::AntigravityCli
+        );
+        assert!(summary.authentication.configured);
+        assert!(summary.authentication.account_label.is_none());
+        assert!(summary.authentication.actions.is_empty());
+
+        let options = crate::Options {
+            home_directory: std::env::temp_dir(),
+            resources_directory: std::env::temp_dir(),
+        };
+        let old_reference = loaded.to_gateway_config().unwrap().providers[0]
+            .credential_ref
+            .clone()
+            .unwrap();
+        let old_resolver = ProviderResolver::capture(&loaded, &options);
+        save(&mut gateways, draft("agy", "fixture-agy-updated")).unwrap();
+        let new_reference = gateways[0].to_gateway_config().unwrap().providers[0]
+            .credential_ref
+            .clone()
+            .unwrap();
+        assert_ne!(old_reference, new_reference);
+        let new_resolver = ProviderResolver::capture(&gateways[0], &options);
+        let target = CredentialTarget {
+            protocol: Protocol::Messages,
+            endpoint: String::new(),
+            execution_backend: velune_gateway::ExecutionBackend::AntigravityCli,
+            request_profile: velune_gateway::RequestProfile::Native,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            assert!(matches!(
+                old_resolver
+                    .resolve(new_reference.clone(), target.clone())
+                    .await,
+                Err(CredentialResolutionError::Unavailable)
+            ));
+            assert!(matches!(
+                new_resolver.resolve(old_reference, target.clone()).await,
+                Err(CredentialResolutionError::Unavailable)
+            ));
+            let resolved = new_resolver.resolve(new_reference, target).await.unwrap();
+            assert!(matches!(
+                resolved.material,
+                CredentialMaterial::AntigravityCli { .. }
+            ));
+        });
+    }
+
+    #[test]
+    fn antigravity_gateway_rejects_duplicate_local_targets_and_accepts_distinct_ssh_targets() {
+        let mut gateways = Vec::new();
+        save(&mut gateways, draft("agy-local", "fixture-agy")).unwrap();
+        assert!(save(&mut gateways.clone(), draft("duplicate", "other-agy")).is_err());
+        let remote = |id: &str, destination: &str| {
+            let mut provider = draft(id, "fixture-agy");
+            provider.execution_backend = ExecutionBackend::AntigravityCli {
+                binary: "/tools/agy".into(),
+                ssh_destination: Some(destination.into()),
+            };
+            provider
+        };
+        if cfg!(windows) {
+            assert!(save(&mut gateways, remote("agy-remote", "alice@host")).is_err());
+            return;
+        }
+        save(&mut gateways, remote("agy-alice", "alice@host")).unwrap();
+        save(&mut gateways, remote("agy-bob", "bob@host")).unwrap();
+        assert!(save(&mut gateways.clone(), remote("duplicate", "bob@host")).is_err());
+        for invalid in [
+            "--flag",
+            "@host",
+            "user@host@extra",
+            "ssh://host",
+            "host\nextra",
+        ] {
+            assert!(save(&mut gateways.clone(), remote("invalid", invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn antigravity_quota_source_is_fixed_and_legacy_none_remains_readable() {
+        let mut gateways = Vec::new();
+        let mut provider = draft("agy", "fixture-agy");
+        assert_eq!(
+            provider.quota_source,
+            ProviderQuotaSource::AntigravityCliUsage
+        );
+        provider.quota_source = ProviderQuotaSource::None;
+        save(&mut gateways, provider.clone()).unwrap();
+        let saved = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(saved["providers"][0]["quotaSource"], "none");
+        let loaded: GatewayConfig = serde_json::from_value(saved).unwrap();
+        loaded.validate().unwrap();
+        assert_eq!(
+            GatewaySummary::from(&loaded).providers[0].quota_source,
+            ProviderQuotaSource::AntigravityCliUsage,
+        );
+
+        let mut limited = provider.clone();
+        limited.quota_source = ProviderQuotaSource::AntigravityCliUsage;
+        limited.quota_limits.push(QuotaLimit {
+            window_id: "fixture".into(),
+            max_used_percent: 95,
+        });
+        save(&mut gateways, limited).unwrap();
+        assert_eq!(
+            gateways[0].to_gateway_config().unwrap().providers[0].quota_limits[0].window_id,
+            "fixture",
+        );
+
+        provider.execution_backend = ExecutionBackend::Http;
+        provider.endpoint = "https://quota-fixture.invalid".into();
+        provider.authentication_source = ProviderAuthenticationSource::ApiKey;
+        provider.quota_source = ProviderQuotaSource::AntigravityCliUsage;
+        assert!(save(&mut gateways, provider).is_err());
+    }
+}
+
 impl From<&GatewayConfig> for GatewaySummary {
     fn from(g: &GatewayConfig) -> Self {
         Self {
@@ -308,7 +522,7 @@ impl From<&GatewayConfig> for GatewaySummary {
                     execution_backend: p.execution_backend.clone(),
                     request_profile: p.request_profile,
                     authentication_source: p.authentication.source(),
-                    quota_source: p.quota_source,
+                    quota_source: p.effective_quota_source(),
                     quota_authentication: p
                         .quota_authentication
                         .description(p.authentication.generation),
@@ -330,9 +544,107 @@ impl From<&GatewayConfig> for GatewaySummary {
                     },
                     quota_limits: p.quota_limits.clone(),
                     models: p.models.iter().map(Into::into).collect(),
+                    codex_client_version: p.codex_client_version.clone(),
                 })
                 .collect(),
             routes: g.routes.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod codex_client_version_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn codex_draft() -> ProviderDraft {
+        let template = crate::provider_templates()
+            .into_iter()
+            .find(|template| template.id == "codexSubscription")
+            .unwrap();
+        ProviderDraft {
+            id: "subscription".into(),
+            name: "Subscription".into(),
+            protocol: template.protocol,
+            endpoint: template.endpoint,
+            execution_backend: template.execution_backend,
+            request_profile: template.request_profile,
+            authentication_source: template.authentication_source,
+            quota_source: template.quota_source,
+            models: vec![],
+            quota_limits: vec![],
+            codex_client_version: None,
+        }
+    }
+
+    fn save(gateways: &mut Vec<GatewayConfig>, draft: &ProviderDraft) -> Result<(), Error> {
+        edit_provider(
+            gateways,
+            "default",
+            ProviderEdit::Save {
+                provider: draft.clone(),
+                authentication: AuthenticationEdit::Keep,
+                quota_authentication: None,
+            },
+            &|_| unreachable!(),
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn codex_version_defaults_and_persists_without_changing_login() {
+        let mut gateways = vec![];
+        let mut draft = codex_draft();
+        save(&mut gateways, &draft).unwrap();
+        let login = gateways[0].providers[0].authentication.clone();
+        let automatic = serde_json::to_value(&gateways[0]).unwrap();
+
+        assert!(
+            automatic["providers"][0]
+                .get("codexClientVersion")
+                .is_none()
+        );
+        let old_config: GatewayConfig = serde_json::from_value(automatic.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&old_config).unwrap(), automatic);
+        assert_eq!(
+            old_config.to_gateway_config().unwrap().providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some(crate::default_codex_client_version()),
+        );
+
+        draft.codex_client_version = Some(" 0.166.0 ".into());
+        save(&mut gateways, &draft).unwrap();
+        let stored = serde_json::to_string(&gateways[0]).unwrap();
+        let reloaded: GatewayConfig = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            GatewaySummary::from(&reloaded).providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some("0.166.0"),
+        );
+        assert_eq!(
+            reloaded.to_gateway_config().unwrap().providers[0]
+                .codex_client_version
+                .as_deref(),
+            Some("0.166.0"),
+        );
+
+        draft.codex_client_version = Some(" ".into());
+        save(&mut gateways, &draft).unwrap();
+        let current: Value = serde_json::to_value(&gateways[0]).unwrap();
+        assert_eq!(current, automatic);
+        assert_eq!(gateways[0].providers[0].authentication, login);
+    }
+
+    #[test]
+    fn invalid_codex_version_is_rejected() {
+        let mut gateways = vec![];
+        let mut draft = codex_draft();
+        save(&mut gateways, &draft).unwrap();
+        for value in ["0.167", "0.167.0-preview", "0.167.0\r\nVersion: 1.0.0"] {
+            draft.codex_client_version = Some(value.into());
+            assert!(save(&mut gateways.clone(), &draft).is_err());
         }
     }
 }
@@ -354,6 +666,7 @@ mod quota_composition_tests {
             endpoint: template.endpoint,
             execution_backend: template.execution_backend,
             request_profile: template.request_profile,
+            codex_client_version: None,
             authentication_source: template.authentication_source,
             quota_source: template.quota_source,
             models: vec![],
@@ -420,6 +733,7 @@ mod quota_composition_tests {
                 endpoint: "https://api.kimi.com/coding/".into(),
                 execution_backend: template.execution_backend.clone(),
                 request_profile: template.request_profile,
+                codex_client_version: None,
                 authentication_source: template.authentication_source,
                 quota_source: template.quota_source,
                 models: vec![],

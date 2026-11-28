@@ -11,9 +11,14 @@ extension ComposerQuotaEntry: Identifiable {
         }
     }
     var quota: QuotaObservation { observation }
-    var windows: [QuotaWindowObservation] { observation.windows }
+    var windows: [QuotaWindowObservation] { observation.windows.filter(\.appliesToAnyModel) }
     var isRecorded: Bool { if case .conversationRecord = origin { true } else { false } }
     func limit(for windowID: String) -> UInt8? { limits.first { $0.windowId == windowID }?.maxUsedPercent }
+    func isCurrent(_ window: QuotaWindowObservation, at time: Date) -> Bool {
+        guard quota.freshness == .fresh else { return false }
+        guard window.observedAtMs != nil, window.expiresAtMs != nil else { return true }
+        return window.isCurrent(at: time)
+    }
 }
 
 extension ComposerQuotaCredits {

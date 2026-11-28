@@ -3,6 +3,16 @@ use super::*;
 use crate::conversation::{ConversationActions, ConversationSnapshot, Message, MessageBlock};
 use std::collections::BTreeSet;
 use velune_agent_runtime::creation::{DataRetention, Retained};
+
+pub(super) fn history_failure(
+    runtime: &RuntimeInstance,
+    error: velune_agent_runtime::history::HistoryError,
+) -> RuntimeError {
+    let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
+    tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
+    RuntimeError::History(error)
+}
+
 pub(super) fn runtime_context(runtime: &RuntimeInstance) -> String {
     format!(
         "运行时 {}（id={}，type={}）；binary={}；nodeBinary={}；agentDir={}；sessionDir={}",
@@ -143,7 +153,7 @@ pub(super) struct HistoryArchive {
 pub(super) struct IndexedConversation {
     pub(super) id: String,
     /// The native record's state; a read summary holds while it is unchanged.
-    identity: String,
+    pub(super) identity: String,
     /// What the files tell before the session is read.
     pub(super) hint: ConversationHint,
     pub(super) state: EntryState,
@@ -182,6 +192,25 @@ pub(super) struct HistorySnapshot {
     pub(super) retention: DataRetention,
 }
 impl HistorySnapshot {
+    fn set_native_input(snapshot: &mut ConversationSnapshot, available: bool) {
+        // The next-turn model is supplied on submission. Native child
+        // conversations cannot accept direct user input.
+        snapshot.actions.can_send =
+            available && snapshot.conversation.parent_conversation_id.is_none();
+    }
+
+    pub(super) fn detach_execution(&mut self, can_continue: bool) {
+        Self::set_native_input(&mut self.snapshot, can_continue);
+        self.actions.input_access = Default::default();
+        self.actions.can_cancel = false;
+        if matches!(self.run_state, RunState::Running | RunState::Stopping) {
+            self.run_state = RunState::Failed;
+            self.executions.finish(None);
+        }
+        self.pending_interactions
+            .retain(|interaction| !interaction.requires_live_reply());
+    }
+
     pub(super) fn into_retained(self) -> Retained<ConversationSnapshot> {
         Retained::from_parts(self.snapshot, self.retention)
     }
@@ -332,14 +361,18 @@ impl HistoryRead {
                 pi_history = Some(saved);
                 Some(pi_history_summary(runtime_id, summary))
             }
-            (None, Reader::Native(config)) if config.provider == "codex" => {
+            (None, Reader::Native(config))
+                if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 =>
+            {
                 let ((summary, saved), guard) =
                     history::read_codex_with_summary(config, runtime_id, &native_id)?.into_parts();
                 retention = retention.merge(guard);
                 native_history = Some(saved);
                 Some(summary)
             }
-            (None, Reader::Native(config)) if config.provider == "claude-code" => {
+            (None, Reader::Native(config))
+                if config.kind == velune_agent_runtime::version::RuntimeKind::ClaudeCode =>
+            {
                 let ((summary, saved), guard) =
                     history::read_claude_with_summary(config, runtime_id, &native_id)?.into_parts();
                 retention = retention.merge(guard);
@@ -450,9 +483,7 @@ impl HistoryRead {
             }
             Reader::Acp(_) => unreachable!("ACP history has its own snapshot"),
         }
-        // The next-turn model is supplied when the user submits. Sub-agent
-        // conversations remain read-only.
-        snapshot.actions.can_send = snapshot.conversation.parent_conversation_id.is_none();
+        HistorySnapshot::set_native_input(&mut snapshot, true);
         Ok(LoadedHistory {
             source,
             prepared_resources,
@@ -655,73 +686,10 @@ impl CoreRuntime {
             rpc_entry: None,
             models_path: None,
             selection_file: None,
+            model_compaction_reserves: Default::default(),
             gateway_token: None,
         })
     }
-    /// Index a runtime's native history. Read summaries are kept for records
-    /// that did not change; the index is also the source-scoped membership
-    /// used to open a conversation without listing again.
-    pub(super) fn index_history(&self, runtime: &RuntimeInstance) -> Result<(), RuntimeError> {
-        let source = self.runtime_source_key(runtime)?;
-        let read = |summaries: Vec<SharedSummary>| {
-            summaries
-                .into_iter()
-                .map(|summary| IndexedConversation {
-                    id: summary.id.clone(),
-                    identity: String::new(),
-                    hint: ConversationHint::default(),
-                    state: EntryState::Read(summary.into()),
-                })
-                .collect::<Vec<_>>()
-        };
-        let entries = match runtime.type_id {
-            RuntimeKind::Acp => read(shared_summaries(self.acp_summaries(runtime)?)),
-            RuntimeKind::Codex166 => read(self.read_codex_projects(runtime, false)?),
-            RuntimeKind::Pi => history::list_pi(&self.pi_history_config(runtime)?, &[])
-                .map_err(|error| {
-                    RuntimeError::context("Pi 历史无法读取；请检查实例路径与 SDK 配置后重试", error)
-                })?
-                .files
-                .into_iter()
-                .map(|file| IndexedConversation {
-                    id: format!("{}:{}", runtime.id, file.path),
-                    identity: format!("{}:{}", file.size, file.mtime_ns),
-                    hint: ConversationHint {
-                        parent_conversation_id: file
-                            .parent_path
-                            .map(|parent| format!("{}:{parent}", runtime.id)),
-                        session_id: file.session_id,
-                        cwd: file.cwd,
-                        activity_unix_ms: file.modified_at_unix_ms,
-                        created_unix_ms: file.created_at_unix_ms,
-                    },
-                    state: EntryState::Unread,
-                })
-                .collect(),
-            RuntimeKind::ClaudeCode => history::index(&self.history_config(runtime)?)
-                .map_err(|error| self.history_failure(runtime, error))?
-                .into_iter()
-                .map(|entry| IndexedConversation {
-                    id: format!("{}:{}", runtime.id, entry.native_id),
-                    identity: format!("{}:{:?}", entry.size, entry.modified_at_unix_ms),
-                    hint: ConversationHint {
-                        parent_conversation_id: None,
-                        session_id: None,
-                        cwd: entry.cwd,
-                        activity_unix_ms: entry.modified_at_unix_ms,
-                        created_unix_ms: entry.created_at_unix_ms,
-                    },
-                    state: EntryState::Unread,
-                })
-                .collect(),
-            RuntimeKind::DeepSeek => read(shared_summaries(
-                history::list(&self.history_config(runtime)?, &runtime.id)
-                    .map_err(|error| self.history_failure(runtime, error))?,
-            )),
-        };
-        self.store_history_index(source, entries)
-    }
-
     pub(super) fn store_history_index(
         &self,
         source: runtime_source::RuntimeSourceKey,
@@ -755,16 +723,8 @@ impl CoreRuntime {
             source.runtime_id().to_owned(),
             HistoryListing { source, entries },
         );
+        self.advance_history_index_generation();
         Ok(())
-    }
-    fn history_failure(
-        &self,
-        runtime: &RuntimeInstance,
-        error: velune_agent_runtime::history::HistoryError,
-    ) -> RuntimeError {
-        let family = velune_agent_runtime::version::variant(runtime.type_id).family_id;
-        tracing::warn!(target: "velune_application", event = "runtime_history_read_failed", phase = error.phase(), failure_kind = error.code(), runtime_family = family, runtime_id=%runtime.id, runtime_name=%runtime.name, runtime_type_id=%runtime.type_id, binary=?runtime.settings.get("binary"), node_binary=?runtime.settings.get("nodeBinary"), agent_dir=?runtime.settings.get("agentDir"), detail=%error);
-        RuntimeError::History(error)
     }
     /// The runtime's indexed conversations as last indexed.
     pub(super) fn indexed(&self, runtime: &RuntimeInstance) -> Vec<IndexedConversation> {
@@ -834,7 +794,7 @@ impl CoreRuntime {
         } else {
             let summaries =
                 history::summaries(&self.history_config(runtime)?, &runtime.id, &natives)
-                    .map_err(|error| self.history_failure(runtime, error))?
+                    .map_err(|error| history_failure(runtime, error))?
                     .into_iter()
                     .map(|summary| (summary.id.clone(), summary))
                     .collect();
@@ -890,8 +850,10 @@ impl CoreRuntime {
     }
 
     pub(super) fn discard_runtime_source_caches(&self, runtime_id: &str) {
+        self.advance_history_index_generation();
         *self.last_listed.borrow_mut() = organization::ListedProjection::default();
         self.history_listings.borrow_mut().remove(runtime_id);
+        self.codex_active_indexes.borrow_mut().remove(runtime_id);
         self.native_projects.borrow_mut().remove(runtime_id);
         self.reached
             .borrow_mut()
@@ -1105,8 +1067,7 @@ impl CoreRuntime {
 
     pub(super) fn invalidate_execution(&mut self) -> Result<(), RuntimeError> {
         self.ensure_work_ended()?;
-        let can_restore = !self.session.requires_live_connection();
-        let mut snapshot = self.owned_native_snapshot()?;
+        let mut snapshot = self.owned_history_for_release()?;
         // Closing execution leaves its native history view usable. A read-only
         // view has no execution owner, so restoration must follow its source.
         let source = snapshot
@@ -1125,14 +1086,7 @@ impl CoreRuntime {
                     view.model_record_key = None;
                 }
                 view.run_state = RunState::Idle;
-                view.pending_interactions
-                    .retain(|interaction| !interaction.requires_live_reply());
-                view.actions = ConversationActions {
-                    input_access: Default::default(),
-                    can_send: can_restore && view.conversation.parent_conversation_id.is_none(),
-                    can_cancel: false,
-                    can_switch: true,
-                };
+                view.actions.can_switch = true;
                 view.revision = view.revision.saturating_add(1);
                 self.session.model_record_key = view.model_record_key.clone();
             }
@@ -1152,7 +1106,7 @@ impl CoreRuntime {
         use super::model_selection::ConversationStart;
         let snapshot = snapshot.into().into_retained();
         let is_new = matches!(start, ConversationStart::New);
-        let previous = self.owned_native_snapshot()?;
+        let previous = self.owned_history_for_release()?;
         let previous_runtime = self.next_turn_runtime_id.clone();
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let runtime = self.runtime_instance(&runtime_id)?.clone();
@@ -1218,14 +1172,8 @@ impl CoreRuntime {
                 Some(key),
                 Some(&physical),
             )?;
-            let persistent = self.session.side.is_none();
-            let session = self.session.pi()?;
-            if is_new && persistent {
-                session
-                    .new_session()
-                    .map_err(|error| RuntimeError::context("conversation create", error))?;
-            } else if !persistent {
-                session.restore_context(&snapshot);
+            if self.session.side.is_some() {
+                self.session.pi()?.restore_context(&snapshot);
             }
             self.session.model_record_key = Some(key.into());
             self.bind_gateway_model()?;
@@ -1259,6 +1207,85 @@ impl CoreRuntime {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+impl CoreRuntime {
+    pub(super) fn keep_native_read_state(
+        &mut self,
+        receipt: &Retained<velune_conversation::NativeReadState>,
+    ) {
+        let needs_update = |summary: &ConversationSummary| {
+            summary.native_read_state.as_ref() != Some(receipt.as_ref())
+                && (summary.id == receipt.conversation_id
+                    || summary
+                        .native_read_state
+                        .as_ref()
+                        .is_some_and(|s| s.conversation_id == receipt.conversation_id))
+        };
+        // A native receipt has already committed. Update the open views first,
+        // since copying a retained list page can fail its separate data budget.
+        self.advance_history_index_generation();
+        let mut deferred = self
+            .for_each_session(|core| {
+                match &mut core.session.active_state {
+                    ActiveState::History(snapshot) if needs_update(&snapshot.conversation) => {
+                        // Read state changes the serialized history header; cached
+                        // size must be recomputed when this parked view is trimmed.
+                        let owned = receipt.try_clone().map_err(|error| {
+                            RuntimeError::context("history read-state credit", error)
+                        })?;
+                        let (value, guard) = owned.into_parts();
+                        snapshot.conversation.native_read_state = Some(value);
+                        snapshot.retention = std::mem::take(&mut snapshot.retention).merge(guard);
+                        core.session.invalidate_history_cache_weight();
+                    }
+                    ActiveState::Native(session)
+                        if session.snapshot().is_some_and(|snapshot| {
+                            snapshot.conversation.id == receipt.conversation_id
+                                && needs_update(&snapshot.conversation)
+                        }) =>
+                    {
+                        session.set_read_state(receipt.try_clone().map_err(|error| {
+                            RuntimeError::context("native read-state credit", error)
+                        })?)
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+            .err();
+        let mut update_shared = |summary: &mut SharedSummary| {
+            if needs_update(summary)
+                && let Err(error) = summary.update_from(receipt, |summary, value| {
+                    summary.native_read_state = Some(value);
+                })
+            {
+                deferred.get_or_insert(error);
+            }
+        };
+        for source in self.last_listed.borrow_mut().entries.values_mut() {
+            update_shared(&mut source.summary);
+        }
+        for source in self.reached.borrow_mut().values_mut() {
+            update_shared(&mut source.value.summary);
+        }
+        for archive in self.archived_listing.borrow_mut().values_mut() {
+            for summary in &mut archive.summaries {
+                update_shared(summary);
+            }
+        }
+        for listing in self.history_listings.borrow_mut().values_mut() {
+            for entry in &mut listing.entries {
+                if let EntryState::Read(summary) = &mut entry.state {
+                    update_shared(summary);
+                }
+            }
+        }
+        if let Some(error) = deferred {
+            tracing::warn!(target: "velune_application", event = "native_read_state_cache_deferred",
+                detail = %error);
+        }
     }
 }
 
@@ -1500,6 +1527,7 @@ mod source_cache_tests {
                 endpoint: "http://127.0.0.1:1/v1".into(),
                 execution_backend: crate::config::ExecutionBackend::Http,
                 request_profile: crate::config::RequestProfile::Native,
+                codex_client_version: None,
                 quota_source: crate::config::ProviderQuotaSource::None,
                 authentication: Default::default(),
                 quota_authentication: Default::default(),
@@ -1648,74 +1676,5 @@ mod source_cache_tests {
     #[cfg(unix)]
     mod retention_tests {
         include!("browsing/retention_tests.rs");
-    }
-}
-
-impl CoreRuntime {
-    pub(super) fn keep_native_read_state(
-        &mut self,
-        receipt: Retained<velune_conversation::NativeReadState>,
-    ) -> Result<(), RuntimeError> {
-        let needs_update = |summary: &ConversationSummary| {
-            summary.native_read_state.as_ref() != Some(receipt.as_ref())
-                && (summary.id == receipt.conversation_id
-                    || summary
-                        .native_read_state
-                        .as_ref()
-                        .is_some_and(|s| s.conversation_id == receipt.conversation_id))
-        };
-        let update_shared = |summary: &mut SharedSummary| {
-            if needs_update(summary) {
-                summary.update_from(&receipt, |summary, value| {
-                    summary.native_read_state = Some(value);
-                })?;
-            }
-            Ok::<(), RuntimeError>(())
-        };
-        for source in self.last_listed.borrow_mut().entries.values_mut() {
-            update_shared(&mut source.summary)?;
-        }
-        for source in self.reached.borrow_mut().values_mut() {
-            update_shared(&mut source.value.summary)?;
-        }
-        for archive in self.archived_listing.borrow_mut().values_mut() {
-            for summary in &mut archive.summaries {
-                update_shared(summary)?;
-            }
-        }
-        for listing in self.history_listings.borrow_mut().values_mut() {
-            for entry in &mut listing.entries {
-                if let EntryState::Read(summary) = &mut entry.state {
-                    update_shared(summary)?;
-                }
-            }
-        }
-        self.for_each_session(|core| {
-            match &mut core.session.active_state {
-                ActiveState::History(snapshot) if needs_update(&snapshot.conversation) => {
-                    // Read state changes the serialized history header; cached
-                    // size must be recomputed when this parked view is trimmed.
-                    let owned = receipt.try_clone().map_err(|error| {
-                        RuntimeError::context("history read-state credit", error)
-                    })?;
-                    let (value, guard) = owned.into_parts();
-                    snapshot.conversation.native_read_state = Some(value);
-                    snapshot.retention = std::mem::take(&mut snapshot.retention).merge(guard);
-                    core.session.invalidate_history_cache_weight();
-                }
-                ActiveState::Native(session)
-                    if session.snapshot().is_some_and(|snapshot| {
-                        snapshot.conversation.id == receipt.conversation_id
-                            && needs_update(&snapshot.conversation)
-                    }) =>
-                {
-                    session.set_read_state(receipt.try_clone().map_err(|error| {
-                        RuntimeError::context("native read-state credit", error)
-                    })?)
-                }
-                _ => {}
-            }
-            Ok(())
-        })
     }
 }

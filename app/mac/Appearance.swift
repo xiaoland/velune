@@ -14,11 +14,28 @@ enum AppearanceDensity: String, Codable, CaseIterable, Sendable {
     var controls: ControlSize { self == .compact ? .small : self == .spacious ? .large : .regular }
 }
 struct AppearanceValues: Codable, Equatable, Sendable {
+    static let zoomSteps = [80, 90, 100, 110, 125, 150]
     var ui = AppearanceSize.standard
     var messages = AppearanceSize.standard
     var code = AppearanceSize.standard
     var density = AppearanceDensity.standard
     var composerWidthRatio = 0.75
+    // The original format has no zoom field. Store the default the same way.
+    private var savedZoomPercent: Int?
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case ui, messages, code, density, composerWidthRatio
+        case savedZoomPercent = "zoomPercent"
+    }
+
+    var zoomPercent: Int {
+        get { savedZoomPercent ?? 100 }
+        set { savedZoomPercent = newValue == 100 ? nil : newValue }
+    }
+    var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
+    var uiScale: CGFloat { ui.scale * zoomScale }
+    var messageScale: CGFloat { messages.scale * zoomScale }
+    var codeScale: CGFloat { code.scale * zoomScale }
+    var spacingScale: CGFloat { density.spacing * zoomScale }
 
     /// The editor stays centered in the pane. Narrow panes use all their room;
     /// symmetric recipient and attachment columns reserve equal space beside it.
@@ -27,12 +44,12 @@ struct AppearanceValues: Codable, Equatable, Sendable {
     }
 }
 
-/// Native measurement can run off the main thread; it reads a complete value.
+/// Off-main measurement reads a snapshot published by AppearancePreferences.
 final class AppearanceRendering: @unchecked Sendable {
     private let lock = NSLock()
     private var value = AppearanceValues()
     func read() -> AppearanceValues { lock.withLock { value } }
-    func set(_ value: AppearanceValues) { lock.withLock { self.value = value } }
+    fileprivate func set(_ value: AppearanceValues) { lock.withLock { self.value = value } }
 }
 
 extension Notification.Name {
@@ -52,6 +69,17 @@ extension Notification.Name {
     }
     private var file: URL?
     private var report: (String) -> Void = { _ in }
+
+    private func zoomAfterAdjusting(by step: Int) -> Int {
+        let stops = AppearanceValues.zoomSteps
+        guard let current = stops.firstIndex(of: values.zoomPercent) else { return 100 }
+        return stops[min(max(current + step, 0), stops.count - 1)]
+    }
+
+    func canAdjustZoom(by step: Int) -> Bool { zoomAfterAdjusting(by: step) != values.zoomPercent }
+    func adjustZoom(by step: Int) { values.zoomPercent = zoomAfterAdjusting(by: step) }
+    func resetZoom() { values.zoomPercent = 100 }
+
     func load(home: URL?, report: @escaping (String) -> Void) {
         self.report = report
         file = nil
@@ -63,13 +91,18 @@ extension Notification.Name {
                 try Self.migrateLegacyWidthIfNeeded(at: target)
                 return try JSONDecoder().decode(AppearanceValues.self, from: Data(contentsOf: target))
             }) {
-            case .success(let saved):
-                if saved.composerWidthRatio.isFinite && (0.5...1).contains(saved.composerWidthRatio) {
-                    values = saved
-                    file = target
-                } else {
+            case .success(var saved):
+                guard saved.composerWidthRatio.isFinite, (0.5...1).contains(saved.composerWidthRatio) else {
                     report("外观配置中的输入区宽度无效；保留原文件，外观更改不会写入")
+                    return
                 }
+                guard AppearanceValues.zoomSteps.contains(saved.zoomPercent) else {
+                    report("外观配置中的缩放比例无效；保留原文件，外观更改不会写入")
+                    return
+                }
+                if saved.zoomPercent == 100 { saved.zoomPercent = 100 }
+                values = saved
+                file = target
             case .failure(let error): report("\(error.localizedDescription)；保留原文件，外观更改不会写入")
             }
         } else {
@@ -82,7 +115,7 @@ extension Notification.Name {
             throw NSError(domain: "VelunePersistence", code: 2, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 结构未知"])
         }
         if let ratio = widthNumber(object["composerWidthRatio"]) {
-            let current: Set<String> = ["ui", "messages", "code", "density", "composerWidthRatio"]
+            let current = Set(AppearanceValues.CodingKeys.allCases.map(\.rawValue))
             guard Set(object.keys).isSubset(of: current), ratio.isFinite, (0.5...1.0).contains(ratio) else {
                 throw NSError(domain: "VelunePersistence", code: 5, userInfo: [NSLocalizedDescriptionKey: "mac-appearance.json 含未知字段或宽度无效"])
             }
@@ -128,6 +161,7 @@ struct UITypeStyle {
     var digits = false
     static let body = Self(size: 13)
     static let callout = Self(size: 12)
+    static let tabTitle = Self(size: 11)
     static let caption = Self(size: 10)
     static let caption2 = Self(size: 10)
     static let headline = Self(size: 13, weight: .semibold)
@@ -149,12 +183,12 @@ struct UITypeStyle {
 private struct UIFontModifier: ViewModifier {
     let style: UITypeStyle
     @ObservedObject private var appearance = AppearancePreferences.shared
-    func body(content: Content) -> some View { content.font(style.font(scale: appearance.values.ui.scale)) }
+    func body(content: Content) -> some View { content.font(style.font(scale: appearance.values.uiScale)) }
 }
 private struct AppearanceModifier: ViewModifier {
     @ObservedObject private var appearance = AppearancePreferences.shared
     func body(content: Content) -> some View {
-        content.font(UITypeStyle.body.font(scale: appearance.values.ui.scale))
+        content.font(UITypeStyle.body.font(scale: appearance.values.uiScale))
             .controlSize(appearance.values.density.controls)
     }
 }
@@ -167,6 +201,11 @@ struct AppearanceSettingsSection: View {
     @ObservedObject private var appearance = AppearancePreferences.shared
     var body: some View {
         Section("外观") {
+            Picker("缩放比例", selection: $appearance.values.zoomPercent) {
+                ForEach(AppearanceValues.zoomSteps, id: \.self) { percent in
+                    Text((Double(percent) / 100).formatted(.percent)).tag(percent)
+                }
+            }
             size("界面字号", selection: $appearance.values.ui)
             size("消息字号", selection: $appearance.values.messages)
             size("代码字号", selection: $appearance.values.code)

@@ -106,10 +106,10 @@ struct ComposerStatusLine: View {
             switch item {
             case .contextUsage:
                 guard let tokens = status.usage.contextTokens else { return nil }
-                guard let window = status.usage.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(TokenCount.format(tokens)) tokens，模型窗口未知" }
-                if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
-                return "上下文：已用 \(TokenCount.format(tokens)) / \(TokenCount.format(window)) tokens（\(StatusFormat.percent(fraction))）"
-            case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(TokenCount.format($0)) tokens" }
+                guard let window = status.usage.contextWindow, let fraction = status.contextFraction else { return "上下文：已用 \(StatusFormat.short(tokens)) tokens，模型窗口未知" }
+                if store.device.contextUsageDisplay == .remaining { return "上下文：剩余 \(StatusFormat.short(window.subtractingClamped(tokens))) / \(StatusFormat.short(window)) tokens（\(StatusFormat.percent(1 - fraction))）" }
+                return "上下文：已用 \(StatusFormat.short(tokens)) / \(StatusFormat.short(window)) tokens（\(StatusFormat.percent(fraction))）"
+            case .sessionTokens: return status.usage.sessionTokens.map { "本会话累计：\(StatusFormat.short($0)) tokens" }
             case .workingDirectory: return status.directory.map { "工作目录：\($0)" + (branch.map { "（\($0)）" } ?? "") }
             case .rateLimits:
                 return context.composerQuotaError ?? accountSummary(short: false)
@@ -120,11 +120,13 @@ struct ComposerStatusLine: View {
     }
 
     private func accountSummary(short: Bool) -> String {
-        accounts.map { account in
+        let now = Date()
+        return accounts.map { account in
             let windows = account.windows.map { window in
                 let used = min(max(window.usedPercent, 0), 100)
                 let label = UsageFormat.label(Int((store.device.usageDisplay == .remaining ? 100 - used : used).rounded()), store.device.usageDisplay)
-                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
+                let expired = account.quota.freshness == .fresh && !account.isCurrent(window, at: now) ? "（上次观测）" : ""
+                return (account.isRecorded && window.period == nil ? "限额" : QuotaWindowObservation.name(window.id)) + " " + label + expired + (short ? "" : "，" + QuotaResetFormat.text(window.resetsAt))
             }
             let balances = (account.quota.balances).map { $0.title + " " + $0.formatted }
             let credits = account.credits.map { short ? $0.compactValue : "credits 余额 \($0.detailValue)" }
@@ -171,15 +173,16 @@ struct StatusDetails: View {
         .frame(width: 380).frame(maxHeight: 600).fixedSize(horizontal: false, vertical: true)
     }
     private var details: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let now = Date()
+        return VStack(alignment: .leading, spacing: 10) {
             Text("会话状态").uiFont(.headline)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 if let tokens = status.usage.contextTokens {
                     heading("上下文")
                     if display == .remaining, let window = status.usage.contextWindow {
-                        row("剩余", "\(TokenCount.format(window.subtractingClamped(tokens))) / \(TokenCount.format(window)) tokens")
+                        row("剩余", "\(StatusFormat.short(window.subtractingClamped(tokens))) / \(StatusFormat.short(window)) tokens")
                     } else {
-                        row("已用", status.usage.contextWindow.map { "\(TokenCount.format(tokens)) / \(TokenCount.format($0)) tokens" } ?? "\(TokenCount.format(tokens)) tokens（模型窗口未知）")
+                        row("已用", status.usage.contextWindow.map { "\(StatusFormat.short(tokens)) / \(StatusFormat.short($0)) tokens" } ?? "\(StatusFormat.short(tokens)) tokens（模型窗口未知）")
                     }
                     if let fraction = status.contextFraction {
                         GridRow {
@@ -193,10 +196,10 @@ struct StatusDetails: View {
                 }
                 if status.usage.sessionTokens != nil {
                     heading("本会话累计")
-                    if let value = status.usage.inputTokens { row("输入", TokenCount.format(value)) }
-                    if let value = status.usage.cacheReadTokens { row("缓存读取", TokenCount.format(value)) }
-                    if let value = status.usage.outputTokens { row("输出", TokenCount.format(value)) }
-                    if let value = status.usage.reasoningTokens { row("推理", TokenCount.format(value)) }
+                    if let value = status.usage.inputTokens { row("输入", StatusFormat.short(value)) }
+                    if let value = status.usage.cacheReadTokens { row("缓存读取", StatusFormat.short(value)) }
+                    if let value = status.usage.outputTokens { row("输出", StatusFormat.short(value)) }
+                    if let value = status.usage.reasoningTokens { row("推理", StatusFormat.short(value)) }
                     if status.usage.unrecordedTurns > 0 { row("未记录", "\(status.usage.unrecordedTurns) 轮") }
                 }
                 if let directory = status.directory {
@@ -216,7 +219,8 @@ struct StatusDetails: View {
                 if account.quota.available == false { Text(QuotaStatusText.limitedObservation).uiFont(.caption).foregroundStyle(.secondary) }
                 ForEach(Array(account.windows.enumerated()), id: \.offset) { _, window in
                     QuotaWindowRow(window: window, limit: account.limit(for: window.id),
-                                   fresh: account.quota.freshness == .fresh, display: quotaDisplay, showsModels: true, title: account.isRecorded && window.period == nil ? "限额" : nil)
+                                   fresh: account.isCurrent(window, at: now), display: quotaDisplay, showsModels: true,
+                                   title: account.isRecorded && window.period == nil ? "限额" : nil, showsExpiry: account.quota.freshness == .fresh)
                 }
                 ForEach(Array((account.quota.balances).enumerated()), id: \.offset) { _, balance in
                     QuotaBalanceRow(balance: balance, fresh: account.quota.freshness == .fresh)
@@ -273,7 +277,7 @@ enum StatusFormat {
         let reset = value.resetsAtUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) }
         return limit(value.usedPercent, display, short: false) + "，" + QuotaResetFormat.text(reset)
     }
-    static func short(_ tokens: UInt64) -> String { TokenCount.format(tokens) }
+    static func short(_ tokens: UInt64) -> String { TokenCount.approximate(tokens) }
     static func cost(_ microUSD: UInt64) -> String {
         (Double(microUSD) / 1_000_000).formatted(.currency(code: "USD").precision(.fractionLength(microUSD < 10_000 ? 4 : 2)))
     }

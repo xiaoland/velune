@@ -1,6 +1,6 @@
 # AI provider 执行
 
-本 unit 实现 AI 契约的具体协议执行：`NativeHttp` 以一个 HTTP adapter 执行三种原生协议，`claude_code::ClaudeCode` 是 Messages 的本机执行后端。原生协议只替换路由所需的外部模型标识，保留请求字段、请求 headers、响应状态、响应 headers 和响应／SSE body。它接受构造时传入的 `HttpTarget`（协议、端点与 request profile）和一次性 `ResolvedCredential`，不读取应用配置、认证来源或 Harness 状态。
+本 unit 实现 AI 契约的具体协议执行：`NativeHttp` 以一个 HTTP adapter 执行 Chat Completions、Responses、Messages 和 Gemini GenerateContent，`claude_code::ClaudeCode` 是 Messages 的本机执行后端。原生协议只替换路由所需的外部模型标识，保留请求字段、请求 headers、响应状态、响应 headers 和响应／SSE body。它接受构造时传入的 `HttpTarget`（协议、端点与 request profile）和一次性 `ResolvedCredential`，不读取应用配置、认证来源或 Harness 状态。
 
 它依赖 [ai](../ai/README.md)，不拥有应用路由、自动重试或 fail-over 策略。网关组合协议执行；Claude Code 后端仅承担已明确授权的本机执行与工具桥接，不代替其他 Harness adapter。协议限制见 [AI service](../../docs/product-tdd/ai-service.md)。
 
@@ -8,7 +8,9 @@
 
 Messages 保留调用方的 `anthropic-version`／beta 请求头与原生 JSON／SSE，缺少版本在派发前拒绝；HTTP API key 使用 `x-api-key`，Bearer 使用 `Authorization`；认证材料类型与协议适配分别校验。提供商 baseURL 追加 `/v1/messages`，运行时 SDK 的网关注入使用 origin。
 
-`translation` 提供 ChatCompletions、Responses、Messages 六向 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。
+Gemini Developer API 的 baseURL 包含 API 版本路径。非流请求在模型路径追加 `:generateContent`，流请求追加 `:streamGenerateContent?alt=sse`。API key 使用 `x-goog-api-key`。原生 JSON 保留工具调用、工具结果和思考签名。流式用量按字段采用最后一次有效报告。
+
+`translation` 在四种协议之间提供 best-effort 转换。调用方只在异协议时构造请求转换计划，并用同一计划转换 JSON 或增量 SSE，保留工具别名的请求内映射。它不依赖 Harness、路由、应用配置或网络。无法对应的字段、状态引用和不透明推理信息尽量降级并给出不含业务值的 `ConversionNote`；真实错误和缺失终态不会被改造成成功。Messages 请求必须有输出上限，调用方可提供模型配置上限作为缺省值；同协议操作不经过此转换器。
 
 转换语义由固定版本的 New API RelayKit 提供，Go 依赖见 `relaykit-bridge/go.mod` 和 `go.sum`。Rust 内部桥接管理唯一请求句柄，流转换消费请求计划，释放不会生成终态。桥接仅处理 JSON 与事件；HTTP、认证、取消和原始计量仍由 Rust 持有。不能跨提供商复用的服务端引用按 best-effort 省略并诊断，不补造历史；内联媒体在本地解析，外部媒体 URL 不触发桥接联网。诊断丢弃上游任意说明与字段值，不把原始错误送入日志。
 
@@ -22,6 +24,8 @@ Cargo 构建会调用 Go，以同进程库链接。Mac 使用 c-archive；Androi
 
 Codex request profile 仅用于 Responses HTTP adapter，目标必须是 `https://chatgpt.com:443/backend-api/codex`，并提供 Bearer 和 account ID；其他协议或目的地址在发送前拒绝。HTTP adapter 的构造必须使用 `HttpClient::new(ClientBuilder)`；该类型在构造末尾强制禁用重定向和自动重试，不接受已构建的任意 Client。gateway 启动时构造并复用，独立消费方可在 builder 注入代理、DNS 或证书信任但不能覆盖这两项策略，避免自定义 account header 被重定向发送到其他目标。请求使用敏感的 `chatgpt-account-id`，附加 Codex backend 所需的 beta、originator 和客户端标识；这是非正式 Codex 接入，不是 Velune 的正式 SIWC 客户端身份。
 
+ChatGPT 订阅端点按 Codex 客户端版本提供模型。`HttpTarget` 接收由调用方解析出的提供商生效版本，要求 Codex Responses profile 提供 `major.minor.patch` 版本。原生 HTTP 适配器以同一个值生成推理请求的 `version` 和 User-Agent，并替换入口传入的这两个请求头。订阅查询可复用 `codex_user_agent` 生成请求头。
+
 Codex backend 只接受流请求。adapter 设置 stream=true、store=false，缺少 instructions 时传空字符串，保留调用方已有 instructions、完整输入及工具调用／结果。字符串输入转换为用户消息数组，system 角色映射为 developer，历史项的上游 id 被移除；状态引用与 item_reference 在发送前明确拒绝，不能据此补造历史。adapter 省略 `metadata` 和不支持的采样、输出限制、显式缓存字段及 service_tier。每次转换成功且省略了顶层字段或移除了历史项 id 时，发出一条 `codex_request_field_omitted` 诊断，只记录固定的顶层协议字段名和移除的历史项 id 数量。它不注入 Codex 系统指令，不合成孤儿工具结果。Native Responses profile 保持原生字段与显式请求能力限制，Codex 的适配不影响它。当前 backend 用户代理约定依据 Magpie `9b04c4e20ff8bf10c745a53f562f5007b82d007d`，上游变更需单独复核。
 
 Responses 流响应按 MIME 规则忽略媒体类型大小写和两端空白。成功 HTTP 状态且显式声明非 SSE 类型的响应在交付 headers 前返回协议错误。仅 `CodexResponses` profile 的流请求，在成功响应真正没有 Content-Type header 时，仍进入原始 SSE 解析路径并向下游补充 `text/event-stream`；这是 2026-10-16 真实 Codex backend 响应已观察到的约定。普通 profile 仍要求声明 SSE，已存在但无效或错误的 MIME 不享有例外。解析仍要求显式业务终态，空流、HTML 或缺终态都会失败；headers 提交后不切换其他账户。`responses_stream_content_type_rejected` 诊断只记录上游状态、固定 MIME 分类与固定编码分类，不包含原始 header 值或正文。
@@ -32,6 +36,10 @@ Responses 流响应按 MIME 规则忽略媒体类型大小写和两端空白。�
 CLI 子进程清空继承环境后，仅保留系统用户身份所需的 `HOME`、`USER`、`LOGNAME`、命令查找所需的 `PATH`，以及 Windows 必要系统变量。真实 `HOME` 用于 macOS 用户钥匙串定位；给出 config_dir 时由显式 `CLAUDE_CONFIG_DIR` 隔离，不把配置目录伪装成用户主目录。API key、OAuth token 和服务端点覆盖不从父进程环境继承。原生工具、hooks、额外 settings 与 MCP 自动发现的禁用约束保持有效。
 
 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，继续使用 print / stream-json；入口变量的验证范围与限制见 [运行时说明](../agent-runtime/README.md)。真实订阅的五小时配额收益尚未验证。
+
+应用为具有外层会话标识的订阅桥接提供稳定的私有工作目录。账号已识别时，桥接使用 Claude Code 自己写入的内部 JSONL，在成功回复落盘并交付后才提交恢复点。恢复点按外层会话、提供商、账号与认证代际隔离，只接续匹配请求配置和完整已完成历史、且尾部恰好追加一条用户消息的请求。恢复只向 CLI 发送增量，内部历史保留原生消息、工具结果和上下文形状。重写历史、切换执行配置、超时或取消未完成的轮次时，桥接重新从调用方历史建立上下文。工具回调仍由当前进程持有。
+
+内部记录位于应用私有目录 `claude-bridge-cache`，恢复点一小时内可用，创建新桥接会话时定期清除过期和未提交的记录。无法确认终态或文件超过 64 MiB 时留空恢复点。CLI 拒绝私有文件恢复时，在提交调用方消息前改用原有的无持久化启动。缓存命中取决于上游缓存是否仍有效。
 
 Pool 的 continuation 查询与实际工具等待状态同源，返回无约束、原 binding 归属或已失效。失效会终止对应进程并保留必要的会话失效事实；消费方负责将该约束与自己的模型资格、认证世代共同校验。`cancel_session` 也取消已返回 tool_use 后等待结果的交互；应用在明确的新用户轮调用 `begin_user_turn`，只有已终止交互可以解除失效，仍运行或 pending 时拒绝。已失效工具 ID 独立保留，`validate_result_ids` 只接收当前请求尾部结果，防止新轮错误接收迟到结果。关闭单个 HTTP Runner 不应 shutdown 共享 pool，应用生命周期结束时才显式 shutdown。
 

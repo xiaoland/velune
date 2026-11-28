@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    io::{BufRead, BufReader, Read},
     path::Path,
+    time::UNIX_EPOCH,
 };
 
 pub(super) const SOURCE_KINDS: [&str; 10] = [
@@ -48,11 +51,15 @@ pub(super) fn summary(thread: &Value, runtime_id: &str) -> Result<ConversationSu
         can_delete: false,
         // Only a spawned thread names its parent; Codex's other internal
         // sub-agents (review, compaction) are listed as they are.
-        parent_conversation_id: thread["parentThreadId"]
-            .as_str()
-            .or_else(|| thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"].as_str())
+        parent_conversation_id: thread_parent_id(thread)
             .map(|parent| format!("{runtime_id}:{parent}")),
     })
+}
+
+fn thread_parent_id(thread: &Value) -> Option<&str> {
+    thread["parentThreadId"]
+        .as_str()
+        .or_else(|| thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"].as_str())
 }
 
 /// Stored names and native agent nicknames are authoritative across listing,
@@ -124,21 +131,6 @@ pub(super) fn pages(
     Ok(entries.expect("the first page always owns an aggregate"))
 }
 
-pub fn list_codex_history(
-    binary: &Path,
-    home: &Path,
-    runtime_id: &str,
-) -> Result<Retained<Vec<ConversationSummary>>> {
-    list_codex_history_at(
-        crate::version::RuntimeKind::Codex166,
-        binary,
-        home,
-        runtime_id,
-        false,
-        &crate::execution::ExecutionTarget::Local,
-        None,
-    )
-}
 /// The runtime's threads, either those in use or those it archived.
 pub fn list_codex_history_at(
     kind: crate::version::RuntimeKind,
@@ -150,14 +142,7 @@ pub fn list_codex_history_at(
     os_home: Option<&Path>,
 ) -> Result<Retained<Vec<ConversationSummary>>> {
     let mut rpc = codex::history_client_at(kind, binary, home, execution, os_home)?;
-    let threads = pages(
-        &mut rpc,
-        "thread/list",
-        json!({
-            "limit":100,"archived":archived,"modelProviders":[],
-            "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
-        }),
-    )?;
+    let threads = list_threads(&mut rpc, home, execution, archived)?;
     let mut seen = HashSet::new();
     threads.try_map(|threads| {
         threads
@@ -172,6 +157,156 @@ pub fn list_codex_history_at(
             })
             .collect()
     })
+}
+
+pub(super) fn list_threads(
+    rpc: &mut RpcClient,
+    home: &Path,
+    execution: &crate::execution::ExecutionTarget,
+    archived: bool,
+) -> Result<Retained<Vec<Value>>> {
+    let params = thread_list_params(archived);
+    if archived && execution.is_local() {
+        let mut indexed_params = params.clone();
+        indexed_params["useStateDbOnly"] = json!(true);
+        if let Ok(indexed) = pages(rpc, "thread/list", indexed_params)
+            && archive_index_covers_rollouts(home, &indexed, |id, parent| {
+                unlisted_child_updated_at(rpc, id, parent)
+            })
+        {
+            return Ok(indexed);
+        }
+    }
+    pages(rpc, "thread/list", params)
+}
+
+pub(super) fn thread_list_params(archived: bool) -> Value {
+    json!({
+        "limit":100,"archived":archived,"modelProviders":[],
+        "sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"
+    })
+}
+
+/// A paginated Codex history is owned by its database. Legacy rollouts that
+/// aren't represented at their current versions require Codex's repair scan.
+fn archive_index_covers_rollouts(
+    home: &Path,
+    threads: &[Value],
+    mut unlisted_child_updated_at: impl FnMut(&str, &str) -> Option<u64>,
+) -> bool {
+    if threads
+        .iter()
+        .any(|thread| thread["historyMode"] != "paginated")
+    {
+        return false;
+    }
+    let by_id: HashMap<_, _> = threads
+        .iter()
+        .filter_map(|thread| Some((thread["id"].as_str()?, thread["updatedAt"].as_u64()?)))
+        .collect();
+    let by_path: HashMap<_, _> = threads
+        .iter()
+        .filter_map(|thread| {
+            Some((
+                Path::new(thread["path"].as_str()?),
+                thread["updatedAt"].as_u64()?,
+            ))
+        })
+        .collect();
+    let entries = match fs::read_dir(home.join("archived_sessions")) {
+        Ok(entries) => entries,
+        Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        if kind.is_dir() {
+            return false;
+        }
+        let path = entry.path();
+        let compressed = path.extension().is_some_and(|extension| extension == "zst");
+        let jsonl_path = compressed.then(|| path.with_extension(""));
+        if !jsonl_path
+            .as_deref()
+            .unwrap_or(&path)
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
+            continue;
+        }
+        if !kind.is_file() {
+            return false;
+        }
+        let Some(modified) = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        else {
+            return false;
+        };
+        // Codex's index may retain the uncompressed path after migration.
+        let updated = by_path
+            .get(path.as_path())
+            .or_else(|| by_path.get(jsonl_path.as_deref()?))
+            .copied()
+            .or_else(|| {
+                let metadata = archive_rollout_metadata(&path, compressed)?;
+                let id = metadata["id"].as_str()?;
+                by_id.get(id).copied().or_else(|| {
+                    let parent = metadata["source"]["subagent"]["thread_spawn"]["parent_thread_id"]
+                        .as_str()?;
+                    unlisted_child_updated_at(id, parent)
+                })
+            });
+        if !updated.is_some_and(|updated| updated >= modified.as_secs()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A migrated rollout can retain its session identity under a different name.
+fn archive_rollout_metadata(path: &Path, compressed: bool) -> Option<Value> {
+    let file = fs::File::open(path).ok()?;
+    let mut line = Vec::new();
+    fn read_header(reader: impl Read, line: &mut Vec<u8>) -> std::io::Result<usize> {
+        BufReader::new(reader)
+            .take(64 * 1024)
+            .read_until(b'\n', line)
+    }
+    if compressed {
+        let decoder =
+            ruzstd::decoding::StreamingDecoder::new_with_max_window_size(file, 8 * 1024 * 1024)
+                .ok()?;
+        read_header(decoder, &mut line).ok()?;
+    } else {
+        read_header(file, &mut line).ok()?;
+    }
+    let mut metadata: Value = serde_json::from_slice(&line).ok()?;
+    if metadata["type"] != "session_meta" {
+        return None;
+    }
+    Some(metadata["payload"].take())
+}
+
+// The archive file established the candidate's location. Confirm its identity,
+// parent and empty preview in Codex before accepting its omission from listing.
+fn unlisted_child_updated_at(rpc: &mut RpcClient, id: &str, parent: &str) -> Option<u64> {
+    let response = rpc
+        .request("thread/read", &json!({"threadId":id,"includeTurns":false}))
+        .ok()?;
+    let thread = &response["thread"];
+    if thread["id"].as_str() != Some(id)
+        || thread["historyMode"] != "paginated"
+        || thread["preview"] != ""
+        || thread_parent_id(thread) != Some(parent)
+    {
+        return None;
+    }
+    thread["updatedAt"].as_u64()
 }
 
 /// One thread as the runtime describes it, and whether it is archived, for a
@@ -204,22 +339,6 @@ pub fn read_codex_summary_at(
     })
 }
 
-pub fn read_codex_history(
-    binary: &Path,
-    home: &Path,
-    runtime_id: &str,
-    id: &str,
-) -> Result<Retained<History>> {
-    read_codex_history_at(
-        crate::version::RuntimeKind::Codex166,
-        binary,
-        home,
-        runtime_id,
-        id,
-        &crate::execution::ExecutionTarget::Local,
-        None,
-    )
-}
 pub fn codex_context_provider(
     config: &crate::history::HistoryConfig,
     cwd: &Path,
@@ -516,7 +635,7 @@ pub fn verify_codex_handoff_summary_source(
     source_turn_id: &str,
     expected_fingerprint: &str,
 ) -> Result<bool> {
-    if config.kind != crate::version::RuntimeKind::Codex166 || config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "handoff summary verification is only supported for Codex",
             "unsupported",
@@ -569,7 +688,7 @@ pub fn recover_codex_handoff_summary(
     expected_temporary_thread_id: Option<&str>,
     expected_temporary_fingerprint: Option<&str>,
 ) -> Result<HandoffSummaryRecovery> {
-    if config.kind != crate::version::RuntimeKind::Codex166 || config.provider != "codex" {
+    if config.kind != crate::version::RuntimeKind::Codex166 {
         return Err(Error::with_code(
             "handoff summary recovery is only supported for Codex",
             "unsupported",
@@ -1049,328 +1168,6 @@ fn project_history(
     Ok((messages, executions))
 }
 
-#[cfg(test)]
-mod tests {
-    #[cfg(unix)]
-    #[test]
-    fn exact_codex_child_history_reads_metadata_and_messages_in_one_process() {
-        use std::{fs, os::unix::fs::PermissionsExt, time::Instant};
-
-        let root =
-            std::env::temp_dir().join(format!("velune-codex-child-read-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        let binary = root.join("codex");
-        fs::write(
-            &binary,
-            r#"#!/usr/bin/python3
-import json, pathlib, sys
-root = pathlib.Path(__file__).parent
-def log(event):
-    with (root / "calls").open("a") as f: f.write(event + "\n")
-if "--version" in sys.argv:
-    log("version")
-    print("codex-cli 0.166.0")
-    raise SystemExit(0)
-assert sys.argv[1:] == ["app-server"]
-log("app-server")
-for line in sys.stdin:
-    request = json.loads(line)
-    method = request["method"]
-    if "id" not in request:
-        assert method == "initialized"
-        continue
-    log(method)
-    if method == "initialize":
-        result = {}
-    elif method == "thread/read":
-        params = request["params"]
-        assert params["includeTurns"] is False
-        result = {
-            "thread": {"id": "child", "parentThreadId": "parent", "agentNickname": "Worker",
-                       "historyMode": "paginated", "cwd": str(root), "createdAt": 1, "updatedAt": 2,
-                       "path": str(root / "archived_sessions" / "child.jsonl")},
-            "readState": {"revision": "child-receipt", "firstUnread": {"type": "threadStart"}},
-        }
-    elif method == "thread/items/list":
-        assert request["params"]["threadId"] == "child"
-        result = {"data": [{"turnId": "turn", "item": {"type": "agentMessage", "id": "message", "text": "answer"}}], "nextCursor": None}
-    elif method == "thread/turns/list":
-        assert request["params"]["threadId"] == "child"
-        result = {"data": [{"id": "turn", "status": "completed"}], "nextCursor": None}
-    else:
-        raise AssertionError(method)
-    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
-"#,
-        )
-        .unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-        let config = crate::history::HistoryConfig {
-            kind: crate::version::RuntimeKind::Codex166,
-            execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
-            provider: "codex".into(),
-            binary,
-            node_binary: root.join("unused"),
-            resources_directory: root.clone(),
-            root: root.clone(),
-            home: root.clone(),
-        };
-        let calls = root.join("calls");
-        let started = Instant::now();
-        let previous = crate::history::read_summary(&config, "runtime", "child")
-            .unwrap()
-            .unwrap();
-        let (previous_summary, archived) = previous.as_ref();
-        let previous_history = crate::history::read(&config, "runtime", "child").unwrap();
-        let two_reads = started.elapsed();
-        let trace = fs::read_to_string(&calls).unwrap();
-        assert_eq!(
-            trace.lines().filter(|line| *line == "app-server").count(),
-            2
-        );
-        assert_eq!(
-            trace.lines().filter(|line| *line == "thread/read").count(),
-            2
-        );
-        assert!(*archived);
-        fs::write(&calls, "").unwrap();
-
-        let started = Instant::now();
-        let combined =
-            crate::history::read_codex_with_summary(&config, "runtime", "child").unwrap();
-        let (summary, history) = combined.as_ref();
-        let combined_read = started.elapsed();
-        assert_eq!(
-            fs::read_to_string(&calls)
-                .unwrap()
-                .lines()
-                .collect::<Vec<_>>(),
-            [
-                "version",
-                "app-server",
-                "initialize",
-                "thread/read",
-                "thread/items/list",
-                "thread/turns/list"
-            ]
-        );
-        assert_eq!(summary, previous_summary);
-        assert_eq!(
-            summary.parent_conversation_id.as_deref(),
-            Some("runtime:parent")
-        );
-        assert_eq!(summary.title, ConversationTitle::Native("Worker".into()));
-        assert_eq!(summary.native_read_state, history.native_read_state);
-        assert_eq!(history.native_id, "child");
-        assert_eq!(history.messages, previous_history.messages);
-        assert_eq!(history.messages.len(), 1);
-
-        fs::write(&calls, "").unwrap();
-        let failure = crate::history::read_codex_with_summary(&config, "runtime", "wrong-thread")
-            .err()
-            .expect("a different thread must not be opened");
-        assert!(failure.full_message().contains("Codex 返回不同的原生会话"));
-        assert_eq!(
-            fs::read_to_string(&calls)
-                .unwrap()
-                .lines()
-                .collect::<Vec<_>>(),
-            ["version", "app-server", "initialize", "thread/read"]
-        );
-        println!("synthetic Codex: two reads {two_reads:?}, combined {combined_read:?}");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn rollout_turn_context_records_the_speed_variant_as_its_model() {
-        let directory = std::env::temp_dir().join(format!("velune-rollout-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("rollout.jsonl");
-        std::fs::write(
-            &path,
-            concat!(
-                "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t1\",\"model\":\"gpt\",\"service_tier\":\"priority\"}}\n",
-                "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t2\",\"model\":\"gpt\"}}\n",
-            ),
-        )
-        .unwrap();
-        let turns = super::rollout_turns(&path);
-        std::fs::remove_dir_all(&directory).ok();
-        assert_eq!(
-            turns["t1"].settings.model.as_deref(),
-            Some(&velune_conversation::model_variant::codex_speed_model("gpt", "priority")[..])
-        );
-        assert_eq!(turns["t2"].settings.model.as_deref(), Some("gpt"));
-    }
-    #[test]
-    fn thread_names_preserve_native_agent_identity_without_a_preview() {
-        let thread = json!({"id":"child","name":"人工名称","agentNickname":"Kepler","agentRole":"explorer","preview":"任务首句"});
-        assert_eq!(
-            thread_title(&thread),
-            ConversationTitle::Native("人工名称".into())
-        );
-        let mut thread = thread;
-        thread["name"] = Value::Null;
-        thread["preview"] = json!("");
-        assert_eq!(
-            summary(&thread, "runtime").unwrap().title,
-            ConversationTitle::Native("Kepler".into())
-        );
-        thread["agentNickname"] = json!("  ");
-        assert_eq!(
-            thread_title(&thread),
-            ConversationTitle::Native("explorer".into())
-        );
-        thread["preview"] = json!("任务首句");
-        assert_eq!(
-            thread_title(&thread),
-            ConversationTitle::FirstMessage("任务首句".into())
-        );
-    }
-
-    #[test]
-    fn legacy_history_uses_loaded_native_turns_and_keeps_branch_identity() {
-        let mut thread = serde_json::json!({"id":"synthetic","historyMode":"legacy","turns":[
-            {"id":"turn","status":"completed","items":[{"type":"userMessage","id":"message","content":[{"type":"text","text":"synthetic"}]}]}
-        ]});
-        let (items, turns) = super::legacy_history(&mut thread, "synthetic").unwrap();
-        assert_eq!(items[0]["turnId"], "turn");
-        assert_eq!(items[0]["item"]["id"], "message");
-        assert_eq!(turns.len(), 1);
-        assert!(super::legacy_history(&mut thread, "another").is_err());
-    }
-
-    use super::*;
-
-    #[test]
-    fn automatic_compaction_does_not_turn_user_failure_into_maintenance() {
-        let items = vec![
-            json!({"turnId":"user-turn","item":{"id":"prompt","type":"userMessage","content":[{"type":"text","text":"question"}]}}),
-            json!({"turnId":"user-turn","item":{"id":"compact","type":"contextCompaction"}}),
-        ];
-        let turns =
-            vec![json!({"id":"user-turn","status":"failed","error":{"message":"answer failed"}})];
-        let (messages, _executions) =
-            project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
-        assert!(messages.iter().any(|message| message.blocks
-            == vec![MessageBlock::ContextCompaction {
-                text: "上下文已压缩".into()
-            }]));
-        assert!(messages.iter().any(|message| message.blocks.iter().any(
-            |block| matches!(block, MessageBlock::RuntimeFailure { detail: text, .. } if text.contains("answer failed"))
-        )));
-    }
-
-    #[test]
-    fn input_free_turn_usage_stays_with_preceding_user_without_changing_settings() {
-        let items = vec![
-            json!({"turnId":"first","item":{"id":"u1","type":"userMessage","content":[{"type":"text","text":"original"}]}}),
-            json!({"turnId":"resume","item":{"id":"a1","type":"agentMessage","text":"resumed"}}),
-            json!({"turnId":"next","item":{"id":"u2","type":"userMessage","content":[{"type":"text","text":"next"}]}}),
-            json!({"turnId":"maintenance","item":{"id":"compact","type":"contextCompaction"}}),
-        ];
-        let native = vec![
-            json!({"id":"first","status":"interrupted"}),
-            json!({"id":"resume","status":"completed"}),
-            json!({"id":"next","status":"interrupted"}),
-            json!({"id":"maintenance","status":"completed"}),
-        ];
-        let records = [
-            ("first", 2, "original"),
-            ("resume", 3, "resumed"),
-            ("next", 7, "next"),
-        ]
-        .into_iter()
-        .map(|(id, tokens, model)| {
-            (
-                id.to_owned(),
-                RolloutTurn {
-                    settings: TurnSettings {
-                        model: Some(model.into()),
-                        ..Default::default()
-                    },
-                    usage: Some(TurnUsage {
-                        input_tokens: Some(tokens),
-                        context_tokens: Some(tokens),
-                        ..Default::default()
-                    }),
-                },
-            )
-        })
-        .collect();
-        let (messages, executions) = project_history(&items, &native, &records, "runtime").unwrap();
-        assert_eq!(messages.len(), 4);
-        assert_eq!(
-            executions.record(&messages[0].id).unwrap().outcome,
-            Some(TurnOutcome::Completed)
-        );
-        assert_eq!(
-            executions.record(&messages[2].id).unwrap().outcome,
-            Some(TurnOutcome::Cancelled)
-        );
-        assert_eq!(
-            messages[0].turn_settings.as_ref().unwrap().model.as_deref(),
-            Some("original")
-        );
-        assert_eq!(
-            messages[0].turn_usage.as_ref().unwrap().input_tokens,
-            Some(5)
-        );
-        assert_eq!(
-            messages[0].turn_usage.as_ref().unwrap().context_tokens,
-            Some(3)
-        );
-        assert_eq!(
-            messages[2].turn_settings.as_ref().unwrap().model.as_deref(),
-            Some("next")
-        );
-        assert_eq!(
-            messages[2].turn_usage.as_ref().unwrap().input_tokens,
-            Some(7)
-        );
-    }
-
-    #[test]
-    fn history_keeps_failures_between_turns_even_without_visible_items() {
-        let items = vec![
-            json!({"turnId":"failed","startedAtMs":1000,"item":{
-                "id":"user","type":"userMessage","content":[{"type":"text","text":"question"}]}}),
-            json!({"turnId":"failed","item":{"id":"hidden","type":"reasoning","summary":[]}}),
-            json!({"turnId":"ok","completedAtMs":3000,"item":{
-                "id":"answer","type":"agentMessage","text":"answer"}}),
-        ];
-        let turns = vec![
-            json!({"id":"empty-first","status":"failed","error":null}),
-            json!({"id":"failed","status":"failed","error":{"message":"capacity"}}),
-            json!({"id":"empty-middle","status":"failed","error":{"message":"network"}}),
-            json!({"id":"ok","status":"completed","error":null}),
-            json!({"id":"empty-last","status":"failed","error":{"message":"quota"}}),
-        ];
-        let (messages, _executions) =
-            project_history(&items, &turns, &HashMap::new(), "runtime").unwrap();
-        assert_eq!(
-            messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec![
-                "codex-turn-error-empty-first",
-                "user",
-                "codex-turn-error-failed",
-                "codex-turn-error-empty-middle",
-                "answer",
-                "codex-turn-error-empty-last",
-            ]
-        );
-        assert_eq!(messages[1].timestamp_unix_ms, Some(1000));
-        assert_eq!(messages[1].branch_point.as_deref(), Some("failed"));
-        assert_eq!(messages[4].timestamp_unix_ms, Some(3000));
-        let MessageBlock::RuntimeFailure { detail: text, .. } = &messages[0].blocks[0] else {
-            panic!()
-        };
-        assert!(text.contains("上游未提供错误详情"));
-        let empty = project_history(&[], &turns[..1], &HashMap::new(), "runtime").unwrap();
-        assert_eq!(empty.0.len(), 1);
-    }
-}
-
 /// What a turn of a rollout ran with and used.
 #[derive(Default)]
 pub(super) struct RolloutTurn {
@@ -1577,3 +1374,6 @@ pub(super) fn read_state(
         unread: !first.is_null(),
     }))
 }
+
+#[cfg(test)]
+mod tests;

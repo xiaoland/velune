@@ -10,6 +10,7 @@ struct QuotaWindowRow: View {
     let display: UsageDisplay
     var showsModels = false
     var title: String? = nil
+    var showsExpiry = false
     private var reached: Bool { fresh && limit.map { window.usedPercent >= Double($0) } ?? false }
     /// At the average rate so far, the window empties before it resets.
     private var runsShort: Bool { fresh && window.pace?.status == .runsOutBeforeReset }
@@ -31,7 +32,8 @@ struct QuotaWindowRow: View {
         if let limit { parts.append(UsageFormat.ceiling(limit, display, reached: reached)) }
         parts.append(QuotaResetFormat.text(window.resetsAt))
         if runsShort, let empty = window.pace?.runsOutAt { parts.append("按目前的平均速度约\(empty.formatted(.relative(presentation: .named)))用尽") }
-        if showsModels, let models = window.modelIds { parts.append("仅 " + models.joined(separator: "、")) }
+        if showsModels, let models = window.modelIds, !models.isEmpty { parts.append("仅 " + models.joined(separator: "、")) }
+        if showsExpiry, !fresh { parts.append("观测已过期") }
         return parts.joined(separator: "，")
     }
 }
@@ -75,6 +77,7 @@ struct QuotaStatusText: View {
     static func summary(_ quota: QuotaObservation?) -> String {
         guard let quota else { return "正在读取额度…" }
         if quota.refreshing && quota.freshness != .fresh { return "正在读取额度…" }
+        if let problem = quota.problem, quota.freshness == .stale { return problem + " 上次观测已过期。" }
         let observed = quota.observedAt.map { $0.formatted(.relative(presentation: .named)) }
         switch quota.freshness {
         case .fresh:
@@ -122,43 +125,61 @@ extension View {
     }
 }
 
-/// The provider editor's quota pane: the latest observation and the
-/// used-percent ceiling of each window, which every route and direct use of
-/// the provider is held to.
+/// The provider editor's latest observation and, where supported,
+/// the used-percent ceiling that applies to routes and direct use.
 struct ProviderQuotaForm: View {
     @ObservedObject var store: DeviceStore
     /// `nil` until the provider is saved.
     let providerID: String?
     @Binding var limits: [QuotaLimit]
+    var antigravityTarget: ExecutionBackend? = nil
     @State private var showsHistory = false
     private static let presets: [UInt8] = [50, 60, 70, 80, 90, 95, 100]
-    private var quota: QuotaObservation? { providerID.flatMap { store.providerQuotas[$0] } }
+    private var quota: QuotaObservation? { targetChanged ? nil : providerID.flatMap { store.providerQuotas[$0] } }
+    private var provider: ProviderSummary? { store.providers.first { $0.id == providerID } }
+    private var usesAntigravity: Bool { antigravityTarget != nil }
+    private var targetChanged: Bool {
+        guard let antigravityTarget, let provider else { return false }
+        return antigravityTarget != provider.executionBackend
+    }
+    private var targetName: String? {
+        guard case .antigravityCli(_, let destination) = provider?.executionBackend else { return nil }
+        return destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
+    }
     /// Quota is read with the login, so a provider awaiting one has none to show.
-    private var signedOut: Bool { providerID.flatMap { id in store.providers.first { $0.id == id } }?.authentication.awaitsSignIn ?? true }
+    private var signedOut: Bool { provider?.authentication.awaitsSignIn ?? true }
     /// Reported windows first, then ceilings for windows not reported now.
     private var windowIDs: [String] {
         var ids: [String] = []
-        for id in (quota?.windows.map(\.id) ?? []) + limits.map(\.windowId) where !ids.contains(id) { ids.append(id) }
+        let reported = quota?.windows.filter { !usesAntigravity || $0.hasModelMapping }.map(\.id) ?? []
+        for id in reported + limits.map(\.windowId) where !ids.contains(id) { ids.append(id) }
         return ids
     }
     /// An account that reports only amounts has no window to cap.
     private var balancesOnly: Bool { windowIDs.isEmpty && quota?.balances.isEmpty == false }
     var body: some View {
+        let now = Date()
         Form {
             if let id = providerID, let provider = store.providers.first(where: { $0.id == id }), provider.composition.quotaSource == .arkCodingUsage {
                 Section { Text(provider.quotaAuthentication.bindingConfirmed ? "额度来源由用户关联，账户归属未自动核验。" : "额度来源尚未确认关联；有使用上限时暂停派发。请在连接页配置或重新确认。") }
             }
             Section {
                 if providerID == nil {
-                    Text("保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)
+                    Text(usesAntigravity ? "保存执行目标后读取额度。" : "保存提供商并配置认证后读取额度。").foregroundStyle(.secondary)
+                } else if targetChanged {
+                    Text("保存执行目标后读取额度。").foregroundStyle(.secondary)
                 } else if signedOut {
                     Text("配置认证后读取额度。").foregroundStyle(.secondary)
                 } else {
+                    if let targetName { LabeledContent("执行目标", value: targetName) }
                     if let quota, quota.available == false {
                         Label(QuotaStatusText.limitedObservation, systemImage: "info.circle").foregroundStyle(.secondary)
                     }
                     ForEach(Array((quota?.windows ?? []).enumerated()), id: \.offset) { _, window in
-                        QuotaWindowRow(window: window, limit: limit(window.id), fresh: quota?.freshness == .fresh, display: store.usageDisplay, showsModels: true)
+                        QuotaWindowRow(window: window, limit: !usesAntigravity || window.hasModelMapping ? limit(window.id) : nil,
+                                       fresh: usesAntigravity ? window.isCurrent(at: now) : quota?.freshness == .fresh,
+                                       display: store.usageDisplay, showsModels: true,
+                                       title: usesAntigravity ? QuotaWindowObservation.antigravityName(window.id) : nil, showsExpiry: usesAntigravity)
                     }
                     ForEach(Array((quota?.balances ?? []).enumerated()), id: \.offset) { _, balance in
                         QuotaBalanceRow(balance: balance, fresh: quota?.freshness == .fresh)
@@ -169,9 +190,10 @@ struct ProviderQuotaForm: View {
                 HStack {
                     Text("额度")
                     Spacer()
-                    if let providerID, !signedOut {
+                    if let providerID, !signedOut, !targetChanged {
                         Button("历史…") { showsHistory = true }.controlSize(.small)
-                        Button("刷新") { store.readProviderQuotas([providerID], refresh: true) }.disabled(quota?.refreshing == true).controlSize(.small)
+                        Button("刷新") { store.readProviderQuotas([providerID], refresh: true) }
+                            .disabled(quota?.refreshing == true || (usesAntigravity && store.isBusy)).controlSize(.small)
                     }
                 }
             }
@@ -180,26 +202,38 @@ struct ProviderQuotaForm: View {
             }
             if !balancesOnly { Section {
                 if windowIDs.isEmpty {
-                    Text("取得额度后可为各窗口设置上限。").foregroundStyle(.secondary)
+                    Text(usesAntigravity ? "报告了适用模型的额度组可以设置使用上限。" : "取得额度后可为各窗口设置上限。").foregroundStyle(.secondary)
                 } else {
                     ForEach(windowIDs, id: \.self) { id in
-                        Picker(selection: limitBinding(id)) {
-                            Text("不限制").tag(UInt8?.none)
-                            ForEach(choices(id), id: \.self) { Text(store.usageDisplay == .remaining ? "保留 \(100 - Int($0))%" : "已用 \($0)%").tag(UInt8?.some($0)) }
-                        } label: {
-                            Text(QuotaWindowObservation.title(id))
-                            if quota?.windows.contains(where: { $0.id == id }) != true { Text("当前未报告此窗口") }
+                        let reported = quota?.windows.first { $0.id == id }
+                        if usesAntigravity, reported?.hasModelMapping != true, let saved = limit(id) {
+                            LabeledContent {
+                                Button("移除上限") { limits.removeAll { $0.windowId == id } }
+                            } label: {
+                                Text(QuotaWindowObservation.antigravityName(id))
+                                Text(UsageFormat.ceiling(saved, store.usageDisplay, reached: false) + " · 当前未取得模型映射")
+                            }
+                        } else {
+                            Picker(selection: limitBinding(id)) {
+                                Text("不限制").tag(UInt8?.none)
+                                ForEach(choices(id), id: \.self) { Text(store.usageDisplay == .remaining ? "保留 \(100 - Int($0))%" : "已用 \($0)%").tag(UInt8?.some($0)) }
+                            } label: {
+                                Text(usesAntigravity ? QuotaWindowObservation.antigravityName(id) : QuotaWindowObservation.title(id))
+                                if reported == nil { Text("当前未报告此窗口") }
+                            }
                         }
                     }
                 }
             } header: {
                 Text("使用上限")
             } footer: {
-                Text((store.usageDisplay == .remaining ? "任一窗口的剩余额度低于保留比例时，暂停向此提供商发送新请求，直到剩余回到保留比例以上" : "任一窗口的已用比例达到上限时，暂停向此提供商发送新请求，直到额度降回上限以下") + "；对所有模型路由和直接选择它的模型都生效。设了上限却取不到最新额度时也会暂停。上限依据定期观测，已开始的请求和其他工具的使用仍可能越过它。")
+                Text(usesAntigravity
+                     ? "上限适用于对应额度组的模型。已设上限的组失去模型映射时，暂停向此目标派发，直到恢复映射或保存移除上限。"
+                     : (store.usageDisplay == .remaining ? "任一窗口的剩余额度低于保留比例时，暂停向此提供商发送新请求，直到剩余回到保留比例以上" : "任一窗口的已用比例达到上限时，暂停向此提供商发送新请求，直到额度降回上限以下") + "；对所有模型路由和直接选择它的模型都生效。设了上限却取不到最新额度时也会暂停。上限依据定期观测，已开始的请求和其他工具的使用仍可能越过它。")
                     .formFooterStyle()
             } }
         }
-        .readsQuota(of: signedOut ? [] : providerID.map { [$0] } ?? [], from: store)
+        .readsQuota(of: signedOut || targetChanged ? [] : providerID.map { [$0] } ?? [], from: store)
         .sheet(isPresented: $showsHistory) { if let providerID { QuotaHistorySheet(store: store, providerID: providerID) } }
     }
     private func limit(_ id: String) -> UInt8? { limits.first { $0.windowId == id }?.maxUsedPercent }

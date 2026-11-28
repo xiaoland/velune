@@ -1,5 +1,94 @@
 use super::*;
 
+#[test]
+fn compact_invitation_preserves_binary_tokens_and_pairing_scope() {
+    use base64::Engine as _;
+
+    let mut token = [0x8a; 32];
+    token[0] = 0;
+    token[12] = 0;
+    token[31] = 0;
+    let mut offer = PairingOffer {
+        version: PROTOCOL_VERSION,
+        purpose: "velunePairing".into(),
+        permission: PairingPermission::Control,
+        issuer: iroh::SecretKey::from_bytes(&[0x33; 32])
+            .public()
+            .to_string(),
+        invite_id: "00112233445566778899aabbccddeeff".into(),
+        token,
+        expires_at_unix_seconds: 1_800_000_000,
+        name: "配对夹具".into(),
+        locator: DeviceLocator {
+            relay_urls: vec!["https://relay.example/".into()],
+            direct_addresses: vec!["127.0.0.1:8080".parse().unwrap()],
+            lookup_urls: vec!["https://lookup.example/".into()],
+        },
+    };
+    let url = |bytes: &[u8]| {
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        format!("{OFFER_URL_PREFIX}{encoded}")
+    };
+    // The original Control layout has no permission byte.
+    let mut legacy = format!("{}\0{}\0", offer.issuer, offer.invite_id).into_bytes();
+    legacy.extend_from_slice(&token);
+    let token_separator = legacy.len();
+    legacy.push(0);
+    legacy.extend_from_slice(offer.name.as_bytes());
+    legacy.extend_from_slice(
+        b"\0\x01https://relay.example/\0\x01127.0.0.1:8080\0\x01https://lookup.example/\0",
+    );
+    let locator_terminator = legacy.len();
+    legacy.push(0);
+    legacy.extend_from_slice(&offer.expires_at_unix_seconds.to_le_bytes());
+    let legacy_url = url(&legacy);
+    assert_eq!(offer.encode_url().unwrap(), legacy_url);
+    let json = offer.encode().unwrap();
+    for input in [&legacy_url, &json] {
+        let decoded = PairingOffer::decode(input).unwrap();
+        assert_eq!(decoded.token, token);
+        assert_eq!(decoded.encode().unwrap(), json);
+    }
+
+    offer.permission = PairingPermission::TelemetryProfileRead;
+    let mut telemetry = legacy.clone();
+    telemetry.push(2);
+    assert_eq!(offer.encode_url().unwrap(), url(&telemetry));
+    let decoded = PairingOffer::decode(&url(&telemetry)).unwrap();
+    assert_eq!(decoded.encode().unwrap(), offer.encode().unwrap());
+
+    for separator in [token_separator, locator_terminator] {
+        let mut invalid = legacy.clone();
+        invalid[separator] = 1;
+        assert!(matches!(
+            PairingOffer::decode(&url(&invalid)),
+            Err(RemoteError::InvalidInvitation)
+        ));
+    }
+    assert!(matches!(
+        PairingOffer::decode(&url(&legacy[..legacy.len() - 1])),
+        Err(RemoteError::InvalidInvitation)
+    ));
+    for tail in [&[1][..], &[2, 0][..], &[3][..]] {
+        let mut invalid = legacy.clone();
+        invalid.extend_from_slice(tail);
+        assert!(matches!(
+            PairingOffer::decode(&url(&invalid)),
+            Err(RemoteError::InvalidInvitation)
+        ));
+    }
+
+    offer.locator.relay_urls = vec![format!("https://relay.example/{}", "a".repeat(OFFER_LIMIT))];
+    assert!(matches!(
+        offer.encode_url(),
+        Err(RemoteError::FrameTooLarge)
+    ));
+    assert!(matches!(
+        PairingOffer::decode(&format!("{OFFER_URL_PREFIX}{}", "A".repeat(OFFER_LIMIT))),
+        Err(RemoteError::FrameTooLarge)
+    ));
+}
+
 struct PairingTestHandler;
 impl crate::Handler for PairingTestHandler {
     fn execute(

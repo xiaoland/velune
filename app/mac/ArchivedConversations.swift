@@ -5,7 +5,7 @@ import VeluneBindings
 
 struct ArchivedConversationsMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("已归档会话…") { openWindow(id: "archived-conversations") } }
+    var body: some View { Button("已归档会话") { openWindow(id: "archived-conversations") } }
 }
 
 /// This projection belongs to the archive window. The device retains runtime
@@ -47,7 +47,8 @@ struct ArchivedConversationsMenuItem: View {
 
     func start() {
         active = true
-        guard transport == nil, let original = source.transport else { return }
+        guard transport == nil, !source.isPreview else { return }
+        guard let original = source.transport else { loadError = "暂时无法连接设备。"; return }
         lifecycle = UUID()
         transport = original.clientView("archived-conversations:\(lifecycle.uuidString)")
         read { try $0.showArchivedConversations(true) }
@@ -69,6 +70,11 @@ struct ArchivedConversationsMenuItem: View {
         guard active else { return }
         guard transport != nil else { start(); return }
         read { [ready] in ready ? try $0.list() : try $0.showArchivedConversations(true) }
+    }
+    func refreshOnActivation() {
+        // Opening the window may also activate it before its initial read finishes.
+        guard ready || !isLoading else { return }
+        refresh()
     }
     func search() {
         guard ready else { return }
@@ -134,6 +140,7 @@ struct ArchivedConversationsMenuItem: View {
 
     func unarchive(_ values: [Conversation]) { manage(values, deleting: false) }
     func delete(_ values: [Conversation]) { manage(values, deleting: true) }
+    func dismissOperationError() { operationError = nil }
 
     private func manage(_ values: [Conversation], deleting: Bool) {
         guard let transport, !values.isEmpty else { return }
@@ -217,13 +224,13 @@ struct ArchivedConversationsContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let error = model.operationError ?? model.loadError {
+            if let error = model.operationError {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label(model.operationError != nil ? "会话操作未完成" : "归档会话未能完整更新", systemImage: "exclamationmark.triangle")
+                        Label("会话操作未完成", systemImage: "exclamationmark.triangle")
                         Spacer(minLength: 12)
                         Button(showsErrorDetails ? "收起详情" : "详情") { showsErrorDetails.toggle() }
-                        Button("重新读取") { model.refresh() }
+                        Button("关闭提示") { model.dismissOperationError() }
                     }
                     if showsErrorDetails {
                         ScrollView { Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 100)
@@ -231,8 +238,13 @@ struct ArchivedConversationsContent: View {
                 }.padding(12)
                 Divider()
             }
+            if let error = model.loadError {
+                ReadFailureNotice(title: "归档会话未能完整更新", detail: error, retryDisabled: model.isLoading) { model.refresh() }
+                Divider()
+            }
             if model.conversations.isEmpty && model.groups.isEmpty {
                 if model.isLoading { ProgressView("正在读取已归档会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else if model.loadError != nil { Spacer(minLength: 0) }
                 else {
                     ContentUnavailableView {
                         Label(model.searchText.isEmpty && !model.browser.hasFilters ? "没有已归档的会话" : "没有匹配的会话", systemImage: "archivebox")
@@ -257,7 +269,7 @@ struct ArchivedConversationsContent: View {
             ToolbarItem { Button("打开会话", systemImage: "arrow.up.right.square") { if let value = selected.first { open(value) } }.disabled(selected.count != 1) }
             ToolbarItem { Button("取消归档", systemImage: "tray.and.arrow.up") { model.unarchive(selected) }.disabled(!canUnarchive) }
             ToolbarItem { Button("删除…", systemImage: "trash") { deleting = selected }.disabled(!canDelete) }
-            ToolbarItem { Button("重新读取", systemImage: "arrow.clockwise") { model.refresh() }.disabled(model.isLoading) }
+            ToolbarItem { ReadRefreshButton(label: "刷新归档会话") { model.refresh() }.disabled(model.isLoading) }
         }
         .onAppear { source.start(); model.start() }
         .onDisappear { model.stop() }
@@ -269,7 +281,7 @@ struct ArchivedConversationsContent: View {
         .onReceive(model.completed) { selection.subtract($0) }
         .onChange(of: model.conversations.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: model.operationError ?? model.loadError) { _, _ in showsErrorDetails = false }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { model.refresh() } }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshOnActivation() } }
         .alert(deleting.count == 1 ? "删除会话？" : "删除 \(deleting.count) 个会话？", isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } })) {
             Button("取消", role: .cancel) { deleting = [] }
             Button("删除", role: .destructive) { model.delete(deleting); deleting = [] }
@@ -281,7 +293,7 @@ struct ArchivedConversationsContent: View {
     private var list: some View {
         List(selection: $selection) {
             ForEach(model.groups, id: \.key) { group in
-                if model.browser.grouping != .none || group.key == .pinned {
+                if group.key != .all {
                     Button {
                         model.browser.setCollapsed(group.key, !model.browser.isCollapsed(group.key))
                     } label: {
@@ -306,7 +318,7 @@ struct ArchivedConversationsContent: View {
         HStack(alignment: .firstTextBaseline, spacing: 20) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(value.title.isEmpty ? "未命名会话" : value.title).lineLimit(1).help(value.title)
-                if let path = value.project ?? value.cwd {
+                if let path = value.project ?? value.cwd, value.group != .project(path: path) {
                     Text(value.project.map { ConversationBrowser.projectName($0, projects: model.projects) } ?? path)
                         .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(path)
                 }
@@ -330,9 +342,7 @@ struct ArchivedConversationsContent: View {
     }
 
     private func open(_ value: Conversation) {
-        let seed = WindowSeed(conversationID: value.id, device: source.peerID)
-        WindowPresentation.windowed.insert(seed.id)
-        openWindow(id: ConversationWindowKind.single.sceneID, value: seed)
+        WorkspaceWindows.shared.open(.single, seed: WindowSeed(conversationID: value.id, device: source.peerID))
     }
 
     private func groupName(_ key: ConversationGroupKey) -> String {

@@ -13,8 +13,9 @@ use velune_agent_runtime::{
     control::Target,
     creation::{DataRetention, Retained},
     execution::ExecutionTarget,
-    work::BackgroundTask,
+    work::{BackgroundTask, WorkStatus},
 };
+pub(crate) use velune_application_api::ExecutionCommandKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ExecutionTicket {
@@ -30,37 +31,23 @@ pub(super) struct ExecutionCommand {
     started: Option<ExecutionTicket>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecutionCommandKind {
-    Create,
-    Cancel,
-    StopBackground,
-    Reply,
-    Send,
-    Resume,
-    Steer,
-    Edit,
-    Delete,
-}
-
 #[derive(Default)]
 pub(crate) struct ExecutionSuccess {
     pub(crate) submitted_native_message_id: Option<String>,
 }
 
-impl ExecutionCommandKind {
-    pub(crate) fn is_submission(self) -> bool {
-        matches!(self, Self::Send | Self::Resume | Self::Steer | Self::Edit)
-    }
-
-    fn allows(self, name: &str) -> bool {
-        matches!(
-            (self, name),
-            (Self::Create, "native_create")
-                | (Self::Cancel, "cancel" | "stop_child")
-                | (Self::StopBackground, "stop_background")
-                | (Self::Reply, "reply")
-        )
+impl ExecutionCommand {
+    /// Which adapter operation this dispatching command may transfer.
+    fn allows(&self, name: &str) -> bool {
+        use ExecutionCommandKind::*;
+        match self.kind {
+            Create => name == "native_create",
+            Cancel => matches!(name, "cancel" | "stop_child"),
+            StopBackground => name == "stop_background",
+            Reply => name == "reply",
+            Steer => name == "steer",
+            Send | Resume | Edit | Delete => false,
+        }
     }
 }
 
@@ -80,7 +67,7 @@ pub(super) struct OperationOutcome {
     // The adapter accepted cancellation; this does not prove the turn ended.
     cancellation_accepted: bool,
     creation: Option<CreationCommit>,
-    cleanup: bool,
+    pub(super) cleanup: bool,
 }
 struct CreationCommit {
     prepared_resources: Option<String>,
@@ -220,11 +207,7 @@ impl FrozenExecution {
             .map(|snapshot| {
                 let failed = snapshot.map(|mut snapshot| {
                     snapshot.run_state = RunState::Failed;
-                    snapshot.actions.can_send = false;
-                    snapshot.actions.can_cancel = false;
-                    snapshot
-                        .pending_interactions
-                        .retain(|interaction| !interaction.requires_live_reply());
+                    snapshot.executions.finish(None);
                     snapshot
                 });
                 ActiveState::History(Box::new(failed.into()))
@@ -528,7 +511,7 @@ impl PendingExecution {
                     self.ticket,
                     self.view.take_failed_history(),
                     OperationOutcome {
-                        cleanup: self.name == "native_cleanup",
+                        cleanup: true,
                         ..OperationOutcome::from(Err(RuntimeError::operation_indeterminate(
                             "运行时执行者未返回确认",
                         )))
@@ -539,7 +522,7 @@ impl PendingExecution {
         self.completion.changed.notify_one();
         tracing::debug!(target: "velune_application", event = "runtime_operation", phase = "execution_complete", operation = self.name);
         let mut outcome = completed.outcome;
-        outcome.cleanup |= self.name == "native_cleanup";
+        outcome.cleanup |= self.name == "native_cleanup" || completed.state.is_none();
         let state = match completed.state {
             Some(ActiveState::Empty) if outcome.cleanup => self.view.take_history(),
             Some(state) => state,
@@ -562,7 +545,11 @@ impl LiveConversation for FrozenExecution {
     fn owned_snapshot(
         &self,
     ) -> Result<Option<Retained<crate::conversation::ConversationSnapshot>>, LiveError> {
-        Ok(self.snapshot.as_ref().map(Retained::try_clone).transpose()?)
+        Ok(self
+            .snapshot
+            .as_ref()
+            .map(Retained::try_clone)
+            .transpose()?)
     }
     fn turn_running(&self) -> bool {
         self.turn_running
@@ -577,15 +564,17 @@ impl LiveConversation for FrozenExecution {
             .map_err(|error| -> LiveError { error.as_str().into() })?;
         Ok(work.try_clone()?)
     }
-    fn background_tasks(&self) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
+    fn background_tasks(
+        &self,
+    ) -> Result<Retained<crate::conversation::BackgroundTaskList>, LiveError> {
         let tasks = self
             .background
             .as_ref()
             .map_err(|error| -> LiveError { error.as_str().into() })?;
         Ok(tasks.try_clone()?)
     }
-    fn work_settled(&self) -> bool {
-        false
+    fn work_status(&self) -> WorkStatus {
+        WorkStatus::Settling
     }
     fn has_pending_metadata(&self) -> bool {
         true
@@ -635,7 +624,9 @@ impl CoreRuntime {
 
     pub(super) fn start_native_cleanup_worker(&mut self) -> Result<(), RuntimeError> {
         if matches!(self.session.active_state, ActiveState::Pi(_))
-            && (self.session.pi_edit.is_some() || self.session.pi_control.is_some())
+            && (self.session.pi_edit.is_some()
+                || self.session.pi_control.is_some()
+                || self.session.pi_submission.is_some())
         {
             // Keep both business fact channels reachable until their owner has
             // harvested ready outcomes. Failed protocol tickets settle on poll.
@@ -675,7 +666,7 @@ impl CoreRuntime {
                 };
                 let result = state.live_mut().map_or(Ok(()), |live| {
                     live.shutdown()
-                        .map_err(|error| RuntimeError::context("Codex 终态清理", error))
+                        .map_err(|error| RuntimeError::context("运行时终态清理", error))
                 });
                 // Destruction, including the protocol writer/process tree, is part
                 // of this worker's lifecycle and precedes lease release.
@@ -784,6 +775,8 @@ impl CoreRuntime {
             .any(|session| {
                 matches!(session.active_state, ActiveState::Pending(_))
                     || session.native_controls.pending()
+                    || session.claude_submission.is_some()
+                    || session.pi_submission.is_some()
                     || session.pi_edit.is_some()
                     || session.pi_control.is_some()
                     || session.pi_io_cleanup.is_some()
@@ -955,6 +948,13 @@ impl CoreRuntime {
         outcome: OperationOutcome,
     ) -> Result<(), RuntimeError> {
         if outcome.cleanup {
+            self.finish_managed_backend_turn();
+            if outcome.result.is_err() {
+                self.session.send_queue.pause_after_stop();
+                // The scheduled-run sweep will settle this orphan as unknown.
+                // A later, explicitly submitted turn must not settle it.
+                self.session.scheduled_run = None;
+            }
             self.session.native_controls = Default::default();
             self.session.pi_cleanup_required = false;
             self.session.execution_runtime_id = None;
@@ -997,7 +997,7 @@ impl CoreRuntime {
         let Some(command) = self
             .execution_command
             .as_ref()
-            .filter(|command| command.dispatching && command.kind.allows(name))
+            .filter(|command| command.dispatching && command.allows(name))
         else {
             if self.session.native_controls.pending() {
                 return Err(RuntimeError::Busy);
@@ -1075,6 +1075,144 @@ mod tests {
             .unwrap();
         assert!(!timeout.timed_out());
         assert!(slot.completed.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_worker_loss_rechecks_native_source_without_replaying_work() {
+        use std::os::unix::fs::PermissionsExt;
+        use velune_conversation::{ExecutionKind, InputAccess};
+
+        let home =
+            std::env::temp_dir().join(format!("velune-recovery-{}", crate::new_record_key()));
+        fs::create_dir(&home).unwrap();
+        let home = home.canonicalize().unwrap();
+        let binary = home.join("claude");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
+import json, sys
+if "--version" in sys.argv:
+    print("2.1.286 (Claude Code)")
+    sys.exit(0)
+for line in sys.stdin:
+    record = json.loads(line)
+    assert record["request"]["subtype"] == "initialize"
+    print(json.dumps({"type": "control_response", "response": {
+        "subtype": "success", "request_id": record["request_id"], "response": {"models": []},
+    }}), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: home.clone(),
+            resources_directory: home.clone(),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let runtime = RuntimeInstance {
+            enabled: true,
+            id: "claude".into(),
+            name: "Claude".into(),
+            type_id: RuntimeKind::ClaudeCode,
+            gateway_id: "default".into(),
+            settings: [
+                ("binary".into(), binary.display().to_string()),
+                ("agentDir".into(), home.display().to_string()),
+            ]
+            .into(),
+        };
+        for (child, source_changed) in [(false, false), (true, false), (false, true)] {
+            core.session.send_queue = Default::default();
+            core.runtime_instances = vec![runtime.clone()];
+            let mut native =
+                NativeSession::connect(core.native_config(&runtime, None).unwrap()).unwrap();
+            let created = native.create(Some(&home), "claude").unwrap();
+            let id = created.conversation.id.clone();
+            if child {
+                let mut summary = created.conversation.clone();
+                summary.parent_conversation_id = Some("claude:parent".into());
+                native.set_conversation(Retained::from_parts(summary, DataRetention::default()));
+            }
+            core.queue_after_work(crate::local::TurnRequest {
+                submission_id: None,
+                source_runtime_id: runtime.id.clone(),
+                conversation_id: id.clone(),
+                runtime_id: runtime.id.clone(),
+                selection: None,
+                turn: crate::ComposedTurn {
+                    text: "still queued".into(),
+                    effort: None,
+                    permission_mode: None,
+                    attachments: Vec::new(),
+                },
+            });
+            core.session.execution_runtime_id = Some(runtime.id.clone());
+            core.capture_execution_configuration(&runtime, None);
+            let ticket = ExecutionTicket {
+                command: 1,
+                session: core.session.key,
+            };
+            let pending = core
+                .execution_workers
+                .submit(
+                    ActiveState::Native(Box::new(native)),
+                    ExecutionTarget::Local,
+                    ticket,
+                    None,
+                    "synthetic execution loss",
+                    |_| panic!("synthetic execution worker unwind"),
+                )
+                .unwrap_or_else(|(_, error)| panic!("worker admission: {error}"));
+            if source_changed {
+                let other = home.join("other-source");
+                fs::create_dir(&other).unwrap();
+                core.runtime_instances[0]
+                    .settings
+                    .insert("agentDir".into(), other.display().to_string());
+            }
+            wait_completed(&pending);
+            core.session.active_state = ActiveState::Pending(Box::new(pending));
+            core.session.scheduled_run = Some(("interrupted-schedule".into(), false));
+            core.drain_runtime().unwrap();
+            let failure = core
+                .execution_results
+                .remove(&ticket)
+                .unwrap()
+                .err()
+                .unwrap();
+            assert_eq!(
+                crate::Failure::from(failure).code,
+                "runtime_operation_indeterminate"
+            );
+            let view = core.current_snapshot().unwrap();
+            assert_eq!(view.conversation.id, id);
+            assert_eq!(view.run_state, RunState::Failed);
+            assert_eq!(view.actions.can_send, !child && !source_changed);
+            assert_eq!(
+                view.actions.input_access == InputAccess::ReadOnly,
+                child || source_changed
+            );
+            assert!(!view.actions.can_cancel);
+            assert!(view.follow_up.paused.is_some());
+            assert_eq!(view.follow_up.queue[0].text, "still queued");
+            assert!(
+                !view
+                    .executions
+                    .records
+                    .iter()
+                    .any(|record| record.kind == ExecutionKind::UserTurn)
+            );
+            assert!(core.session.scheduled_run.is_none());
+            core.invalidate_execution().unwrap();
+            assert_eq!(
+                core.current_snapshot().unwrap().actions.can_send,
+                !child && !source_changed
+            );
+        }
+        drop(application);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

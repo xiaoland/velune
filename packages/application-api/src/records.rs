@@ -24,6 +24,7 @@ pub struct RuntimeDiscoveryHint {
 pub struct RuntimeDiscoveryProbe {
     pub family_id: String,
     pub binary: String,
+    /// Empty when discovery found no Node executable.
     pub node_binary: String,
     pub agent_directory: String,
 }
@@ -52,6 +53,8 @@ pub struct ProviderSummary {
     pub quota_authentication: crate::QuotaAuthenticationDescription,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
     pub models: Vec<ProviderModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +77,8 @@ pub struct ProviderDraft {
     pub quota_source: ProviderQuotaSource,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<crate::config::QuotaLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -626,6 +631,12 @@ pub enum SendQueueOperation {
     },
     Remove {
         id: String,
+    },
+    /// Restore the queued input as the conversation's draft before removing it.
+    #[serde(rename_all = "camelCase")]
+    Withdraw {
+        id: String,
+        expected_revision: u64,
     },
     /// Move to `index` in the queue as it is after removing the message.
     Move {

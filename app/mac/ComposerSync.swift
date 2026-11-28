@@ -140,6 +140,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     private var deferred: [() -> Void] = []
     private var legacyBlankContexts: Set<String> = []
     private var pollPending = false
+    private var forcePollPending = false
     private var lastPoll = Date.distantPast
     private var pollBackoff = PollBackoff()
     let changes = PassthroughSubject<Void, Never>()
@@ -278,12 +279,13 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func isBoundElsewhere(_ inputID: UUID, than conversationID: String) -> Bool {
         guard let context = context(conversationID) else { return false }
         guard worker != nil else { return previewBindings.contains { $0.key != context && $0.value == inputID } }
-        let contexts = Set((state?.bindings.map(\.context) ?? []) + Array(optimisticBindings.keys))
-        return contexts.contains { other in
-            guard other != context, !isCreationTransfer(inputID, between: context, and: other) else { return false }
-            if let pending = optimisticBindings[other] { return pending.inputID == inputID }
-            return state?.bindings.contains { $0.context == other && UUID(uuidString: $0.inputId) == inputID } == true
-        }
+        // One pass over each: a pending binding stands for its context in place of the saved one.
+        // Menus and every composer ask this as the window changes, over hundreds of saved bindings.
+        func elsewhere(_ other: ComposerContextKey) -> Bool { other != context && !isCreationTransfer(inputID, between: context, and: other) }
+        if optimisticBindings.contains(where: { $0.value.inputID == inputID && elsewhere($0.key) }) { return true }
+        return state?.bindings.contains { binding in
+            UUID(uuidString: binding.inputId) == inputID && optimisticBindings[binding.context] == nil && elsewhere(binding.context)
+        } == true
     }
     func isCreationTransfer(_ inputID: UUID, between first: String, and second: String) -> Bool {
         guard let first = context(first), let second = context(second) else { return false }
@@ -332,13 +334,19 @@ private final class ComposerInputWorker: @unchecked Sendable {
     func resumePolling() { pollBackoff.succeeded() }
 
     func poll(force: Bool = false) {
-        guard let worker, !pollPending, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
+        guard let worker, force || (pollBackoff.ready && Date().timeIntervalSince(lastPoll) > 0.6) else { return }
+        if pollPending {
+            if force { forcePollPending = true }
+            return
+        }
         pollPending = true; lastPoll = Date()
         worker.queue.async { [weak self] in
             let result = Result { try worker.poll(force: force) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pollPending = false
+                let refresh = self.forcePollPending
+                self.forcePollPending = false
                 switch result {
                 case .success(let result): self.pollBackoff.succeeded(); self.apply(result); if force { self.changes.send() }
                 case .failure(let error):
@@ -346,6 +354,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
                     self.available = false; self.changes.send()
                     if force { self.device?.recordProblem(error, source: "读取共享输入") }
                 }
+                if refresh { self.poll(force: true) }
             }
         }
     }

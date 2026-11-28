@@ -1,10 +1,72 @@
 //! Task-scoped Claude stream-json observations and nonblocking control.
 use super::*;
+use std::time::Instant;
+
+pub(super) struct TaskRefresh {
+    pub(super) request_id: String,
+    pub(super) deadline: Instant,
+    pub(super) accepted: bool,
+}
 
 impl NativeSession {
+    pub(super) fn claude_refresh_background_tasks(&mut self) {
+        self.claude_expire_task_refresh();
+        if self.failed
+            || self.process_ended
+            || self.side
+            || self.claude.commands.barrier
+            || self.claude.commands.cleanup_required
+            || self.native_id.is_none()
+            || self.claude.bound_session_id != self.native_id
+            || self.claude.task_refresh.is_some()
+        {
+            return;
+        }
+        let Some(sequence) = self.claude.task_sequence.checked_add(1) else {
+            self.claude.task_refresh_issue = Some("无法发送 Claude 后台任务刷新请求。");
+            return;
+        };
+        self.claude.task_sequence = sequence;
+        let request_id = format!("velune-background-refresh-{sequence}");
+        let deadline = Instant::now() + rpc::CONTROL_TIMEOUT;
+        // A bare reinitialize makes the running CLI replay its live task set.
+        // Leave hooks and the existing session configuration in place.
+        let request = json!({"type":"control_request","request_id":request_id,"request":{"subtype":"initialize"}});
+        if self
+            .rpc
+            .enqueue_claude_frame_receipt(
+                &request,
+                crate::transport::WriteClass::Ordinary,
+                deadline,
+                4096,
+            )
+            .is_ok()
+        {
+            self.claude.task_refresh = Some(TaskRefresh {
+                request_id,
+                deadline,
+                accepted: false,
+            });
+        } else {
+            self.claude.task_refresh_issue = Some("无法发送 Claude 后台任务刷新请求。");
+        }
+    }
+
     pub(super) fn claude_background_record(&mut self, record: &Value) {
+        self.claude_expire_task_refresh();
         if record["type"] == "control_response" {
             let response = &record["response"];
+            if let Some(refresh) = &mut self.claude.task_refresh
+                && response["request_id"] == refresh.request_id.as_str()
+            {
+                if response["subtype"] == "success" {
+                    refresh.accepted = true;
+                } else {
+                    self.claude.task_refresh = None;
+                    self.claude.task_refresh_issue = Some("Claude 未接受后台任务刷新请求。");
+                }
+                return;
+            }
             if let Some((id, _)) = response["request_id"]
                 .as_str()
                 .and_then(|id| self.claude.task_stops.remove(id))
@@ -41,15 +103,42 @@ impl NativeSession {
         }
         let subtype = record["subtype"].as_str().unwrap_or("");
         if subtype == "background_tasks_changed" {
+            let session = record["session_id"].as_str();
+            if let (Some(observed), Some(expected)) = (session, self.native_id.as_deref())
+                && observed != expected
+            {
+                return;
+            }
             let Some(tasks) = record["tasks"].as_array() else {
                 return;
             };
+            // The snapshot has no request ID. The CLI sends it after the
+            // matching ACK on this same ordered stream.
+            if session.is_some()
+                && session == self.native_id.as_deref()
+                && self
+                    .claude
+                    .task_refresh
+                    .as_ref()
+                    .is_some_and(|refresh| refresh.accepted)
+            {
+                self.claude.task_refresh = None;
+                self.claude.task_refresh_issue = None;
+            }
             let mut current = std::collections::BTreeSet::new();
+            let mut background_runs = std::collections::BTreeSet::new();
             for task in tasks {
                 if let Some(id) = self.claude_observe_task(task) {
                     current.insert(id);
+                    if let Some(run) = self.claude_track_background_followup(task) {
+                        background_runs.insert(run);
+                    }
                 }
             }
+            self.claude.background_followups.retain(|run, kind| {
+                *kind != claude::BackgroundFollowup::Running
+                    || background_runs.contains(run.as_str())
+            });
             for (id, task) in &mut self.claude.task_infos {
                 if !current.contains(id)
                     && matches!(
@@ -71,7 +160,12 @@ impl NativeSession {
             return;
         }
         if matches!(subtype, "task_started" | "task_progress") {
-            self.claude_observe_task(record);
+            if self.claude_observe_task(record).is_some()
+                && subtype == "task_started"
+                && record["is_backgrounded"] == true
+            {
+                self.claude_track_background_followup(record);
+            }
         } else if matches!(subtype, "task_notification" | "task_updated") {
             let Some(native_id) = record["task_id"].as_str() else {
                 return;
@@ -108,6 +202,25 @@ impl NativeSession {
                 .or_else(|| record["patch"]["status"].as_str());
             if let Some(task) = self.claude.task_infos.get_mut(&public) {
                 if let Some(state) = state {
+                    // Claude can remove a task from the active set before the
+                    // prompt carrying its completion reaches the model.
+                    if self.claude.task_runs.get(native_id) == Some(&public)
+                        && let Some(run) = record["run_id"].as_str()
+                        && self.claude.background_followups.get(run)
+                            == Some(&claude::BackgroundFollowup::Running)
+                    {
+                        match state {
+                            "completed" | "failed" => {
+                                self.claude
+                                    .background_followups
+                                    .insert(run.into(), claude::BackgroundFollowup::AwaitingResult);
+                            }
+                            "stopped" | "killed" => {
+                                self.claude.background_followups.remove(run);
+                            }
+                            _ => {}
+                        }
+                    }
                     task.status = crate::background::status(state);
                 }
                 task.can_stop = self.claude.task_stop_capable
@@ -127,6 +240,23 @@ impl NativeSession {
             }
         }
         self.claude_prune_background_tasks();
+    }
+
+    fn claude_track_background_followup<'a>(&mut self, task: &'a Value) -> Option<&'a str> {
+        if !self.claude.background_followup_capable
+            || !matches!(
+                task["task_type"].as_str(),
+                Some("local_bash" | "local_agent" | "local_workflow")
+            )
+        {
+            return None;
+        }
+        let run = task["run_id"].as_str()?;
+        self.claude
+            .background_followups
+            .entry(run.to_owned())
+            .or_insert(claude::BackgroundFollowup::Running);
+        Some(run)
     }
 
     fn claude_observe_task(&mut self, record: &Value) -> Option<String> {
@@ -209,6 +339,9 @@ impl NativeSession {
     }
 
     pub fn background_tasks(&self) -> Result<Retained<BackgroundTaskList>> {
+        if self.config.kind == NativeKind::Codex166 {
+            return self.codex_background_tasks();
+        }
         let retention = self
             .data
             .try_clone(|owner| matches!(owner, DataOwner::Task(_) | DataOwner::TaskIssue))?;
@@ -241,7 +374,11 @@ impl NativeSession {
             BackgroundTaskList {
                 tasks,
                 live,
-                issue: self.claude.task_issue.clone(),
+                issue: self
+                    .claude
+                    .task_refresh_issue
+                    .map(str::to_owned)
+                    .or_else(|| self.claude.task_issue.clone()),
             },
             retention,
         ))
@@ -297,6 +434,9 @@ impl NativeSession {
             .ok_or_else(|| Error::new("任务输出请求已失效"))
     }
     pub fn stop_background_task(&mut self, task: &str) -> Result<()> {
+        if self.config.kind == NativeKind::Codex166 {
+            return self.codex_stop_background_task(task);
+        }
         self.ensure_claude_sync_mutation()?;
         let native = self.claude_stop_target(task)?;
         self.claude.task_sequence = self
@@ -341,6 +481,7 @@ impl NativeSession {
         })
     }
     pub(super) fn claude_expire_background_controls(&mut self) {
+        self.claude_expire_task_refresh();
         let before = self.claude.task_stops.len();
         self.claude
             .task_stops
@@ -350,6 +491,16 @@ impl NativeSession {
                 Some("运行时尚未确认停止请求，请刷新任务状态或在原生工具中核对。".into());
             // Keep Stopping and the process lease until a full live snapshot
             // or terminal event proves the job is no longer active.
+        }
+    }
+    fn claude_expire_task_refresh(&mut self) {
+        if self
+            .claude
+            .task_refresh
+            .take_if(|refresh| refresh.deadline <= Instant::now())
+            .is_some()
+        {
+            self.claude.task_refresh_issue = Some("Claude 后台任务刷新超时。");
         }
     }
     fn claude_prune_background_tasks(&mut self) {

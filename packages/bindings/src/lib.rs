@@ -29,8 +29,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 #[cfg(feature = "local-runtime")]
 use velune_application::{ApplicationService, Error, Options};
-#[cfg(any(feature = "local-runtime", feature = "remote"))]
-use velune_application_api::ClientViewId;
 use velune_application_api::conversation::{EditPlacement, RuntimeInteractionReply};
 use velune_application_api::*;
 
@@ -56,6 +54,34 @@ impl VeluneSendCancellation {
     }
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+/// A local transcript invalidation hint. An absent ID asks the client to
+/// refresh all observed conversations using the ordinary snapshot reader.
+#[derive(uniffi::Record)]
+pub struct NativeUserMessageWake {
+    pub conversation_id: Option<String>,
+}
+
+#[derive(uniffi::Object)]
+pub struct VeluneNativeUserMessageEvents {
+    #[cfg(feature = "local-runtime")]
+    events: velune_application::NativeUserMessageEvents,
+}
+
+#[uniffi::export]
+impl VeluneNativeUserMessageEvents {
+    /// An absent wake means the local application owner closed.
+    pub async fn next(&self) -> Option<NativeUserMessageWake> {
+        #[cfg(feature = "local-runtime")]
+        {
+            Some(NativeUserMessageWake {
+                conversation_id: self.events.next().await?.conversation_id,
+            })
+        }
+        #[cfg(not(feature = "local-runtime"))]
+        None
     }
 }
 
@@ -115,7 +141,7 @@ pub enum BindingError {
         kind: BindingFailureKind,
         detail: String,
         code: String,
-        request_id: Option<velune_remote::RequestId>,
+        request_id: Option<Box<velune_remote::RequestId>>,
         operation_id: String,
     },
     #[error("application has been closed")]
@@ -168,6 +194,32 @@ pub fn provider_templates() -> Result<Vec<ProviderTemplate>, BindingError> {
     Ok(velune_application_api::provider_templates())
 }
 
+#[cfg(feature = "local-runtime")]
+#[uniffi::export]
+pub fn default_codex_client_version() -> String {
+    velune_application::default_codex_client_version().to_owned()
+}
+
+#[uniffi::export]
+pub fn acp_session_model(options: Vec<AcpConfigOption>) -> Option<ModelSelection> {
+    velune_application_api::acp_session_model(options)
+}
+
+#[uniffi::export]
+pub fn is_acp_auto_compaction_option(option: AcpConfigOption) -> bool {
+    option.is_auto_compaction()
+}
+
+#[uniffi::export]
+pub fn can_bind_acp_auto_compaction_option(option: AcpConfigOption) -> bool {
+    option.can_bind_auto_compaction()
+}
+
+#[uniffi::export]
+pub fn acp_auto_compaction_accepts(option: AcpConfigOption, value: AcpConfigValue) -> bool {
+    option.can_bind_auto_compaction() && option.accepts(&value)
+}
+
 #[uniffi::export]
 pub fn runtime_new_conversation_choice(
     runtime: RuntimeInstance,
@@ -182,6 +234,13 @@ pub fn runtime_with_new_conversation_choice(
 ) -> Result<RuntimeInstance, BindingError> {
     velune_application_api::runtime_with_new_conversation_choice(runtime, choice)
         .map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn runtime_model_auto_compactions(
+    runtime: RuntimeInstance,
+) -> Result<Vec<ModelAutoCompaction>, BindingError> {
+    runtime.model_auto_compactions().map_err(Into::into)
 }
 
 #[uniffi::export]
@@ -234,6 +293,24 @@ pub fn provider_billing_service(endpoint: String) -> Option<BillingService> {
 pub struct BindingOptions {
     pub home_directory: String,
     pub resources_directory: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct BindingQueuedHandoffSummary {
+    pub source_runtime_id: String,
+    pub conversation_id: String,
+    pub target_runtime_id: String,
+    pub selection: Option<ModelSelection>,
+    pub turn: ComposedTurn,
+    pub summary_model: Option<ModelSelection>,
+    pub effort: Option<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct BindingMessageReference {
+    pub runtime_id: String,
+    pub conversation_id: String,
+    pub message_id: String,
 }
 
 #[derive(Clone)]
@@ -328,11 +405,9 @@ impl VeluneApplication {
                     match backend {
                         #[cfg(feature = "local-runtime")]
                         Backend::Local(service) => match (self.owns_backend, cancellation) {
-                            (true, Some(flag)) => service.execute_cancellable(
-                                self.client_view.clone(),
-                                command,
-                                flag,
-                            ),
+                            (true, Some(flag)) => {
+                                service.execute_cancellable(self.client_view.clone(), command, flag)
+                            }
                             (true, None) => service.execute(self.client_view.clone(), command),
                             (false, Some(flag)) => service.execute_isolated_cancellable(
                                 self.client_view.clone(),
@@ -455,23 +530,33 @@ impl VeluneApplication {
     /// wrapper releases only that view and never shuts down the shared owner.
     pub fn with_client_view(&self, view_id: String) -> Result<Arc<Self>, BindingError> {
         validate_client_view_id(&view_id)?;
-        let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
-        let backend = match backend {
-            #[cfg(feature = "local-runtime")]
-            Backend::Local(service) => Backend::Local(service),
-            #[cfg(feature = "remote")]
-            Backend::Remote(remote) => Backend::Remote(remote.with_client_view(view_id.clone())?),
-        };
-        Ok(Arc::new(Self {
-            application: Arc::new(Mutex::new(Some(backend))),
-            client_view: ClientViewId(view_id),
-            owns_backend: false,
-            trace_carrier: self.trace_carrier.clone(),
-            composer_authority: self.composer_authority.clone(),
-            diagnostics: self.diagnostics.clone(),
-            #[cfg(all(feature = "local-runtime", feature = "remote"))]
-            remote_service: self.remote_service.clone(),
-        }))
+        #[cfg(any(feature = "local-runtime", feature = "remote"))]
+        {
+            let backend = self.lock()?.as_ref().ok_or(BindingError::Closed)?.clone();
+            let backend = match backend {
+                #[cfg(feature = "local-runtime")]
+                Backend::Local(service) => Backend::Local(service),
+                #[cfg(feature = "remote")]
+                Backend::Remote(remote) => {
+                    Backend::Remote(remote.with_client_view(view_id.clone())?)
+                }
+            };
+            Ok(Arc::new(Self {
+                application: Arc::new(Mutex::new(Some(backend))),
+                client_view: ClientViewId(view_id),
+                owns_backend: false,
+                trace_carrier: self.trace_carrier.clone(),
+                composer_authority: self.composer_authority.clone(),
+                diagnostics: self.diagnostics.clone(),
+                #[cfg(all(feature = "local-runtime", feature = "remote"))]
+                remote_service: self.remote_service.clone(),
+            }))
+        }
+        #[cfg(not(any(feature = "local-runtime", feature = "remote")))]
+        {
+            drop(self.lock()?);
+            Err(BindingError::Closed)
+        }
     }
 
     /// An immutable per-call view. Dropping it does not close the shared application session.
@@ -1265,6 +1350,22 @@ impl VeluneApplication {
             }
         )
     }
+    /// Subscribe to the local execution owner. Remote handles use snapshot reads.
+    pub fn native_user_message_events(&self) -> Option<Arc<VeluneNativeUserMessageEvents>> {
+        #[cfg(feature = "local-runtime")]
+        {
+            match self.lock().ok()?.as_ref()? {
+                Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
+                    events: service.native_user_message_events()?,
+                })),
+                #[cfg(feature = "remote")]
+                Backend::Remote(_) => None,
+            }
+        }
+        #[cfg(not(feature = "local-runtime"))]
+        None
+    }
+
     /// Poll a view relative to the cursor of its latest delivery.
     pub fn snapshot_update(
         &self,
@@ -1330,6 +1431,22 @@ impl VeluneApplication {
     }
     pub fn acp_launch(&self, runtime_id: String) -> Result<AcpLaunch, BindingError> {
         request!(self, "acp_launch", ReadAcpLaunch { runtime_id })
+    }
+    pub fn set_runtime_model_auto_compaction(
+        &self,
+        runtime_id: String,
+        model: ModelSelection,
+        setting: Option<AutoCompactionSetting>,
+    ) -> Result<RuntimeUpdate, BindingError> {
+        request!(
+            self,
+            "set_runtime_model_auto_compaction",
+            SetRuntimeModelAutoCompaction {
+                runtime_id,
+                model,
+                setting
+            }
+        )
     }
     pub fn acp_runtime_info(&self, runtime_id: String) -> Result<AcpRuntimeInfo, BindingError> {
         request!(self, "acp_runtime_info", ReadAcpRuntimeInfo { runtime_id })
@@ -1492,15 +1609,18 @@ impl VeluneApplication {
     #[uniffi::method(default(submission_id = None))]
     pub fn queue_handoff_summary(
         &self,
-        source_runtime_id: String,
-        conversation_id: String,
-        target_runtime_id: String,
-        selection: Option<ModelSelection>,
-        turn: ComposedTurn,
-        summary_model: Option<ModelSelection>,
-        effort: Option<String>,
+        request: BindingQueuedHandoffSummary,
         submission_id: Option<String>,
     ) -> Result<QueuedHandoffSummaryStart, BindingError> {
+        let BindingQueuedHandoffSummary {
+            source_runtime_id,
+            conversation_id,
+            target_runtime_id,
+            selection,
+            turn,
+            summary_model,
+            effort,
+        } = request;
         request!(
             self,
             "queue_handoff_summary",
@@ -1705,6 +1825,7 @@ impl VeluneApplication {
         runtime_id: String,
         conversation_id: String,
         turn: ComposedTurn,
+        target_runtime_id: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
         request!(
             self,
@@ -1712,7 +1833,8 @@ impl VeluneApplication {
             SteerTurn {
                 runtime_id,
                 conversation_id,
-                turn
+                turn,
+                target_runtime_id
             }
         )
     }
@@ -1785,39 +1907,31 @@ impl VeluneApplication {
     #[uniffi::method(default(expected_revision = None))]
     pub fn edit_message(
         &self,
-        runtime_id: String,
-        conversation_id: String,
-        message_id: String,
+        message: BindingMessageReference,
         placement: EditPlacement,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
         expected_revision: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
-        self.edit_message_with_runtime(
-            runtime_id,
-            conversation_id,
-            message_id,
-            placement,
-            None,
-            selection,
-            turn,
-            expected_revision,
-        )
+        self.edit_message_with_runtime(message, placement, None, selection, turn, expected_revision)
     }
 
     /// Editing with a different runtime creates a translated branch.
     #[uniffi::method(default(expected_revision = None))]
     pub fn edit_message_with_runtime(
         &self,
-        runtime_id: String,
-        conversation_id: String,
-        message_id: String,
+        message: BindingMessageReference,
         placement: EditPlacement,
         target_runtime_id: Option<String>,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
         expected_revision: Option<String>,
     ) -> Result<SnapshotResult, BindingError> {
+        let BindingMessageReference {
+            runtime_id,
+            conversation_id,
+            message_id,
+        } = message;
         request!(
             self,
             "edit_message",
@@ -1913,17 +2027,20 @@ impl VeluneApplication {
         request!(self, "close_side_chat", CloseSideChat { side_chat_id }; unit)
     }
 
+    #[uniffi::method(default(manual = false))]
     pub fn background_tasks(
         &self,
         runtime_id: String,
         conversation_id: String,
+        manual: bool,
     ) -> Result<BackgroundTaskList, BindingError> {
         request!(
             self,
             "background_tasks",
             ReadBackgroundTasks {
                 runtime_id,
-                conversation_id
+                conversation_id,
+                manual
             }
         )
     }

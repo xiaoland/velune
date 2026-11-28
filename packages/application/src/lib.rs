@@ -14,8 +14,10 @@ pub use velune_application_api::{
     ScheduledTasksOperation, ScheduledTasksState,
 };
 mod service;
-pub use service::ApplicationService;
+pub use service::{ApplicationService, NativeUserMessageEvents};
 mod analytics_report;
+mod antigravity_cli;
+mod antigravity_quota;
 mod api_account_quota;
 mod ark_quota;
 mod authentication_resolver;
@@ -58,6 +60,11 @@ pub use velune_application_api::{
     ProviderAnalyticsSourceState, ProviderAnalyticsUsage,
 };
 pub use velune_application_api::{ProviderTemplate, ProviderTemplateKind, provider_templates};
+
+pub fn default_codex_client_version() -> &'static str {
+    velune_agent_runtime::version::CODEX_LATEST_SUPPORTED_VERSION
+}
+
 pub mod config;
 mod local;
 pub mod model_catalog;
@@ -165,14 +172,21 @@ impl Error {
         Self::Contract(failure)
     }
     pub(crate) fn runtime_operation(message: &str, cause: velune_agent_runtime::LiveError) -> Self {
-        let indeterminate = cause.downcast_ref::<velune_agent_runtime::native::Error>()
+        let indeterminate = cause
+            .downcast_ref::<velune_agent_runtime::native::Error>()
             .is_some_and(|error| matches!(error.code(), "timeout" | "transport"))
-            || cause.downcast_ref::<velune_agent_runtime::Error>().is_some_and(|error| matches!(
-                error,
-                velune_agent_runtime::Error::Timeout(_) | velune_agent_runtime::Error::ChildExited
-                    | velune_agent_runtime::Error::Transport(_)
-                    | velune_agent_runtime::Error::Io(_) | velune_agent_runtime::Error::Json(_)
-            ));
+            || cause
+                .downcast_ref::<velune_agent_runtime::Error>()
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        velune_agent_runtime::Error::Timeout(_)
+                            | velune_agent_runtime::Error::ChildExited
+                            | velune_agent_runtime::Error::Transport(_)
+                            | velune_agent_runtime::Error::Io(_)
+                            | velune_agent_runtime::Error::Json(_)
+                    )
+                });
         if indeterminate {
             Self::operation_indeterminate(format!("{message}：{cause}"))
         } else {
@@ -338,6 +352,9 @@ mod failure_tests {
         let busy = Failure::from(Error::Busy);
         assert_eq!(busy.kind, FailureKind::Invalid);
         assert_eq!(busy.code, "busy");
-        assert_eq!(Failure::from(Error::invalid("local validation")).code, "invalid");
+        assert_eq!(
+            Failure::from(Error::invalid("local validation")).code,
+            "invalid"
+        );
     }
 }

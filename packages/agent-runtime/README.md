@@ -47,7 +47,7 @@ Pi 固定版本及协议边界见 [开发说明](../../docs/development.md)。SD
 
 ## 版本与原生控制
 
-运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.166`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.166.0 <0.168.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0；下限是以实际 CLI 验证过的版本，上限不含。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。较新的 CLI 经实际验证没有破坏性变化时提高上限（Codex 0.163.0-alpha.10.2 已于 2026-10-21 验证，Codex 0.167.0-alpha.3.2 已于 2026-11-06 验证）。专用适配器启动前探测配置的 CLI 版本；协议握手继续检查所需能力。区间内的版本照常使用；出现破坏性变化才增加独立 variant 与 adapter，未经实际 CLI 验证不扩大区间；多个 variant 与同 variant 的多个实例可并存。
+运行时类型是 versioned variant，family 仅用于展示分组，不作为派发键。四个专用 variant 为 `pi-1.0`（family `pi`）、`codex-0.166`（family `codex`）、`dsh-acp-0.2`（family `deepseek-harness`）、`claude-code-2.1`（family `claude-code`）。各自声明已验证的兼容区间（`Versions::Cli`，语义化版本比较）：≥1.0.2 <1.5.0、≥0.166.0 <0.172.0、≥0.2.0-rc.2 <0.3.0、≥2.1.286 <2.2.0。比较只看 major.minor.patch，alpha、beta 等预发布版本按其正式版计入。Pi 1.4.0 保留了本适配器消费的 SDK／RPC／会话接口，因此沿用 `pi-1.0` 实例身份，并消费 1.1 起的 `agent_settled.aborted` 取消证据。Codex 0.168.0、0.169.0、0.169.1、0.170.0、0.171.0-alpha.13 和 0.171.0 经实际 CLI 验证，沿用 `codex-0.166` 实例身份。专用适配器启动前探测配置的 CLI 版本，协议握手继续检查所需能力。后续版本先用实际 CLI 验证，兼容时提高上限，出现破坏性变化时增加独立 variant 与 adapter。多个 variant 与同 variant 的多个实例可并存。
 
 Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provider 与启动配置，`turn/start` 再检查当前 provider；旧适配器仅在请求中注入 `velune` 不再成立。新类型在子进程启动参数中注入自己的 gateway provider。原生与托管 provider 之间切换由 application 的既有逻辑会话接续处理；同 provider 恢复仍用原生 thread/resume。0.166 不改写原生 provider，不覆盖原 provider 的定义或凭据。历史、管理、控制探测与原生执行均保留具体 variant，不将 0.166 折回旧类型。
 
@@ -62,6 +62,8 @@ Codex 0.166 的 `load_for_resume` 同时核对保存的 provider、请求 provid
 文件打开与部分 OS 调用不能通过取消标记强制中断。调用方必须在真实返回前保留并发名额，预算到期的返回值不能作为可写证据；`tokio::timeout` 或丢弃接收端都不能替代资源回收。该预算不改变完整历史载荷的保留规则，也不是 live RPC 写入／响应的统一异步实现。
 
 ## 通用 ACP v1
+
+Antigravity 的快速导入将官方 CLI 1.5.1 或更新版本配置为 `acp-v1`，以 `agy acp` 启动。导入只读取 CLI 版本，连接时再协商 ACP 能力。账户与会话由 Antigravity 管理，模型及推理档位以会话回报为准。 [Google ACP 指南](https://antigravity.google/docs/cli/acp/)
 
 `acp::Config` 接受目标机器上的绝对 `binary`、完整 `args`、显式 `environment`、`ExecutionTarget` 与可选 `os_home`。用户安装的原生 ACP 程序和社区 bridge 均可直接作为启动命令；本包不安装 Agent、不维护程序名单，也不要求通用 ACP 使用 Node 或本包 helper。SSH 与 HOME 复用下文执行边界。设置 `os_home` 时禁止环境表重复设置 `HOME`，避免家目录归属不明确；环境值可能包含秘密，因此该配置不实现 Debug。
 
@@ -86,7 +88,7 @@ wire 类型采用官方 `agent-client-protocol-schema = 1.11.0` 的稳定 v1 模
 | 适配器 | 临时注入入口 |
 | --- | --- |
 | Codex | `thread/start` 与 `thread/resume` 的 `config.mcp_servers`；通过子进程环境传入 bearer token，保留原生配置中的其它服务。 |
-| Claude Code | 初始化后读取 `mcp_status`，拒绝与已加载服务重名，再通过 `mcp_set_servers` 追加并确认连接；每轮新进程重新注入，全程经控制 stdin，不写 `.mcp.json`。 |
+| Claude Code | 每次启动进程后读取 `mcp_status`，拒绝与已加载服务重名，再通过 `mcp_set_servers` 追加并确认连接。全程经控制 stdin，不写 `.mcp.json`。 |
 | Pi | 装配 SDK 的 `createMcpExtension()`，通过 `registerMcpServer` 注册当前会话的 direct 工具；SDK 保留既有 MCP 来源与权限扩展，注册不写回配置。 |
 | DSH | `session/new` 与 `session/resume` 的标准 `mcpServers`；核对 HTTP 能力，模型目录发现的临时会话不注入协作服务。 |
 | 通用 ACP | `session/new/load/resume` 的标准 `mcpServers`；HTTP 仅在 Agent 公布 `mcpCapabilities.http` 时使用，否则采用标准必需的 stdio 传输。 |
@@ -162,9 +164,9 @@ SSH 启动请求通过 stdin 长度帧传入 argv、环境与 cwd，后续 stdin
 
 `os_home` 只控制子进程和其工具看到的 `HOME`；`agent_dir` 分别映射 `PI_CODING_AGENT_DIR`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`DSH_HOME`。例外：本机 Claude Code 实例的 `os_home` 为空或等于应用自身 HOME，且 `agent_dir` 就是该 HOME 的 `.claude` 时，不设并移除 `CLAUDE_CONFIG_DIR`；Claude Code 2.1.292 只要该变量存在（即使取默认值）就给 macOS Keychain 服务名加目录哈希后缀，导致找不到用户在终端完成的登录。其他目录与 managed HOME 仍显式设置，保持按目录隔离。application 决定采用现有 HOME 还是创建 Velune managed HOME，并显式提供两种路径。本包不读取默认 HOME 推断另一份真实配置，也不复制来源认证。managed HOME 本身不代表已登录。
 
-Claude Code 的每轮执行使用独立 `--print --input-format stream-json --output-format stream-json` 控制进程，首轮 `--session-id`、后续 `--resume` 保留原生会话身份。工具权限通过 `can_use_tool` 转为 conversation 交互，由调用方明确答复。已有 provider 由 Claude 自己解析；managed 轮次设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 与临时 Messages 端点／token，清除该子进程的其它 provider 认证开关，避免来源 `settings.env` 覆盖本轮注入。没有修改、备份或恢复用户 provider 文件。
+Claude Code 以 `--print --input-format stream-json --output-format stream-json` 启动控制进程，首次使用 `--session-id`，重开使用 `--resume` 延续原生会话。主轮结束且仍有后台任务时，下一条普通消息可在相同执行配置下复用该进程。需要重新准备模型、提供商、推理强度或权限配置时，等后台工作结算后再更换进程。工具权限通过 `can_use_tool` 转为 conversation 交互，由调用方明确答复。已有 provider 由 Claude 自己解析；managed 轮次设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 与临时 Messages 端点／token，清除该子进程的其它 provider 认证开关，避免来源 `settings.env` 覆盖本轮注入。没有修改、备份或恢复用户 provider 文件。
 
-固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。`result` 只记录轮次结果，原生 `session_state_changed: idle` 确认本轮及其原生后台工作结束后才撤销注入。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支；不扫描认证文件，不显示 Harness 注入的 `isMeta` 用户记录。标题依次取 `custom-title`、Claude Code 生成的 `ai-title`、首条用户提示；斜杠命令记录（`<command-name>`）按输入显示为 `/名称 参数`，不当作标题，本地命令输出（`<local-command-stdout>`／`stderr`）非空时显示为系统通知。Claude Code 把会话转到后台继续时，新会话复制原有记录，原会话末尾写入 `continued-in`；该记录之后没有新的对话、且接续会话存在时，原会话不列入索引（仍可按 ID 读取），只列接续会话。会话的工作目录取 Claude Code 存放它的项目目录所对应的记录 `cwd`（Agent 进入 worktree 后会话随之存放在 worktree 下）；记录的 `cwd` 会随 Agent 进入子目录变化，不取最后一条；目录名被缩短而对不上时取第一条记录的 `cwd`。会话旁 `subagents/agent-<id>.jsonl` 以 `<session>/agent-<id>` 列为带父会话的只读子会话（标题取 meta 的 description），父会话的工具结果与 `<task-notification>` 记录（显示为“任务通知”工具块）链接该子会话；实时流同样链接，并丢弃带 `parent_tool_use_id` 的子 Agent 消息。
+固定版本启用 `CLAUDE_CODE_SDK_READS_SESSION_STATE`。后台仍活跃时，原生用户 UUID 对应的 `result` 和 `command_lifecycle: completed` 可共同确认用户轮次结束。缺少该证据时沿用 `result` 加 `idle`。已验证 Claude Code 2.1.327 的后台任务终态早于自动回复，adapter 按原生任务 run ID 等待自动回复及随后 `idle`，再释放进程与网关。长期观察任务可能阻止 idle：复用 SDK 的十分钟无后续主线程活动上限，且仅在无待答交互、无 local agent/workflow 任务时关闭进程并将结束状态标为失败，不伪造成功。原生运行时退出、取消或派发失败都释放本轮进程与隧道。Claude 历史只读取显式 projects 根下的原生 JSONL，按 parent UUID 还原当前分支；不扫描认证文件，不显示 Harness 注入的 `isMeta` 用户记录。标题依次取 `custom-title`、Claude Code 生成的 `ai-title`、首条用户提示；斜杠命令记录（`<command-name>`）按输入显示为 `/名称 参数`，不当作标题，本地命令输出（`<local-command-stdout>`／`stderr`）非空时显示为系统通知。Claude Code 把会话转到后台继续时，新会话复制原有记录，原会话末尾写入 `continued-in`；该记录之后没有新的对话、且接续会话存在时，原会话不列入索引（仍可按 ID 读取），只列接续会话。会话的工作目录取 Claude Code 存放它的项目目录所对应的记录 `cwd`（Agent 进入 worktree 后会话随之存放在 worktree 下）；记录的 `cwd` 会随 Agent 进入子目录变化，不取最后一条；目录名被缩短而对不上时取第一条记录的 `cwd`。会话旁 `subagents/agent-<id>.jsonl` 以 `<session>/agent-<id>` 列为带父会话的只读子会话（标题取 meta 的 description），父会话的工具结果与 `<task-notification>` 记录（显示为“任务通知”工具块）链接该子会话；实时流同样链接，并丢弃带 `parent_tool_use_id` 的子 Agent 消息。
 
 协议依据于 2026-10-10 复核：[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)、[环境变量与 host-managed provider](https://code.claude.com/docs/en/env-vars)、[官方 SDK 控制协议](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)、[OpenSSH 转发与控制连接](https://man.openbsd.org/ssh.1)。composer 的来源模型选择、SSH/HOME 编辑入口属于 app，明确待实现；本 unit 只提供可消费契约。
 
@@ -203,6 +205,7 @@ application 负责 busy 修改门控与资源库的同步；本包不做 UI 或�
 
 Codex 原生项目通过同一个有界 app-server 连接读取 `project/list` 与 `thread/list.projectId`，不扫描桌面私有配置或根据 cwd 推断成员关系。`native::codex_projects` 保留原生项目 ID、名称和有序根，接受共享目录和零根项目。编辑直接以 `project/update` 提交名称和根，保留 metadata，不附加并发修改检查。原生项目目录不用于覆盖已有线程的 `runtimeWorkspaceRoots`，恢复与继续交给 Codex 保留已存工作区。
 
+在支持文件身份核验的 Unix 本机来源上，应用服务在启动时后台预热普通 Codex 列表。适配器在完整读取前后核对文件集合及文件版本，并将来源配置、文件集合与原生索引结果的摘要证明（`schemaVersion: 1`）持久化到应用状态目录。后续启动或刷新时，若持久化证明与当前来源和文件集合一致，预热直接跳过修复扫描、列表仅执行 `useStateDbOnly` 读取；文件改动、索引结果摘要不符或核验失败时重新执行原生修复并更新证明。未知 schema 或损坏的证明文件保留原样、不覆盖。项目列表每次都从同一 app-server 读取。
 
 ## 主动上下文压缩
 

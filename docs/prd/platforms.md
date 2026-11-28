@@ -6,7 +6,7 @@
 
 ## 完整端与控制端
 
-Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3（[S45](../sources/remote-platforms.md#s45)），取代此前的 MyGO（[S43](../sources/remote-platforms.md#s43)），不选 GPUI；Windows 界面用 WinUI 的 Fluent 控件，不另做一套外观。完整端之间的交互结构尽可能一致：Windows 以 Mac 为基准，设置分类与命名、布局分区、模型菜单的结构与选项相同，各用所属框架的控件呈现；Android 按屏幕尺寸与操作方式合理调整，不照搬完整端。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources/remote-platforms.md#s43)。2026-10-23 用户要求 Android 界面先模仿 HAPI、Lody 等同类开源移动客户端的布局与交互，附参考声明并确保许可合规（[S46](../sources/remote-platforms.md#s46)）；仍用 Material 3 呈现。
+Windows 端 2026-10-21 由用户交开发方选择，定为 C#／.NET＋WinUI 3（[S45](../sources/remote-platforms.md#s45)），取代此前的 MyGO（[S43](../sources/remote-platforms.md#s43)），不选 GPUI；Windows 界面用 WinUI 的 Fluent 控件，不另做一套外观。完整端之间的交互结构尽可能一致：Windows 以 Mac 为基准，设置分类与命名、布局分区、模型菜单的结构与选项相同，各用所属框架的控件呈现；Android 按屏幕尺寸与操作方式合理调整，不照搬完整端。Android 保持 Kotlin／Jetpack Compose 并彻底重写原型。来源见 [S43](../sources/remote-platforms.md#s43)。2026-10-23 用户要求 Android 界面先模仿 HAPI、Lody 等同类开源移动客户端的布局与交互，附参考声明并确保许可合规（[S46](../sources/remote-platforms.md#s46)）；仍用 Material 3 呈现。2026-11-25 进一步明确 Android 以 Lody（iOS）的会话体验为标杆并彻底脱离以设备为中心展开的结构：首页直接聚合全部已配对设备的会话（与 Mac 一致），坚持原生 Material 3、克制直接、避免浮夸动效与插画；新建会话直接进入空会话并在输入区附近就地切换设备／运行时／项目，输入区随软键盘展开贴合键盘顶边；同时在移动端补齐核心会话闭环（运行时／模型／推理／权限配置、附件上传、手动刷新、消息编辑与分叉、后台任务、Agent 协作与运行中排队／介入／恢复）。
 
 ## Apple
 
@@ -37,4 +37,6 @@ Windows 从 GitHub Releases 获取每用户安装器，安装身份、快捷方�
 
 ## 外观偏好
 
-2026-11-04（[S73](../sources/dogfood.md#s73)）：提供 UI、消息、代码的独立字号及紧凑程度；字号有小、默认、大、超大，密度有紧凑、默认、宽松。Mac 在“通用”的“外观”分组设置，并提供 composer 宽度设置：可用宽度的 50%–100%，默认 75%，窄窗保留编辑空间（[S78](../sources/dogfood.md#s78)）；调整后即时重排，保留当前输入与阅读位置，重启后恢复。这些是本机呈现偏好，不随执行目标切换，也不作为输入内容跨设备同步。
+2026-11-04（[S73](../sources/dogfood.md#s73)）：提供 UI、消息、代码的独立字号及紧凑程度；字号有小、默认、大、超大，密度有紧凑、默认、宽松。Mac 在“通用”的“外观”分组设置，并提供 composer 宽度设置：可用宽度的 50%–100%，默认 75%，窄窗保留编辑空间（[S78](../sources/dogfood.md#s78)）；Android 在首页菜单的“外观与显示”设置同一套独立字号与密度。调整后即时重排，保留当前输入与阅读位置，重启后恢复。这些是本机呈现偏好，不随执行目标切换，也不作为输入内容跨设备同步。
+
+Mac 的“缩放比例”应用于全部 Velune 窗口。在独立字号与密度设置的基础上统一调整字体和间距，默认 100%，范围为 80%–150%，重启后恢复。可从“显示”菜单、[快捷键](keyboard.md#界面缩放)或外观设置调整。恢复缩放只将比例还原为 100%，保留独立的外观偏好。

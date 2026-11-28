@@ -23,6 +23,51 @@ pub(super) fn runnable_pi_model<'a>(
         .model())
 }
 
+pub(super) fn pi_gateway_api(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::ChatCompletions => "openai-completions",
+        Protocol::Responses => "openai-responses",
+        Protocol::Messages => "anthropic-messages",
+        Protocol::Gemini => "google-generative-ai",
+    }
+}
+
+pub(super) fn pi_compaction_reserves(
+    runtime: &RuntimeInstance,
+    managed_key: Option<&str>,
+) -> Result<BTreeMap<String, u32>, RuntimeError> {
+    use crate::ModelSelection;
+    use velune_conversation::AutoCompactionSetting;
+
+    if let Some(model_record_key) = managed_key {
+        let selection = ModelSelection::Managed {
+            model_record_key: model_record_key.to_owned(),
+        };
+        // Pi checks the physical context window, with settings keyed by the virtual selection.
+        return Ok(match runtime.model_auto_compaction(&selection)? {
+            Some(AutoCompactionSetting::Pi { reserve_tokens }) => {
+                BTreeMap::from([("velune/auto".into(), reserve_tokens)])
+            }
+            _ => BTreeMap::new(),
+        });
+    }
+
+    Ok(runtime
+        .model_auto_compactions()?
+        .into_iter()
+        .filter_map(|entry| match (entry.model, entry.setting) {
+            (
+                ModelSelection::Native {
+                    provider_id: Some(provider),
+                    model_id,
+                },
+                AutoCompactionSetting::Pi { reserve_tokens },
+            ) => Some((format!("{provider}/{model_id}"), reserve_tokens)),
+            _ => None,
+        })
+        .collect())
+}
+
 pub(super) fn materialize_models(
     config: &PiConfig,
     gateway: &GatewayConfig,
@@ -70,11 +115,8 @@ pub(super) fn materialize_models(
                 None if model.nickname.trim().is_empty() => &model.provider_model_id,
                 None => &model.nickname,
             };
-            let api = match routed.provider().protocol {
-                Protocol::ChatCompletions => "openai-completions",
-                Protocol::Responses => "openai-responses",
-                Protocol::Messages => "anthropic-messages",
-            };
+            let protocol = routed.provider().protocol;
+            let api = pi_gateway_api(protocol);
             let binding = routed.model();
             let binding_projection = binding.pi_projection.as_ref();
             let declared_levels = pi_declared_levels(binding);
@@ -99,9 +141,12 @@ pub(super) fn materialize_models(
                 entry["contextWindow"] = json!(value);
             }
             entry["api"] = Value::String(api.into());
-            if api == "anthropic-messages" {
-                // The Anthropic SDK appends /v1/messages to its base URL.
-                entry["baseUrl"] = json!(endpoint.strip_suffix("/v1").expect("gateway base path"));
+            let origin = endpoint.strip_suffix("/v1").expect("gateway base path");
+            match protocol {
+                // Anthropic appends its version path. Pi sends Gemini's versioned URL verbatim.
+                Protocol::Messages => entry["baseUrl"] = json!(origin),
+                Protocol::Gemini => entry["baseUrl"] = json!(format!("{origin}/v1beta")),
+                _ => {}
             }
             let supported_levels = binding_projection
                 .map(|projection| projection.supported_levels(&declared_levels))
@@ -114,9 +159,18 @@ pub(super) fn materialize_models(
                         projection.catalog_thinking_level_map(&declared_levels)
                     })
                     .unwrap_or_else(|| {
-                        // Pi level names map back to the declared wire values.
-                        binding.reasoning_levels.iter().flatten()
-                            .map(|wire| (if wire == "none" { "off" } else { wire }.to_owned(), Some(wire.clone())))
+                        // Pi treats absent entries as implicit defaults. Null
+                        // prevents it from emitting `none` for models without off.
+                        pi::PI_THINKING_LEVELS.into_iter()
+                            .map(|level| {
+                                let wire = binding
+                                    .reasoning_levels
+                                    .iter()
+                                    .flatten()
+                                    .rev()
+                                    .find(|wire| wire.as_str() == level || (level == "off" && wire.as_str() == "none"));
+                                (level.to_owned(), wire.cloned())
+                            })
                             .collect()
                     });
                 let levels = levels
@@ -211,7 +265,6 @@ pub(super) fn pi_session_helper(config: &PiConfig, session: &Path) -> Result<Val
 
 /// Translate the protocol declaration at the Pi adapter boundary, not in the AI model domain.
 pub(super) fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<String> {
-    const PI_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     let Some(reasoning) = &binding.reasoning_levels else {
         return Vec::new();
     };
@@ -219,7 +272,7 @@ pub(super) fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<
         projection
             .thinking_level_map
             .iter()
-            .filter(|(level, _)| PI_LEVELS.contains(&level.as_str()))
+            .filter(|(level, _)| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
             .filter_map(|(level, wire)| {
                 wire.as_ref()
                     .filter(|wire| reasoning.contains(wire))
@@ -236,6 +289,71 @@ pub(super) fn pi_declared_levels(binding: &crate::config::ProviderModel) -> Vec<
                     level.clone()
                 }
             })
+            .filter(|level| pi::PI_THINKING_LEVELS.contains(&level.as_str()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ModelSelection;
+    use velune_application_api::ModelAutoCompaction;
+    use velune_conversation::AutoCompactionSetting;
+
+    #[test]
+    fn pi_compaction_reserves_follow_native_identity_and_selected_managed_model() {
+        let mut runtime = RuntimeInstance {
+            id: "synthetic-pi".into(),
+            name: "Synthetic Pi".into(),
+            type_id: RuntimeKind::Pi,
+            gateway_id: "synthetic-gateway".into(),
+            enabled: true,
+            settings: BTreeMap::new(),
+        };
+        let entry = |model, reserve_tokens| ModelAutoCompaction {
+            model,
+            setting: AutoCompactionSetting::Pi { reserve_tokens },
+        };
+        let managed = |key: &str| ModelSelection::Managed {
+            model_record_key: key.into(),
+        };
+        let native = |provider: &str| ModelSelection::Native {
+            provider_id: Some(provider.into()),
+            model_id: "family/model".into(),
+        };
+        runtime
+            .set_model_auto_compactions(vec![
+                entry(managed("a"), 10_000),
+                entry(managed("b"), 20_000),
+                entry(native("first"), 30_000),
+                entry(native("second"), 40_000),
+            ])
+            .unwrap();
+        for (key, reserve) in [("a", 10_000), ("b", 20_000)] {
+            assert_eq!(
+                pi_compaction_reserves(&runtime, Some(key)).unwrap(),
+                BTreeMap::from([("velune/auto".into(), reserve)]),
+            );
+        }
+        assert!(
+            pi_compaction_reserves(&runtime, Some("other"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            pi_compaction_reserves(&runtime, None).unwrap(),
+            BTreeMap::from([
+                ("first/family/model".into(), 30_000),
+                ("second/family/model".into(), 40_000),
+            ]),
+        );
+        runtime.set_model_auto_compactions(Vec::new()).unwrap();
+        assert!(
+            pi_compaction_reserves(&runtime, Some("b"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pi_compaction_reserves(&runtime, None).unwrap().is_empty());
     }
 }

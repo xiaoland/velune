@@ -80,10 +80,12 @@ struct SendQueueView: View {
                 Spacer(minLength: 0)
             } else if store.followUp.waitingForSubAgents {
                 Label("后台工作仍在运行；结束后发送", systemImage: "hourglass")
-                    .help("下一条需要重新启动运行时；可先查看关联子会话，或明确停止全部后台工作")
+                    .help("下一条需要重新启动运行时。可在关联 Agent 和后台任务中查看当前工作。")
                 Spacer(minLength: 8)
-                Button("停止全部后台工作并发送", action: store.stopSubAgents).controlSize(.small)
-                    .disabled(!store.followUp.canStopSubAgents || store.isLoading)
+                if store.followUp.canStopSubAgents {
+                    Button("停止全部后台工作并发送", action: store.stopSubAgents)
+                        .controlSize(.small).disabled(store.isLoading)
+                }
             } else {
                 Text("排队 \(queue.count) 条")
                 Spacer(minLength: 0)
@@ -121,12 +123,14 @@ struct SendQueueView: View {
         .contextMenu(forSelectionType: String.self) { ids in
             if ids.count == 1, !ids.contains(where: isPending), let message = queue.first(where: { ids.contains($0.id) }), let index = queue.firstIndex(of: message) {
                 Button("编辑…") { openEditor(message.id) }.disabled(!canEdit(message.id))
-                Button("插入本轮") { store.steerQueued(message.id) }.disabled(isDispatching(message.id) || !store.followUp.canSteer || store.isLoading)
+                Button("插入本轮（沿用本轮模型）") { store.steerQueued(message.id) }.disabled(isDispatching(message.id) || !store.canSteer)
                 Divider()
                 Button("移到最前") { store.moveQueued(message.id, to: 0) }.disabled(index == 0 || !canMove(message.id, to: 0))
                 Button("上移") { store.moveQueued(message.id, to: index - 1) }.disabled(index == 0 || !canMove(message.id, to: index - 1))
                 Button("下移") { store.moveQueued(message.id, to: index + 1) }.disabled(index == queue.count - 1 || !canMove(message.id, to: index + 1))
                 Divider()
+                Button("撤回") { store.withdrawQueued(message) }
+                    .disabled(!canEdit(message.id) || store.isLoading || store.isShuttingDown)
             }
             if !ids.isEmpty && !ids.contains(where: isPending) { Button(ids.count > 1 ? "删除 \(ids.count) 条" : "删除") { remove(ids) } }
         } primaryAction: { ids in

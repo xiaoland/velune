@@ -1,9 +1,10 @@
 //! Actual stream-json control writes with synthetic task events; no model runs.
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+use velune_test_support::TempRoot;
 
 struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     session: NativeSession,
 }
 impl Fixture {
@@ -11,11 +12,7 @@ impl Fixture {
         Self::with_version("2.1.292")
     }
     fn with_version(version: &str) -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root =
-            std::env::temp_dir().join(format!("velune-background-{:x}", u64::from_le_bytes(nonce)));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("background");
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
 import json,sys,os
@@ -30,19 +27,20 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::ClaudeCode,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.native_id = Some("parent".into());
         session.running();
         Self { root, session }
@@ -51,17 +49,286 @@ for line in sys.stdin:
         self.session.claude_handle_record(value).unwrap();
     }
     fn task(&self, title: &str) -> Retained<BackgroundTaskInfo> {
-        self.session
-            .background_tasks()
-            .unwrap()
-            .map(|list| list.tasks.into_iter().find(|task| task.title == title).unwrap())
+        self.session.background_tasks().unwrap().map(|list| {
+            list.tasks
+                .into_iter()
+                .find(|task| task.title == title)
+                .unwrap()
+        })
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.session.shutdown();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+fn composed_input() -> crate::TurnInput {
+    crate::TurnInput {
+        text: "composed prompt".into(),
+        images: vec![],
+        effort: None,
+        permission_mode: None,
+    }
+}
+
+#[test]
+fn claude_composed_waits_for_the_exact_native_start_receipt() {
+    let mut f = Fixture::with_version("2.1.286");
+    f.session.settle(RunState::Idle);
+    assert!(f.session.supports_claude_composed_acceptance());
+    let id = f.session.send_claude_composed(&composed_input()).unwrap();
+    assert!(f.session.turn_running());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    // A flushed writer does not count as the runtime's acceptance.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        f.session.poll().unwrap();
+        let requests = std::fs::read_to_string(f.root.join("requests.jsonl")).unwrap();
+        if requests
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|frame| frame["type"] == "user" && frame["uuid"] == id)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Claude did not read the input"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    for (state, session, command) in [
+        ("started", "different-session", id.as_str()),
+        ("started", "parent", "other-command"),
+        ("queued", "parent", id.as_str()),
+    ] {
+        f.event(json!({
+            "type":"command_lifecycle", "state":state,
+            "command_uuid":command, "session_id":session
+        }));
+    }
+    f.event(json!({
+        "type":"result", "subtype":"success",
+        "origin":{"kind":"task-notification","runId":"other-run"}
+    }));
+    f.event(json!({"type":"system", "subtype":"session_state_changed", "state":"idle"}));
+    assert!(f.session.turn_running());
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+
+    for _ in 0..2 {
+        f.event(json!({
+            "type":"command_lifecycle", "state":"started",
+            "command_uuid":id, "session_id":"parent"
+        }));
+    }
+    assert_eq!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Accepted {
+            message_id: id.clone()
+        })
+    );
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+    let messages = &f.session.snapshot().unwrap().messages;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, id);
+    assert_eq!(messages[0].role, MessageRole::User);
+}
+
+#[test]
+fn claude_composed_terminal_before_receipt_preserves_background_and_is_indeterminate() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.event(json!({
+        "type":"system", "subtype":"task_started", "task_id":"shell",
+        "run_id":"run", "task_type":"local_bash", "is_backgrounded":true
+    }));
+    f.session.settle(RunState::Idle);
+    assert!(f.session.has_background_work());
+    let id = f.session.send_claude_composed(&composed_input()).unwrap();
+    f.event(json!({"type":"result", "subtype":"success", "user_message_uuid":id}));
+    f.event(json!({"type":"system", "subtype":"session_state_changed", "state":"idle"}));
+    assert!(matches!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Indeterminate { message_id, .. }) if message_id == id
+    ));
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+    assert!(f.session.has_background_work());
+    assert!(!f.session.process_ended);
+}
+
+#[test]
+fn claude_composed_compatibility_send_still_publishes_without_receipt() {
+    let mut f = Fixture::with_version("2.1.286");
+    f.session.settle(RunState::Idle);
+    f.session.send(&composed_input()).unwrap();
+    assert_eq!(f.session.snapshot().unwrap().messages.len(), 1);
+    assert!(f.session.take_claude_composed_acceptance().is_none());
+}
+
+#[test]
+fn claude_composed_rejects_a_write_the_transport_proves_was_skipped() {
+    let mut f = Fixture::with_version("2.1.327");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let (writer, receipt) = crate::transport::WriteReceipt::test_pending(deadline);
+    f.session.claude.composed_prompt = Some(claude_composed::PendingPrompt::new(
+        Message {
+            turn_settings: None,
+            turn_usage: None,
+            branch_point: None,
+            completed: true,
+            id: "skipped".into(),
+            role: MessageRole::User,
+            timestamp_unix_ms: None,
+            blocks: vec![],
+        },
+        receipt,
+        deadline,
+    ));
+    writer
+        .send(crate::transport::WriteOutcome::NotWritten(
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "write expired in queue"),
+        ))
+        .unwrap();
+    f.session.poll().unwrap();
+    assert_eq!(
+        f.session.take_claude_composed_acceptance(),
+        Some(ClaudeComposedAcceptance::Rejected {
+            message_id: "skipped".into(),
+            detail: "write expired in queue".into(),
+        })
+    );
+    assert!(!f.session.turn_running());
+    assert!(f.session.snapshot().unwrap().messages.is_empty());
+}
+
+#[test]
+fn claude_reuses_the_background_child_and_settles_only_the_matching_foreground() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.session.claude.launched_effort = Some("medium".into());
+    let input = |text: &str, effort: &str| crate::TurnInput {
+        text: text.into(),
+        effort: Some(effort.into()),
+        permission_mode: None,
+        images: vec![],
+    };
+    f.session.claude_send(&input("one", "medium")).unwrap();
+    let first = f
+        .session
+        .snapshot()
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .id
+        .clone();
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"inline","run_id":"inline-run","task_type":"local_agent","is_backgrounded":false}));
+    f.event(json!({"type":"system","subtype":"task_updated","task_id":"inline","run_id":"inline-run","patch":{"status":"completed"}}));
+    assert!(
+        !f.session.waits_for_background_followup(),
+        "foreground tool completion needs no automatic response"
+    );
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"run","task_type":"local_bash","description":"shell","is_backgrounded":true}));
+    f.event(json!({"type":"result","subtype":"success","user_message_uuid":first}));
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":first}));
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    assert!(!f.session.turn_running());
+    assert!(f.session.has_background_work() && !f.session.process_ended);
+    assert_eq!(
+        f.session
+            .send(&input("changed", "high"))
+            .unwrap_err()
+            .code(),
+        "outstanding_work"
+    );
+    let generation = f.session.claude.commands.generation;
+    f.session.send(&input("two", "medium")).unwrap();
+    assert_eq!(f.session.claude.commands.generation, generation);
+    let second = f
+        .session
+        .snapshot()
+        .unwrap()
+        .messages
+        .last()
+        .unwrap()
+        .id
+        .clone();
+
+    f.event(json!({"type":"system","subtype":"task_updated","task_id":"shell","run_id":"run","patch":{"status":"completed"}}));
+    f.event(json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}));
+    assert!(!f.session.has_background_work() && f.session.waits_for_background_followup());
+    f.event(
+        json!({"type":"result","subtype":"success","user_message_uuid":second,
+        "usage":{"input_tokens":10,"output_tokens":4}}),
+    );
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":first}));
+    assert!(
+        f.session.turn_running(),
+        "a late completion must match the original UUID"
+    );
+    f.event(json!({"type":"command_lifecycle","state":"completed","command_uuid":second}));
+    assert!(!f.session.turn_running());
+    f.session.end_spent_process();
+    assert!(!f.session.process_ended);
+    f.event(
+        json!({"type":"result","subtype":"error_during_execution","is_error":true,
+        "origin":{"kind":"task-notification","runId":"run"},"usage":{"input_tokens":999}}),
+    );
+    assert!(
+        f.session.waits_for_background_followup(),
+        "keep the child until native idle"
+    );
+    f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    f.session.end_spent_process();
+    let snapshot = f.session.snapshot().unwrap();
+    assert_eq!(
+        snapshot.executions.records.last().unwrap().outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(
+        snapshot
+            .messages
+            .last()
+            .unwrap()
+            .turn_usage
+            .as_ref()
+            .unwrap()
+            .input_tokens,
+        Some(10)
+    );
+    assert!(!f.session.waits_for_background_followup());
+}
+
+#[test]
+fn claude_auto_compaction_change_waits_for_the_background_child() {
+    let mut f = Fixture::with_version("2.1.327");
+    f.session.claude.bound_session_id = f.session.native_id.clone();
+    f.event(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"run","task_type":"local_bash","is_backgrounded":true}));
+    f.session.settle(RunState::Idle);
+    assert!(!f.session.restart_needed_for_send(None, None));
+
+    f.session
+        .set_auto_compaction(Some(AutoCompactionSetting::Claude {
+            window_tokens: 700_000,
+        }));
+    let input = crate::TurnInput {
+        text: "Next turn".into(),
+        effort: None,
+        permission_mode: None,
+        images: vec![],
+    };
+    assert_eq!(
+        f.session.send(&input).unwrap_err().code(),
+        "outstanding_work"
+    );
+    assert!(f.session.has_background_work());
+    assert!(!f.session.process_ended);
 }
 
 #[test]
@@ -471,13 +738,12 @@ fn claude_compaction_order_matches_cold_history_through_repeated_boundaries() {
         &crate::history::HistoryConfig {
             kind: crate::version::RuntimeKind::ClaudeCode,
             execution: f.session.config.execution.clone(),
-            os_home: Some(f.root.clone()),
-            provider: "claude-code".into(),
+            os_home: Some(f.root.to_path_buf()),
             binary: f.session.config.binary.clone(),
             node_binary: PathBuf::new(),
-            resources_directory: f.root.clone(),
+            resources_directory: f.root.to_path_buf(),
             root: projects,
-            home: f.root.clone(),
+            home: f.root.to_path_buf(),
         },
         "runtime",
         native_id,
@@ -601,11 +867,16 @@ fn claude_api_failure_preserves_reason_and_settles_on_native_idle() {
         f.event(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         let snapshot = f.session.snapshot.as_ref().unwrap();
         assert_eq!(snapshot.run_state, RunState::Failed);
-        assert_eq!(snapshot.messages.last().unwrap().blocks, vec![MessageBlock::RuntimeFailure {
-            failure: RuntimeFailureKind::Other,
-            detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-            retry: None,
-        }]);
+        assert_eq!(
+            snapshot.messages.last().unwrap().blocks,
+            vec![MessageBlock::RuntimeFailure {
+                failure: RuntimeFailureKind::Other,
+                detail:
+                    "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                        .into(),
+                retry: None,
+            }]
+        );
         let notices: Vec<_> = snapshot.messages.iter().flat_map(|m| &m.blocks).collect();
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("Login expired · Please run /login"))));
         assert!(notices.iter().any(|b| matches!(b, MessageBlock::RuntimeFailure {detail: text, ..} if text.contains("authentication_failed"))));
@@ -668,23 +939,43 @@ fn claude_api_failure_cold_history_deserializes_and_stays_in_failed_work() {
         json!({"type":"assistant","uuid":"error","parentUuid":"notification","isApiErrorMessage":true,"error":"authentication_failed","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"Login expired · Please run /login"}]}}),
         json!({"type":"system","uuid":"duration","parentUuid":"error","subtype":"turn_duration","durationMs":2356}),
     ];
-    std::fs::write(projects.join(format!("{native_id}.jsonl")), records.iter().map(|r| format!("{r}\n")).collect::<String>()).unwrap();
-    let history = crate::history::read(&crate::history::HistoryConfig {
-        kind: crate::version::RuntimeKind::ClaudeCode,
-        execution: f.session.config.execution.clone(), os_home: Some(f.root.clone()),
-        provider: "claude-code".into(), binary: f.session.config.binary.clone(),
-        node_binary: PathBuf::new(), resources_directory: f.root.clone(),
-        root: projects, home: f.root.clone(),
-    }, "runtime", native_id).unwrap();
+    std::fs::write(
+        projects.join(format!("{native_id}.jsonl")),
+        records.iter().map(|r| format!("{r}\n")).collect::<String>(),
+    )
+    .unwrap();
+    let history = crate::history::read(
+        &crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: f.session.config.execution.clone(),
+            os_home: Some(f.root.to_path_buf()),
+            binary: f.session.config.binary.clone(),
+            node_binary: PathBuf::new(),
+            resources_directory: f.root.to_path_buf(),
+            root: projects,
+            home: f.root.to_path_buf(),
+        },
+        "runtime",
+        native_id,
+    )
+    .unwrap();
     let error = history.messages.last().unwrap();
     assert_eq!(error.role, MessageRole::System);
-    assert_eq!(error.blocks, vec![MessageBlock::RuntimeFailure {
-        failure: RuntimeFailureKind::Other,
-        detail: "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed".into(),
-        retry: None,
-    }]);
+    assert_eq!(
+        error.blocks,
+        vec![MessageBlock::RuntimeFailure {
+            failure: RuntimeFailureKind::Other,
+            detail:
+                "Login expired · Please run /login\nClaude Code 错误类型：authentication_failed"
+                    .into(),
+            retry: None,
+        }]
+    );
     let mut projection = TranscriptProjection::default();
-    projection.apply(TranscriptEvent::Replace {messages: &history.messages, executions: &history.executions});
+    projection.apply(TranscriptEvent::Replace {
+        messages: &history.messages,
+        executions: &history.executions,
+    });
     let turns = projection.turns();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].outcome, Some(TurnOutcome::Failed));

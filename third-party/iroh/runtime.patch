@@ -81,3 +81,26 @@
 +            relay_auth_tokens,
 @@ -929,0 +932 @@
 +            relay_auth_tokens,
+--- a/src/runtime.rs
++++ b/src/runtime.rs
+@@ -85 +85 @@ impl noq::Runtime for Runtime {
+-        use tracing::{Instrument, trace_span};
++        use tracing::{Instrument, instrument::WithSubscriber, trace_span};
+@@ -90,6 +90,11 @@ impl noq::Runtime for Runtime {
+-        self.tasks.spawn(async move {
+-            // wrapping the future in a cancellation token is what allows
+-            // us to "abort" tasks in the event the runtime is meant to
+-            // close quickly and ungracefully
+-            cancel.run_until_cancelled(future.instrument(span)).await;
+-        });
++        self.tasks.spawn(
++            async move {
++                // wrapping the future in a cancellation token is what allows
++                // us to "abort" tasks in the event the runtime is meant to
++                // close quickly and ungracefully
++                cancel.run_until_cancelled(future.instrument(span)).await;
++            }
++            // Span IDs belong to the creating subscriber. Keep it active through
++            // cancellation and the inner future's drop, not only its poll.
++            .with_current_subscriber(),
++        );

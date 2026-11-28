@@ -29,7 +29,11 @@ use velune_ai::{
     NativeOutput, NativeProvider, NativeRequest, NativeSink, NativeSuccess, Payload,
     http::{Header, ResponseMeta},
 };
-use velune_ai_provider::{NativeHttp, claude_code::ClaudeCode, claude_code::ClaudeCodeConfig};
+use velune_ai_provider::{
+    NativeHttp,
+    antigravity::{Antigravity, AntigravityConfig},
+    claude_code::{ClaudeCode, ClaudeCodeConfig},
+};
 
 /// One admitted caller request, as each attempt sends it.
 pub(super) struct Exchange {
@@ -71,7 +75,7 @@ pub(super) async fn dispatch(
                         })
                         .collect();
                     send_failure(&sender,Some(ResponseMeta { status:409,headers }),None,409,
-                        "Claude tool continuation is paused by quota, health or an invalidated provider binding").await;
+                        "CLI tool continuation is paused by quota, health or an invalidated provider binding").await;
                     return;
                 }
                 unavailable.merge(blocked);
@@ -230,10 +234,7 @@ impl Attempt<'_> {
     }
 
     fn cli(&self) -> bool {
-        matches!(
-            self.target.execution_backend,
-            ExecutionBackend::ClaudeCli { .. }
-        )
+        self.target.execution_backend.is_cli()
     }
 
     fn destination(&self) -> CredentialTarget {
@@ -263,8 +264,11 @@ impl Attempt<'_> {
             .transport(if self.cli() { "cli" } else { "http" });
         tracing::info!(event = "gateway_attempt_started");
         let mut body = exchange.body.clone();
-        // The gateway alone resolves ingress aliases to the exact provider identifier.
-        body["model"] = Value::String(self.target.model.as_str().to_owned());
+        // The gateway alone resolves ingress aliases. Gemini's model lives in
+        // the path, but converters still use it to select model-specific rules.
+        if self.target.protocol != Protocol::Gemini || exchange.protocol != Protocol::Gemini {
+            body["model"] = Value::String(self.target.model.as_str().to_owned());
+        }
         let plan = if exchange.protocol == self.target.protocol {
             None
         } else {
@@ -299,11 +303,15 @@ impl Attempt<'_> {
         };
         // The model record's extra parameters override what translation set;
         // a field the upstream rejects fails the request with its own error.
-        if !self.target.request_parameters.is_empty()
-            && let Some(object) = body.as_object_mut()
-        {
+        if let Some(object) = body.as_object_mut() {
             for (key, value) in &self.target.request_parameters {
                 object.insert(key.clone(), Value::String(value.clone()));
+            }
+            if self.target.protocol == Protocol::Gemini {
+                object.remove("model");
+                object.remove("stream");
+            } else if exchange.protocol == Protocol::Gemini {
+                object.insert("stream".into(), Value::Bool(exchange.stream));
             }
         }
         let request = NativeRequest {
@@ -362,7 +370,9 @@ impl Attempt<'_> {
         let recovery = credential.recovery.clone();
         let account = match &credential.material {
             CredentialMaterial::Http { account_id, .. } => account_id.clone(),
-            CredentialMaterial::LocalSession { .. } => None,
+            CredentialMaterial::LocalSession { .. } | CredentialMaterial::AntigravityCli { .. } => {
+                None
+            }
         };
         let Some(rejected_token) = credential
             .token()
@@ -459,7 +469,11 @@ impl Attempt<'_> {
                 credential,
             )?),
             ExecutionBackend::ClaudeCli { binary } => {
-                let CredentialMaterial::LocalSession { config_dir } = credential.material else {
+                let CredentialMaterial::LocalSession {
+                    config_dir,
+                    cache_scope,
+                } = credential.material
+                else {
                     return Err(InvalidContract(
                         "Claude CLI requires a local session source",
                     ));
@@ -469,6 +483,25 @@ impl Attempt<'_> {
                     ClaudeCodeConfig {
                         executable: binary.into(),
                         config_dir: config_dir.map(Into::into),
+                        session: self.state.backend_session(),
+                        binding: self.state.backend_bindings[&self.target.provider_id].clone(),
+                        cache_scope: cache_scope.map(|scope| {
+                            serde_json::to_string(&(&self.target.provider_id, scope))
+                                .expect("Claude bridge cache scope")
+                        }),
+                    },
+                )?)
+            }
+            ExecutionBackend::AntigravityCli => {
+                let CredentialMaterial::AntigravityCli { launch } = credential.material else {
+                    return Err(InvalidContract(
+                        "Antigravity CLI requires an execution target",
+                    ));
+                };
+                Box::new(Antigravity::new(
+                    self.state.backends.antigravity.clone(),
+                    AntigravityConfig {
+                        launch,
                         session: self.state.backend_session(),
                         binding: self.state.backend_bindings[&self.target.provider_id].clone(),
                     },
@@ -549,6 +582,7 @@ impl Attempt<'_> {
                 Protocol::ChatCompletions => "chat_completions",
                 Protocol::Responses => "responses",
                 Protocol::Messages => "messages",
+                Protocol::Gemini => "gemini_generate_content",
             };
             tracing::warn!(
                 event = "gateway_dispatch_failed",
@@ -577,7 +611,9 @@ impl Attempt<'_> {
         }
         let unreachable = matches!(kind, Kind::Transport | Kind::Timeout);
         let cli = self.cli();
-        let next = if kind == Kind::Permission {
+        // A permission failure allows switching only on an actual upstream
+        // HTTP 403. A locally synthesized 403 keeps the terminal policy.
+        let next = if kind == Kind::Permission && status != Some(403) {
             NextCandidate::Stop { cooldown: None }
         } else {
             next_candidate(

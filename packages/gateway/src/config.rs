@@ -30,6 +30,13 @@ pub struct ProviderModel {
 pub enum ExecutionBackend {
     Http,
     ClaudeCli { binary: String },
+    AntigravityCli,
+}
+
+impl ExecutionBackend {
+    pub(crate) fn is_cli(&self) -> bool {
+        matches!(self, Self::ClaudeCli { .. } | Self::AntigravityCli)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +51,9 @@ pub struct ProviderDefinition {
     pub credential_ref: Option<String>,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
+    /// Effective client version resolved by the caller for Codex Responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,8 +130,21 @@ impl GatewayConfig {
                         "Claude CLI requires a binary, Messages, native profile and no HTTP endpoint",
                     );
                 }
+                ExecutionBackend::AntigravityCli
+                    if !provider.endpoint.is_empty()
+                        || provider.protocol != Protocol::Messages
+                        || provider.request_profile != RequestProfile::Native =>
+                {
+                    return Err(
+                        "Antigravity CLI requires Messages, native profile and no HTTP endpoint",
+                    );
+                }
                 _ => {}
             }
+            provider
+                .request_profile
+                .check_codex_client_version(provider.codex_client_version.as_deref())
+                .map_err(|error| error.0)?;
             if provider.request_profile != RequestProfile::Native {
                 let endpoint = HttpEndpoint::parse(&provider.endpoint).map_err(|error| error.0)?;
                 provider

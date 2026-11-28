@@ -10,12 +10,14 @@ await writeFile(child,JSON.stringify({type:'session',id:'child',parentSession:pa
 const listeners=new Map(), commands=new Map(), hooks=new Map(), calls=[], frames=[];
 const events={on(name,fn){if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);return()=>listeners.get(name).delete(fn)},emit(name,value){for(const fn of [...listeners.get(name)??[]]) fn(value)}};
 let unknown=false,multiple=false,stopFailed=false,completed=false,runID='run-one';
+let reportStartupStatus;
 let backgroundTasks=[{task:{id:'shell',status:'running'}}];
 const archiveEntries=[];
 events.on('subagents:rpc:v1:request', req=>{
  calls.push({method:req.method,params:req.params});
  const data=req.method==='ping'?{capabilities:{asyncStatusSnapshot:{version:1}},methods:['stop']}:req.method==='status'?{asyncSnapshot:unknown?{version:99}:{version:1,runs:[{id:runID,kind:'subagent',state:completed?'completed':'running',children:multiple?[{},{}]:[{}]}]}}:{state:'stopping'};
  events.emit(`subagents:rpc:v1:reply:${req.requestId}`,{version:1,requestId:req.requestId,method:req.method,success:!(stopFailed && req.method==='stop'),data,error:{message:'synthetic stop rejected'}});
+ if (req.method === 'status') reportStartupStatus?.();
 });
 events.on('pi-background-tasks:host:request:v1', req=>{
  const result=req.operation==='capabilities'?{api_version:1,operations:['subscribe','list']}:req.operation==='subscribe'?{leaseId:'lease',activationId:'activation'}:{activationId:'activation',revision:1,tasks:backgroundTasks};
@@ -24,6 +26,16 @@ events.on('pi-background-tasks:host:request:v1', req=>{
 install({events,registerCommand:(name,value)=>commands.set(name,value),on:(name,fn)=>{hooks.set(name,fn);return()=>hooks.delete(name)}});
 const ctx={sessionManager:{getSessionFile:()=>parent,getEntries:()=>archiveEntries},ui:{setStatus:(_key,text)=>frames.push(JSON.parse(text))}};
 const send=async value=>commands.get('velune-background-work').handler(Buffer.from(JSON.stringify(value)).toString('base64url'),ctx);
+// A child event can arrive before Core requests the initial host snapshot.
+completed = true;
+hooks.get('session_start')({}, ctx);
+const startupStatus = new Promise(resolve => { reportStartupStatus = resolve; });
+events.emit('subagent:child-status');
+await startupStatus;
+await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(frames, [], 'child discovery must not publish an uninitialized host frame');
+reportStartupStatus = undefined;
+completed = false;
 await send({operation:'snapshot'});assert.equal(frames.at(-1).children[0].canStop,true);assert.equal(frames.at(-1).tasks[0].id,'shell');
 await send({operation:'stop_child',sessionFile:child});assert.deepEqual(calls.filter(call=>call.method==='stop'),[{method:'stop',params:{id:'run-one'}}]);assert.equal(frames.at(-1).children[0].state,'stopping');assert.equal(frames.at(-1).tasks[0].id,'shell');
 await rename(child,child+'.hold');await send({operation:'snapshot'});assert.equal(frames.at(-1).childrenUnknown,true);assert.equal(frames.at(-1).children[0].sessionFile,child);assert.equal(frames.at(-1).children[0].canStop,false);await assert.rejects(send({operation:'stop_child',sessionFile:child}));await rename(child+'.hold',child);await send({operation:'snapshot'});assert.equal(frames.at(-1).childrenUnknown,false);

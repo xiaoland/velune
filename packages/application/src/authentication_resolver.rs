@@ -35,7 +35,7 @@ impl ProviderResolver {
             providers: gateway
                 .providers
                 .iter()
-                .map(|p| (p.id.clone(), p.clone()))
+                .map(|p| (p.credential_reference(), p.clone()))
                 .collect(),
             options: options.clone(),
         })
@@ -102,6 +102,7 @@ impl CredentialResolver for ProviderResolver {
                 AuthenticationMaterial::ClaudeCli {
                     credential_id,
                     configured,
+                    identity,
                     ..
                 } => {
                     if !configured
@@ -122,6 +123,9 @@ impl CredentialResolver for ProviderResolver {
                                 .to_string_lossy()
                                 .into_owned(),
                             ),
+                            cache_scope: identity
+                                .as_ref()
+                                .map(|id| format!("{}/{id}", resource.authentication.generation)),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),
@@ -130,6 +134,7 @@ impl CredentialResolver for ProviderResolver {
                 AuthenticationMaterial::ClaudeCliLinked {
                     config_dir,
                     configured,
+                    identity,
                     ..
                 } => {
                     if !configured
@@ -143,6 +148,31 @@ impl CredentialResolver for ProviderResolver {
                     return Ok(ResolvedCredential {
                         material: velune_gateway::CredentialMaterial::LocalSession {
                             config_dir: config_dir.clone(),
+                            cache_scope: identity
+                                .as_ref()
+                                .map(|id| format!("{}/{id}", resource.authentication.generation)),
+                        },
+                        recovery: velune_gateway::CredentialRecovery::None,
+                        request_capabilities: Default::default(),
+                    });
+                }
+                AuthenticationMaterial::AntigravityCli => {
+                    let crate::config::ExecutionBackend::AntigravityCli {
+                        binary,
+                        ssh_destination,
+                    } = &resource.execution_backend
+                    else {
+                        return Err(CredentialResolutionError::UnauthorizedTarget);
+                    };
+                    resource
+                        .validate_composition()
+                        .map_err(|_| CredentialResolutionError::UnauthorizedTarget)?;
+                    return Ok(ResolvedCredential {
+                        material: velune_gateway::CredentialMaterial::AntigravityCli {
+                            launch: Arc::new(crate::antigravity_cli::Launcher::new(
+                                binary.clone(),
+                                ssh_destination.clone(),
+                            )),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),
@@ -194,11 +224,7 @@ impl CredentialResolver for ProviderResolver {
                 })?;
             let value: serde_json::Value = serde_json::from_str(&output)
                 .map_err(|_| CredentialResolutionError::InvalidContract)?;
-            let expected = match protocol {
-                crate::config::Protocol::ChatCompletions => "chatCompletionsV1",
-                crate::config::Protocol::Responses => "responsesV1",
-                crate::config::Protocol::Messages => "messagesV1",
-            };
+            let expected = protocol.id();
             if value["contractVersion"] != 1
                 || value["capabilities"]["protocol"] != expected
                 || value["capabilities"]["endpoint"] != target.endpoint
@@ -345,7 +371,12 @@ fn http_authorization(
     value: String,
     bearer: bool,
 ) -> velune_gateway::HttpAuthorization {
-    if !bearer && *protocol == crate::config::Protocol::Messages {
+    if !bearer
+        && matches!(
+            protocol,
+            crate::config::Protocol::Messages | crate::config::Protocol::Gemini
+        )
+    {
         velune_gateway::HttpAuthorization::ApiKey(value)
     } else {
         velune_gateway::HttpAuthorization::Bearer(value)

@@ -143,7 +143,7 @@ fn edit_tickets_do_not_settle_at_written_and_model_rejection_is_not_success() {
     assert!(session.take_confirmation(model).unwrap().is_none());
     assert!(
         session
-            .begin_edit_prompt(&TurnInput {
+            .begin_submission_prompt(&TurnInput {
                 text: "replacement".into(),
                 effort: None,
                 permission_mode: None,

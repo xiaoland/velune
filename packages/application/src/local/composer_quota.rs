@@ -39,7 +39,8 @@ impl CoreRuntime {
                             ..
                         }
                     );
-                    if (provider.quota_source == ProviderQuotaSource::None && !reports_credits)
+                    if (provider.effective_quota_source() == ProviderQuotaSource::None
+                        && !reports_credits)
                         || (authentication.method == crate::AuthenticationMethod::OAuth
                             && !authentication.configured)
                     {
@@ -72,7 +73,8 @@ impl CoreRuntime {
                             (!reported || identity.is_none_or(|key| credit_accounts.insert(key)))
                                 .then_some(credits)
                         });
-                    if provider.quota_source == ProviderQuotaSource::None && credits.is_none() {
+                    let quota_source = provider.effective_quota_source();
+                    if quota_source == ProviderQuotaSource::None && credits.is_none() {
                         continue;
                     }
                     let mut observation = self
@@ -80,6 +82,12 @@ impl CoreRuntime {
                         .query(&gateway.id, &provider.id, refresh)?
                         .observation;
                     observation.windows = scoped_windows(observation.windows, &models);
+                    if quota_source == ProviderQuotaSource::AntigravityCliUsage {
+                        observation.freshness = scoped_antigravity_freshness(
+                            &observation.windows,
+                            crate::local::unix_ms_now(),
+                        );
+                    }
                     entries.push(ComposerQuotaEntry {
                         id: format!("provider:{}:{}", gateway.id, provider.id),
                         name: provider.name.clone(),
@@ -129,6 +137,23 @@ fn scoped_windows(
             .is_none_or(|ids| ids.iter().any(|id| models.contains(id)))
     });
     windows
+}
+
+fn scoped_antigravity_freshness(windows: &[QuotaWindowObservation], now: i64) -> QuotaFreshness {
+    if windows.is_empty() {
+        return QuotaFreshness::Unknown;
+    }
+    if windows.iter().any(|window| {
+        window
+            .observed_at_ms
+            .is_some_and(|observed| observed > 0 && observed <= now)
+            && window.expires_at_ms.is_some_and(|expiry| expiry > now)
+            && window.reset_at_ms.is_none_or(|reset| reset > now)
+    }) {
+        QuotaFreshness::Fresh
+    } else {
+        QuotaFreshness::Stale
+    }
 }
 
 /// Recorded limits are a historical source, never a fallback account identity.
@@ -233,6 +258,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["5h", "7d", "sonnet-window", "opus-window"]
         );
+    }
+
+    #[test]
+    fn antigravity_composer_uses_the_selected_models_window_freshness() {
+        let windows: Vec<QuotaWindowObservation> = serde_json::from_value(json!([
+            {"id":"expired","modelIds":["hydrogen"],"usedPercent":100,"observedAtMs":1,"expiresAtMs":2},
+            {"id":"current","modelIds":["argon"],"usedPercent":20,"observedAtMs":1,"expiresAtMs":4},
+            {"id":"unassigned","modelIds":[],"usedPercent":0,"observedAtMs":1,"expiresAtMs":4}
+        ])).unwrap();
+        for (model, expected) in [
+            ("hydrogen", QuotaFreshness::Stale),
+            ("argon", QuotaFreshness::Fresh),
+            ("other", QuotaFreshness::Unknown),
+        ] {
+            let scoped = scoped_windows(windows.clone(), &[model.into()]);
+            assert_eq!(
+                std::mem::discriminant(&scoped_antigravity_freshness(&scoped, 3)),
+                std::mem::discriminant(&expected),
+            );
+        }
     }
 
     fn record(runtime: &str, selection: Option<ModelSelection>) -> TranscriptTurn {

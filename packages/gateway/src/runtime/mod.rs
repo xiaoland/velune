@@ -16,7 +16,7 @@ pub(crate) use wire::{WireEvent, send_json};
 
 use crate::{
     analytics::SharedAnalyticsSink,
-    config::{ExecutionBackend, GatewayConfig},
+    config::GatewayConfig,
     scheduling::{QuotaSource, SchedulingState, SessionIdentity, UnknownQuotaSource},
 };
 use ingress::Ingress;
@@ -33,7 +33,11 @@ use std::{
     time::Duration,
 };
 use tokio::sync::oneshot;
-use velune_ai_provider::{HttpClient, claude_code::ClaudeCodePool};
+use velune_ai_provider::{
+    HttpClient,
+    antigravity::AntigravityPool,
+    claude_code::{ClaudeCodePool, Continuation},
+};
 
 #[derive(Debug)]
 pub struct GatewayError(pub(crate) &'static str);
@@ -71,9 +75,26 @@ impl TelemetryContext {
 #[derive(Clone, Default)]
 pub struct ExecutionBackends {
     pub claude_code: Arc<ClaudeCodePool>,
+    pub antigravity: Arc<AntigravityPool>,
     bindings: Arc<std::sync::Mutex<BTreeMap<(String, String), String>>>,
 }
 impl ExecutionBackends {
+    pub fn with_claude_cache_directory(directory: std::path::PathBuf) -> Self {
+        Self {
+            claude_code: Arc::new(ClaudeCodePool::with_cache_directory(directory)),
+            antigravity: Default::default(),
+            bindings: Default::default(),
+        }
+    }
+
+    pub fn fork(&self) -> Self {
+        Self {
+            claude_code: Arc::new(self.claude_code.fork()),
+            antigravity: Default::default(),
+            bindings: Default::default(),
+        }
+    }
+
     pub(super) fn session_key(gateway_id: &str, session: &SessionIdentity) -> String {
         serde_json::to_string(&(gateway_id, &session.namespace, &session.id))
             .expect("session tuple")
@@ -84,18 +105,48 @@ impl ExecutionBackends {
         gateway_id: &str,
         session: &SessionIdentity,
     ) -> Result<(), velune_ai::InvalidContract> {
-        self.claude_code
-            .begin_user_turn(&Self::session_key(gateway_id, session))
+        let session = Self::session_key(gateway_id, session);
+        self.claude_code.begin_user_turn(&session)?;
+        self.antigravity.begin_user_turn(&session)
     }
     /// Cancel session execution, including tools waiting after the HTTP response ended.
     pub fn cancel_session(&self, gateway_id: &str, session: &SessionIdentity) {
-        self.claude_code
-            .cancel_session(&Self::session_key(gateway_id, session));
+        let session = Self::session_key(gateway_id, session);
+        self.claude_code.cancel_session(&session);
+        self.antigravity.cancel_session(&session);
     }
     /// Settle an outer turn, cancelling unfinished execution while preserving idle sessions.
     pub fn finish_user_turn(&self, gateway_id: &str, session: &SessionIdentity) {
-        self.claude_code
-            .finish_user_turn(&Self::session_key(gateway_id, session));
+        let session = Self::session_key(gateway_id, session);
+        self.claude_code.finish_user_turn(&session);
+        self.antigravity.finish_user_turn(&session);
+    }
+    fn resolve_continuation(
+        &self,
+        session: Option<&str>,
+        ids: &[String],
+    ) -> Result<Continuation, velune_ai::InvalidContract> {
+        let owner = self
+            .antigravity
+            .tool_result_owner(session.unwrap_or_default(), ids)?;
+        if !matches!(owner, Continuation::None) {
+            // Carry the matched binding through candidate selection even if a
+            // concurrent continuation claims the pending call first.
+            return Ok(owner);
+        }
+        let Some(session) = session else {
+            return Ok(Continuation::None);
+        };
+        self.claude_code.validate_result_ids(session, ids)?;
+        Ok(
+            match (
+                self.claude_code.continuation(session),
+                self.antigravity.continuation(session),
+            ) {
+                (Continuation::None, owner) | (owner, Continuation::None) => owner,
+                _ => Continuation::Invalidated,
+            },
+        )
     }
     pub fn invalidate_provider(&self, gateway_id: &str, provider_id: &str) {
         if let Some(binding) = self
@@ -105,10 +156,12 @@ impl ExecutionBackends {
             .remove(&(gateway_id.into(), provider_id.into()))
         {
             self.claude_code.invalidate(&binding);
+            self.antigravity.invalidate(&binding);
         }
     }
     pub fn shutdown(&self) {
         self.claude_code.shutdown();
+        self.antigravity.shutdown();
         self.bindings.lock().expect("backend bindings").clear();
     }
     fn register(&self, gateway: &str, provider: &str, epoch: u64) -> String {
@@ -118,6 +171,7 @@ impl ExecutionBackends {
             && previous != binding
         {
             self.claude_code.invalidate(&previous);
+            self.antigravity.invalidate(&previous);
         }
         binding
     }
@@ -232,12 +286,7 @@ impl Runner {
         let backend_bindings = config
             .providers
             .iter()
-            .filter(|provider| {
-                matches!(
-                    provider.execution_backend,
-                    ExecutionBackend::ClaudeCli { .. }
-                )
-            })
+            .filter(|provider| provider.execution_backend.is_cli())
             .map(|provider| {
                 (
                     provider.id.clone(),

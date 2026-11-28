@@ -1,7 +1,98 @@
 //! DeepSeek Harness 0.2.0-rc.2 ACP v1 control. huihua supplies historical projection.
 use super::*;
+use serde_yaml_ng::{Mapping, Value as Yaml};
+use velune_conversation::AutoCompactionSetting;
+
+const COMPACTION_PLUGIN: &str = "@deepseek-ai/dsh-compaction-basic";
+const COMPACTION_ID: &str = "compaction-basic";
 
 impl NativeSession {
+    pub(super) fn dsh_spawn(
+        config: &NativeConfig,
+        selection: Option<&RuntimeModel>,
+    ) -> Result<(rpc::RpcClient, bool)> {
+        let (mut command, history_overlay) = Self::dsh_command(config)?;
+        command.env("DSH_HOME", &config.agent_dir);
+        crate::mcp::set_environment(&mut command, &config.mcp_servers);
+        if let Some(gateway) = &config.gateway {
+            command.env("VELUNE_GATEWAY_TOKEN", &gateway.token);
+        } else {
+            command.env_remove("VELUNE_GATEWAY_TOKEN");
+        }
+
+        let patch = Self::dsh_compaction_patch(config, selection, &command)?;
+        let directory = if patch.is_some() {
+            let mut nonce = [0; 16];
+            getrandom::fill(&mut nonce)
+                .map_err(|error| Error::new(format!("DeepSeek 临时配置身份生成失败：{error}")))?;
+            Some(config.projection_directory.join(format!(
+                "dsh-compaction-{:032x}",
+                u128::from_le_bytes(nonce)
+            )))
+        } else {
+            None
+        };
+        let outcome = (|| {
+            if let (Some(directory), Some(patch)) = (&directory, patch) {
+                let path = directory.join("compaction.patch.yml");
+                config.execution.create_dir_all(directory)?;
+                config.execution.write_file_atomic(&path, &patch)?;
+                command.arg("--patch").arg(path);
+            }
+            let mut rpc =
+                rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
+            // The ACP handshake proves the child has consumed its startup patch.
+            initialize(&mut rpc, !config.mcp_servers.is_empty())?;
+            Ok((rpc, history_overlay))
+        })();
+        if let Some(directory) = directory {
+            match (outcome, config.execution.remove_dir_all(&directory)) {
+                (result, Ok(())) => result,
+                (Ok(_), Err(error)) => Err(error.into()),
+                (Err(error), Err(cleanup)) => Err(Error::new(format!(
+                    "{error}；DeepSeek 临时压缩配置清理失败：{cleanup}"
+                ))),
+            }
+        } else {
+            outcome
+        }
+    }
+
+    fn dsh_compaction_patch(
+        config: &NativeConfig,
+        selection: Option<&RuntimeModel>,
+        command: &Command,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(AutoCompactionSetting::DeepSeek { threshold_percent }) = &config.auto_compaction
+        else {
+            return Ok(None);
+        };
+        let target = if let Some(gateway) = &config.gateway {
+            Some(("velune-gateway", gateway.model_alias.as_str()))
+        } else {
+            selection.and_then(|model| Some((model.provider_id.as_deref()?, model.id.as_str())))
+        };
+        // A catalog-only launch has no model and never claims a turn policy.
+        let Some((provider, model)) = target else {
+            return Ok(None);
+        };
+        if !(1..=100).contains(threshold_percent) {
+            return Err(Error::new("DeepSeek 自动压缩比例须为 1–100%"));
+        }
+        let mut dump = crate::process_tree::command(command.get_program());
+        dump.args(command.get_args())
+            .arg("--dump-config")
+            .env("DSH_HOME", &config.agent_dir)
+            .env_remove("VELUNE_GATEWAY_TOKEN");
+        // The composed profile can contain unrelated secrets. Never persist it
+        // or include native dump output in a diagnostic.
+        let composed = config
+            .execution
+            .output(dump, None, config.os_home.as_deref())
+            .map_err(|_| Error::new("DeepSeek 无法读取有效的 ACP 配置以应用自动压缩策略"))?;
+        dsh_override_compaction(&composed, provider, model, *threshold_percent).map(Some)
+    }
+
     pub(super) fn dsh_command(config: &NativeConfig) -> Result<(Command, bool)> {
         let path = if let Some(gateway) = &config.gateway {
             let api = match gateway.protocol.as_str() {
@@ -96,6 +187,7 @@ impl NativeSession {
         Ok((command, has_overlay))
     }
 
+    #[cfg(test)]
     pub(super) fn dsh_initialize(&mut self) -> Result<()> {
         initialize(&mut self.rpc, !self.config.mcp_servers.is_empty())
     }
@@ -167,6 +259,22 @@ impl NativeSession {
             self.settle(RunState::Failed);
         }
         outcome
+    }
+
+    /// The native provider and model actually advertised by the loaded DSH
+    /// session, including the model DSH chose when the caller left it unset.
+    pub fn dsh_current_model(&self) -> Option<(String, String)> {
+        if self.config.kind != NativeKind::DeepSeek {
+            return None;
+        }
+        let current = self
+            .available_models
+            .iter()
+            .find(|option| option["id"] == "model")?["currentValue"]
+            .as_str()?;
+        let [provider, model] = serde_json::from_str::<[String; 2]>(current).ok()?;
+        (!provider.is_empty() && !model.is_empty() && provider != "velune-gateway")
+            .then_some((provider, model))
     }
 
     fn dsh_apply_model(&mut self, result: &Value) -> Result<()> {
@@ -647,6 +755,112 @@ impl NativeSession {
     }
 }
 
+fn dsh_override_compaction(
+    composed: &[u8],
+    provider: &str,
+    model: &str,
+    percent: u8,
+) -> Result<Vec<u8>> {
+    // The CLI emits Cordis expressions as YAML's !!js tag. serde_yaml_ng
+    // discards YAML-core tags, so give this one a local tag while editing.
+    const LOCAL_EXPRESSION: &str = "!velune-dsh-compaction-expression";
+    let composed =
+        std::str::from_utf8(composed).map_err(|_| Error::new("DeepSeek ACP 配置不是 UTF-8"))?;
+    if composed.contains(LOCAL_EXPRESSION) {
+        return Err(Error::new("DeepSeek ACP 配置包含无法保留的表达式标记"));
+    }
+    let normalized = composed
+        .replace("!<tag:yaml.org,2002:js>", LOCAL_EXPRESSION)
+        .replace("!!js", LOCAL_EXPRESSION);
+    let root: Vec<Yaml> = serde_yaml_ng::from_str(&normalized)
+        .map_err(|_| Error::new("DeepSeek 返回的有效 ACP 配置不是可读取的 YAML"))?;
+    let mut stack = vec![root.as_slice()];
+    let mut entry = None;
+    while let Some(rows) = stack.pop() {
+        for row in rows {
+            if row["disabled"].as_bool() == Some(true) {
+                continue;
+            }
+            if row["group"].as_bool() == Some(true)
+                && let Some(children) = row["config"].as_sequence()
+            {
+                stack.push(children.as_slice());
+            }
+            if row["id"].as_str() == Some(COMPACTION_ID)
+                && row["name"].as_str() == Some(COMPACTION_PLUGIN)
+                && entry.replace(row).is_some()
+            {
+                return Err(Error::new("DeepSeek ACP 配置中有多个基础压缩插件"));
+            }
+        }
+    }
+    let entry = entry.ok_or_else(|| Error::new("DeepSeek ACP 未启用基础压缩插件"))?;
+    let mut config = if entry["config"].is_null() {
+        Mapping::new()
+    } else {
+        entry["config"]
+            .as_mapping()
+            .ok_or_else(|| Error::new("DeepSeek 压缩配置须为可合并的映射"))?
+            .clone()
+    };
+    // DSH rejects a threshold at or below the retained fraction when its
+    // compaction plugin mounts. Fail before launching the child for known
+    // conflicts; dynamic Cordis values remain DSH's authority.
+    let inherited_retention = dsh_retain_ratio(&config, Some(0.16));
+    let policies = config
+        .entry(Yaml::from("modelPolicies"))
+        .or_insert_with(|| Yaml::Sequence(Vec::new()))
+        .as_sequence_mut()
+        .ok_or_else(|| Error::new("DeepSeek 按模型压缩策略须为可合并的列表"))?;
+    let mut matching = policies.iter_mut().filter(|policy| {
+        policy["provider"].as_str() == Some(provider) && policy["model"].as_str() == Some(model)
+    });
+    let policy = matching.next();
+    if matching.next().is_some() {
+        return Err(Error::new("DeepSeek ACP 对所选模型重复配置了压缩策略"));
+    }
+    let threshold = f64::from(percent) / 100.0;
+    let retention = policy
+        .as_ref()
+        .and_then(|value| value.as_mapping())
+        .map_or(inherited_retention, |value| {
+            dsh_retain_ratio(value, inherited_retention)
+        });
+    if retention.is_some_and(|ratio| ratio >= threshold) {
+        return Err(Error::new(
+            "DeepSeek 自动压缩比例必须高于此模型的原生近期上下文保留比例",
+        ));
+    }
+    let ratio = Yaml::from(threshold);
+    if let Some(policy) = policy {
+        policy["thresholdRatio"] = ratio;
+    } else {
+        policies.push(Yaml::Mapping(Mapping::from_iter([
+            (Yaml::from("provider"), Yaml::from(provider)),
+            (Yaml::from("model"), Yaml::from(model)),
+            (Yaml::from("thresholdRatio"), ratio),
+        ])));
+    }
+
+    let patch = [Mapping::from_iter([
+        (Yaml::from("id"), Yaml::from(COMPACTION_ID)),
+        (Yaml::from("name"), Yaml::from(COMPACTION_PLUGIN)),
+        (Yaml::from("config"), Yaml::Mapping(config)),
+    ])];
+    let encoded = serde_yaml_ng::to_string(&patch)
+        .map_err(|_| Error::new("DeepSeek 压缩策略无法编码为启动配置"))?;
+    Ok(encoded.replace(LOCAL_EXPRESSION, "!!js").into_bytes())
+}
+
+fn dsh_retain_ratio(config: &Mapping, fallback: Option<f64>) -> Option<f64> {
+    if config.contains_key(Yaml::from("retainTokens")) {
+        return None;
+    }
+    config
+        .get(Yaml::from("retainRatio"))
+        .map_or(fallback, Yaml::as_f64)
+}
+
 fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
     let result = rpc.request(
         "initialize",
@@ -668,3 +882,6 @@ fn initialize(rpc: &mut rpc::RpcClient, require_http_mcp: bool) -> Result<()> {
     // agentInfo.version is the ACP plugin version, not the CLI release gate.
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod question_reconciliation_tests;

@@ -1,9 +1,12 @@
 //! Codex's project identities and ordered roots, independent of thread cwd.
 use super::{
     Error, Result, codex,
-    codex_history::{SOURCE_KINDS, is_handoff_summary_thread, pages, summary},
+    codex_history::{is_handoff_summary_thread, list_threads, pages, summary},
 };
+#[path = "codex_active_index.rs"]
+mod active_index;
 use crate::{conversation::ConversationSummary, creation::Retained, history::HistoryConfig};
+pub use active_index::ActiveListIndex;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +32,45 @@ pub fn list_projects(
     runtime_id: &str,
     archived: bool,
 ) -> Result<Retained<ProjectListing>> {
+    read_projects(config, runtime_id, archived, None)
+}
+
+pub fn list_projects_with_active_index(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    index: &ActiveListIndex,
+) -> Result<Retained<ProjectListing>> {
+    read_projects(config, runtime_id, false, Some(index))
+}
+
+/// Ensure the active Codex index is ready for `useStateDbOnly` reads, skipping
+/// an app-server launch when a persisted verification proof already matches.
+pub fn warm_active_index(config: &HistoryConfig, index: &ActiveListIndex) -> Result<()> {
+    let Some(mut active_read) = index.prepare(config) else {
+        return Ok(());
+    };
+    if active_read.matches_verified() {
+        tracing::debug!(event = "codex_active_index", mode = "persisted");
+        return Ok(());
+    }
+    let mut rpc = codex::history_client_at(
+        config.kind,
+        &config.binary,
+        &config.home,
+        &config.execution,
+        config.os_home.as_deref(),
+    )?;
+    let _ = active_read.list_threads(&mut rpc)?;
+    Ok(())
+}
+
+fn read_projects(
+    config: &HistoryConfig,
+    runtime_id: &str,
+    archived: bool,
+    index: Option<&ActiveListIndex>,
+) -> Result<Retained<ProjectListing>> {
+    let mut active_read = index.and_then(|index| index.prepare(config));
     let mut rpc = codex::history_client_at(
         config.kind,
         &config.binary,
@@ -52,11 +94,10 @@ pub fn list_projects(
     {
         return Err(Error::new("Codex 返回无效或重复的项目身份"));
     }
-    let threads = pages(
-        &mut rpc,
-        "thread/list",
-        json!({"limit":100,"archived":archived,"modelProviders":[],"sourceKinds":SOURCE_KINDS,"sortKey":"updated_at","sortDirection":"desc"}),
-    )?;
+    let threads = match &mut active_read {
+        Some(read) => read.list_threads(&mut rpc),
+        None => list_threads(&mut rpc, &config.home, &config.execution, archived),
+    }?;
     let (threads, thread_retention) = threads.into_parts();
     retention = retention.merge(thread_retention);
     let mut assignments = BTreeMap::new();

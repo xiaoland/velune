@@ -2,6 +2,12 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod traits;
+pub use traits::*;
+
+#[cfg(test)]
+mod traits_tests;
+
 /// A host-assigned view key, scoped by the authenticated device at the network boundary.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ClientViewId(pub String);
@@ -108,6 +114,7 @@ pub enum CommandKind {
     UpsertRuntime,
     UpsertRuntimeWithExecution,
     UpsertAcpRuntime,
+    SetRuntimeModelAutoCompaction,
     ReadAcpLaunch,
     ReadAcpRuntimeInfo,
     ReadAcpSessionConfig,
@@ -359,6 +366,11 @@ pub enum Command {
         execution: crate::RuntimeExecution,
         launch: crate::AcpLaunch,
     },
+    SetRuntimeModelAutoCompaction {
+        runtime_id: String,
+        model: ModelSelection,
+        setting: Option<crate::AutoCompactionSetting>,
+    },
     ReadAcpLaunch {
         runtime_id: String,
     },
@@ -531,6 +543,10 @@ pub enum Command {
         runtime_id: String,
         conversation_id: String,
         turn: ComposedTurn,
+        /// Explicit target of this input, separate from the conversation address.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[uniffi(default = None)]
+        target_runtime_id: Option<String>,
     },
     CompactConversation {
         runtime_id: String,
@@ -582,6 +598,9 @@ pub enum Command {
     ReadBackgroundTasks {
         runtime_id: String,
         conversation_id: String,
+        #[serde(default)]
+        #[uniffi(default = false)]
+        manual: bool,
     },
     ReadBackgroundTaskOutput {
         runtime_id: String,
@@ -809,6 +828,7 @@ pub enum Response {
     UpsertRuntime(RuntimeUpdate),
     UpsertRuntimeWithExecution(RuntimeUpdate),
     UpsertAcpRuntime(RuntimeUpdate),
+    SetRuntimeModelAutoCompaction(RuntimeUpdate),
     ReadAcpLaunch(crate::AcpLaunch),
     ReadAcpRuntimeInfo(crate::AcpRuntimeInfo),
     ReadAcpSessionConfig(Vec<crate::AcpConfigOption>),
@@ -904,146 +924,11 @@ impl Command {
             _ => None,
         }
     }
-    /// Exhaustive classification: new commands must declare whether an uncertain delivery may be reissued.
+    /// Whether an uncertain delivery may be reissued.
     pub fn delivery_class(&self) -> DeliveryClass {
-        match self {
-            Self::ManageComposerInputs { operation } => match operation {
-                crate::ComposerInputOperation::Read { .. } => DeliveryClass::Observation,
-                _ => DeliveryClass::Effect,
-            },
-            Self::ReadComposerOwner
-            | Self::ReadComposerTarget { .. }
-            | Self::ReadComposerTargetIdentity { .. }
-            | Self::ReadComposerAttachment { .. }
-            | Self::ReadComposerTargetBasis { .. } => DeliveryClass::Observation,
-            Self::UploadComposerAttachment { .. } => DeliveryClass::Effect,
-            Self::ManageScheduledTasks { operation } => match operation {
-                crate::ScheduledTasksOperation::List
-                | crate::ScheduledTasksOperation::PreviewImport { .. }
-                | crate::ScheduledTasksOperation::PreviewSchedule { .. } => {
-                    DeliveryClass::Observation
-                }
-                _ => DeliveryClass::Effect,
-            },
-            Self::ListResourceTemplates
-            | Self::ReadResourceTemplate { .. }
-            | Self::ImportRuntimeResource { .. }
-            | Self::ReadResourceSyncStatus
-            | Self::ReadResourceDrift { .. }
-            | Self::ListUnmanagedRuntimeResources { .. }
-            | Self::ReadResourceNativeImport { .. }
-            | Self::QueryAnalytics { .. }
-            | Self::ReadProviderAnalytics { .. }
-            | Self::ReadRuntimeDiscoveryHints { .. }
-            | Self::DiscoverRuntimes { .. }
-            | Self::ReadConfiguration
-            | Self::ReadBackgroundTasks { .. }
-            | Self::ReadBackgroundTaskOutput { .. }
-            | Self::ReadComposerDrafts
-            | Self::ReadComposerChoices
-            | Self::ReadRuntimeStartChoice { .. }
-            | Self::SearchConversations { .. }
-            | Self::FindConversation { .. }
-            | Self::ResolveAgentUri { .. }
-            | Self::ReadAcpLaunch { .. }
-            | Self::ReadAcpRuntimeInfo { .. }
-            | Self::ReadAcpSessionConfig { .. }
-            | Self::ReadRuntimeExecution { .. }
-            | Self::ReadRuntimeHomeDirectory { .. }
-            | Self::ReadRuntimeModels { .. }
-            | Self::ReadComposerQuota { .. }
-            | Self::ReadConversation { .. }
-            | Self::ReadSnapshot { .. }
-            | Self::ReadSnapshotUpdate { .. }
-            | Self::ReadHandoffRequirements { .. }
-            | Self::ReadHandoffSummary { .. }
-            | Self::ReadMessagePayloads { .. }
-            | Self::ReadReasoningEfforts { .. }
-            | Self::ReadConversationActivity { .. }
-            | Self::ReadWorkingChanges { .. }
-            | Self::ReadWorkingBranch { .. }
-            | Self::ReadFileDiff { .. }
-            | Self::PreviewProviderImport { .. }
-            | Self::ReadProviderBilling { .. }
-            | Self::ReadProviderAccount { .. }
-            | Self::ReadProviderQuota { .. }
-            | Self::ReadProviderQuotaHistory { .. }
-            | Self::ReadQuotaAlerts { .. }
-            | Self::ReadProviderApiKey { .. }
-            | Self::FetchPublicModelCatalog
-            | Self::SetObservedConversations { .. }
-            | Self::ReadAttachment { .. } => DeliveryClass::Observation,
-            Self::ReleaseView
-            | Self::SaveResourceTemplate { .. }
-            | Self::DeleteResourceTemplate { .. }
-            | Self::AdoptRuntimeResource { .. }
-            | Self::ApplyResourceTemplate { .. }
-            | Self::ResolveResourceBinding { .. }
-            | Self::SetOutlinePresentation { .. }
-            | Self::SetLinkedConversationOpening { .. }
-            | Self::SetUsageDisplay { .. }
-            | Self::SetContextUsageDisplay { .. }
-            | Self::SetStatusLine { .. }
-            | Self::SetConversationBrowserPreferences { .. }
-            | Self::SetComposerDraft { .. }
-            | Self::SetNextTurnIntent { .. }
-            | Self::SetRuntimeComposerChoices { .. }
-            | Self::SetConversationBrowserLimits { .. }
-            | Self::OrganizeConversations { .. }
-            | Self::SetProject { .. }
-            | Self::LoadMoreConversations { .. }
-            | Self::ShowArchivedConversations { .. }
-            | Self::UpsertRuntime { .. }
-            | Self::UpsertRuntimeWithExecution { .. }
-            | Self::UpsertAcpRuntime { .. }
-            | Self::SetAcpSessionConfig { .. }
-            | Self::DeleteRuntime { .. }
-            | Self::SelectRuntime { .. }
-            | Self::CreateConversation { .. }
-            | Self::OpenConversation { .. }
-            | Self::RenameConversation { .. }
-            | Self::DeleteConversation { .. }
-            | Self::SendTurn { .. }
-            | Self::BeginHandoffSummary { .. }
-            | Self::QueueHandoffSummary { .. }
-            | Self::RetryQueuedHandoffSummary { .. }
-            | Self::CancelHandoffSummary { .. }
-            | Self::SendPreparedHandoff { .. }
-            | Self::SendCurrentTurn { .. }
-            | Self::EditSendQueue { .. }
-            | Self::SteerTurn { .. }
-            | Self::ResumeTurn { .. }
-            | Self::CompactConversation { .. }
-            | Self::DeleteUserMessage { .. }
-            | Self::EditMessage { .. }
-            | Self::ForkConversation { .. }
-            | Self::Cancel { .. }
-            | Self::StopSubAgents { .. }
-            | Self::StopBackgroundTask { .. }
-            | Self::SetConversationHandoff { .. }
-            | Self::OpenSideChat { .. }
-            | Self::SendSideChat { .. }
-            | Self::CloseSideChat { .. }
-            | Self::ApplyProviderImport { .. }
-            | Self::RefreshProviderQuota { .. }
-            | Self::ClearProviderQuotaHistory { .. }
-            | Self::SaveProviderBilling { .. }
-            | Self::SaveProvider { .. }
-            | Self::DeleteProvider { .. }
-            | Self::SaveModelRoute { .. }
-            | Self::DeleteModelRoute { .. }
-            | Self::SaveModelTemplate { .. }
-            | Self::DeleteModelTemplate { .. }
-            | Self::ReplyRuntimeInteraction { .. }
-            | Self::InspectAuthentication { .. }
-            | Self::StartAuthentication { .. }
-            | Self::LogoutAuthentication { .. }
-            | Self::PollAuthentication
-            | Self::ReplyAuthentication { .. }
-            | Self::CancelAuthentication
-            | Self::UploadAttachment { .. } => DeliveryClass::Effect,
-        }
+        self.traits().delivery
     }
+
     pub fn kind(&self) -> CommandKind {
         match self {
             Self::ReadComposerOwner => CommandKind::ReadComposerOwner,
@@ -1100,6 +985,9 @@ impl Command {
             Self::UpsertRuntime { .. } => CommandKind::UpsertRuntime,
             Self::UpsertRuntimeWithExecution { .. } => CommandKind::UpsertRuntimeWithExecution,
             Self::UpsertAcpRuntime { .. } => CommandKind::UpsertAcpRuntime,
+            Self::SetRuntimeModelAutoCompaction { .. } => {
+                CommandKind::SetRuntimeModelAutoCompaction
+            }
             Self::ReadAcpLaunch { .. } => CommandKind::ReadAcpLaunch,
             Self::ReadAcpRuntimeInfo { .. } => CommandKind::ReadAcpRuntimeInfo,
             Self::ReadAcpSessionConfig { .. } => CommandKind::ReadAcpSessionConfig,
@@ -1178,63 +1066,10 @@ impl Command {
     }
     /// Mutations whose stale input could replace or remove another device's work.
     pub fn requires_revision(&self) -> bool {
-        matches!(
-            self,
-            Self::SaveProviderBilling { .. }
-                | Self::SaveProvider { .. }
-                | Self::DeleteProvider { .. }
-                | Self::SaveModelRoute { .. }
-                | Self::DeleteModelRoute { .. }
-                | Self::SaveModelTemplate { .. }
-                | Self::DeleteModelTemplate { .. }
-                | Self::UpsertRuntime { .. }
-                | Self::UpsertRuntimeWithExecution { .. }
-                | Self::UpsertAcpRuntime { .. }
-                | Self::DeleteRuntime { .. }
-                | Self::ApplyProviderImport { .. }
-                | Self::RenameConversation { .. }
-                | Self::DeleteConversation { .. }
-                | Self::DeleteUserMessage { .. }
-                | Self::EditMessage { .. }
-                | Self::SetAcpSessionConfig { .. }
-                | Self::SaveResourceTemplate { .. }
-                | Self::DeleteResourceTemplate { .. }
-                | Self::ApplyResourceTemplate { .. }
-                | Self::ResolveResourceBinding { .. }
-                | Self::AdoptRuntimeResource { .. }
-                | Self::SetProject { .. }
-                | Self::OrganizeConversations { .. }
-                | Self::LogoutAuthentication { .. }
-        )
+        self.traits().requires_revision()
     }
+
     pub fn changes_shared_state(&self) -> bool {
-        self.requires_revision()
-            || matches!(self, Self::ManageScheduledTasks { operation } if !matches!(operation, crate::ScheduledTasksOperation::List | crate::ScheduledTasksOperation::PreviewImport { .. } | crate::ScheduledTasksOperation::PreviewSchedule { .. }))
-            || matches!(
-                self,
-                Self::CreateConversation { .. }
-                    | Self::SendTurn { .. }
-                    | Self::BeginHandoffSummary { .. }
-                    | Self::QueueHandoffSummary { .. }
-                    | Self::RetryQueuedHandoffSummary { .. }
-                    | Self::CancelHandoffSummary { .. }
-                    | Self::SendPreparedHandoff { .. }
-                    | Self::SendCurrentTurn { .. }
-                    | Self::EditSendQueue { .. }
-                    | Self::SteerTurn { .. }
-                    | Self::ResumeTurn { .. }
-                    | Self::CompactConversation { .. }
-                    | Self::ForkConversation { .. }
-                    | Self::ReplyRuntimeInteraction { .. }
-                    | Self::Cancel { .. }
-                    | Self::StopSubAgents { .. }
-                    | Self::StopBackgroundTask { .. }
-                    | Self::SetConversationHandoff { .. }
-                    | Self::OpenSideChat { .. }
-                    | Self::SendSideChat { .. }
-                    | Self::CloseSideChat { .. }
-                    | Self::StartAuthentication { .. }
-                    | Self::ReplyAuthentication { .. }
-            )
+        self.traits().changes_shared_state()
     }
 }

@@ -49,8 +49,6 @@ enum ToolPlace: Codable, Hashable {
     /// toolbar buttons, the composer in each pane. The list has none.
     case builtIn
     case docked(DockSide)
-    /// A utility panel above its window that snaps to it and follows it.
-    case floating
     /// A window of its own.
     case window
 
@@ -65,7 +63,6 @@ struct ToolWindowState: Codable, Equatable {
     var shown = true
     /// Its share of its dock area beside the other tools there.
     var weight = 1.0
-    var panelFrame: ToolFrame?
     var windowFrame: ToolFrame?
     /// As a window of its own, kept in front of other apps' windows.
     var pinned = false
@@ -81,7 +78,7 @@ enum ToolChoice: Hashable {
     static func all(for kind: ToolWindowKind) -> [(choice: ToolChoice, title: String)] {
         let docked: [(ToolChoice, String)] = (kind == .composer ? [DockSide.bottom, .left, .right] : DockSide.allCases)
             .map { (.place(.docked($0)), "停靠在\($0.title)") }
-        let detached: [(ToolChoice, String)] = [(.place(.floating), "浮动"), (.place(.window), "独立窗口")]
+        let detached: [(ToolChoice, String)] = [(.place(.window), "独立窗口")]
         return switch kind {
         case .list: docked + detached
         case .outline: [(.outline(.popover), "弹出"), (.outline(.inPlace), "就地折叠")] + docked + detached
@@ -91,15 +88,23 @@ enum ToolChoice: Hashable {
     }
 }
 
-/// Where a window's tool windows are, restored with the window. A docked
-/// tool shows while it is shown and its area is not collapsed.
+/// Where a window's tool windows are, restored with the window. Visibility
+/// is two things: whether an area is open, and which area a tool is in. An
+/// area is open while it shows a tool: hiding the last one there closes the
+/// area, which keeps the tool for when it opens again, and one with nothing
+/// left in it is closed. A tool hidden beside others has left the area and
+/// keeps it to come back to.
 struct ToolWindowLayout: Codable, Equatable {
     var tools: [ToolWindowKind: ToolWindowState] = [.list: ToolWindowState(place: .docked(.left)), .outline: ToolWindowState(place: .builtIn), .composer: ToolWindowState(place: .builtIn)]
+    /// The areas closed by hand; one with nothing to show is closed as well.
     var collapsed: Set<DockSide> = []
     /// Nil in older saved layouts means the default split presentation.
     var sideChatPresentation: SideChatPresentation?
     /// Total drawer height, independent of composer state or draft length.
     var bottomHeight = 220.0
+    /// The sidebar's and the inspector's widths as last dragged; nil until then.
+    var leftWidth: Double?
+    var rightWidth: Double?
     /// The areas "editor only" collapsed, to open again.
     var editorOnly: Set<DockSide>?
 
@@ -115,13 +120,21 @@ struct ToolWindowLayout: Codable, Equatable {
         return switch state.place {
         case .builtIn: false
         case .docked(let side): !collapsed.contains(side)
-        case .floating, .window: true
+        case .window: true
         }
     }
 
     /// The tools an area shows, in a fixed order.
     func tools(in side: DockSide) -> [ToolWindowKind] {
         collapsed.contains(side) ? [] : docked(in: side).filter { self[$0].shown }
+    }
+
+    /// What an area's view holds: its tools, and while it is collapsed the
+    /// ones it showed, so closing and opening it move the same views rather
+    /// than tear them down and build them again. A composer is put away with
+    /// its area.
+    func kept(in side: DockSide) -> [ToolWindowKind] {
+        collapsed.contains(side) ? docked(in: side).filter { self[$0].shown && $0 != .composer } : tools(in: side)
     }
 
     func docked(in side: DockSide) -> [ToolWindowKind] {
@@ -146,9 +159,19 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 
     /// The composer, which a pane cannot do without, goes back to the panes.
+    /// The last tool an area shows closes the area instead, and comes back with it.
     mutating func hide(_ kind: ToolWindowKind) {
-        if kind == .composer { self[kind].place = .builtIn } else { self[kind].shown = false }
+        if let side = self[kind].place.side, tools(in: side) == [kind], kind != .composer {
+            collapse(side)
+        } else if kind == .composer {
+            self[kind].place = .builtIn
+        } else {
+            self[kind].shown = false
+        }
     }
+
+    /// Whether an area is open; an open one shows at least one tool.
+    func isOpen(_ side: DockSide) -> Bool { !tools(in: side).isEmpty }
 
     mutating func collapse(_ side: DockSide) {
         collapsed.insert(side)
@@ -163,7 +186,7 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 
     mutating func toggleArea(_ side: DockSide) {
-        if tools(in: side).isEmpty { showArea(side) } else { collapse(side) }
+        if isOpen(side) { collapse(side) } else { showArea(side) }
     }
 
     /// Collapse every area showing something, or open them again.
@@ -208,6 +231,38 @@ struct ToolWindowLayout: Codable, Equatable {
         collapsed.remove(side)
         editorOnly = nil
     }
+
+    /// Saved tool layouts from before floating panels were removed: a
+    /// floating tool becomes a window of its own, keeping the panel's size and
+    /// its place beside the window (`ToolFrame` keeps an attached panel's
+    /// place from the window's edges). `tools` is a `ToolWindowLayout` as
+    /// JSON; nil when nothing in it is of that format.
+    static func migratingFloatingTools(_ tools: Any) -> [String: Any]? {
+        guard var tools = tools as? [String: Any], var states = tools["tools"] as? [String: Any] else { return nil }
+        var changed = false
+        for (kind, value) in states {
+            guard var state = value as? [String: Any] else { continue }
+            let panel = state.removeValue(forKey: "panelFrame")
+            if (state["place"] as? [String: Any])?["floating"] != nil {
+                state["place"] = ["window": [String: Any]()]
+                if let panel, !(panel is NSNull) { state["windowFrame"] = panel }
+                changed = true
+            } else if panel != nil { changed = true }
+            states[kind] = state
+        }
+        guard changed else { return nil }
+        tools["tools"] = states
+        return tools
+    }
+
+    /// `data`, a JSON object whose `tools` is a tool layout, with floating
+    /// tools migrated; nil when it has none.
+    static func migratingFloatingTools(in data: Data) -> Data? {
+        guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tools = object["tools"].flatMap(migratingFloatingTools) else { return nil }
+        object["tools"] = tools
+        return try? JSONSerialization.data(withJSONObject: object)
+    }
 }
 
 /// The tool windows as last arranged in any window, for each window that
@@ -233,7 +288,17 @@ struct ToolWindowLayout: Codable, Equatable {
         url = home?.appendingPathComponent("mac-tool-layout.json")
         self.failed = failed
         if let url, FileManager.default.fileExists(atPath: url.path) {
-            let data = try? Data(contentsOf: url)
+            var data = try? Data(contentsOf: url)
+            var migrated = false
+            if let original = data, let upgraded = ToolWindowLayout.migratingFloatingTools(in: original) {
+                // The original stays beside it before anything is rewritten.
+                let backup = url.appendingPathExtension("before-floating-tools.bak")
+                do {
+                    if !FileManager.default.fileExists(atPath: backup.path) { try original.write(to: backup, options: .atomic) }
+                    data = upgraded
+                    migrated = true
+                } catch { failed(error) }
+            }
             let file = data.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
             let strict = data.flatMap { data -> Bool? in
                 guard let file else { return nil }
@@ -245,6 +310,7 @@ struct ToolWindowLayout: Codable, Equatable {
             }
             if let file, file.schema == File.schema, strict == true {
                 layout = file.tools.normalized()
+                if migrated { write() }
             } else {
                 canWrite = false
                 layout = ToolWindowLayout()
@@ -285,8 +351,9 @@ struct ToolWindowLayout: Codable, Equatable {
     }
 }
 
-/// A floating panel's or tool window's size and place: on the screen, or,
-/// attached to its window, from the window's nearer edges so it follows the window.
+/// A tool window's size and place on the screen. Layouts saved with floating
+/// panels may carry an attachment: the place from the window's nearer edges,
+/// where the panel was, read once when it first opens as a window.
 struct ToolFrame: Codable, Equatable {
     struct Attachment: Codable, Equatable {
         /// Measured from the window's trailing edge, else its leading edge.
@@ -320,22 +387,6 @@ struct ToolFrame: Codable, Equatable {
         return NSRect(x: minX, y: minY, width: width, height: height)
     }
 
-    /// Where a panel first floats: the list and outline beside the window's
-    /// leading and trailing edges (just inside them when the screen ends
-    /// there), the composer over its bottom.
-    static func initialPanel(_ kind: ToolWindowKind, beside window: NSRect, screen: NSRect) -> ToolFrame {
-        let width: CGFloat = 280
-        let frame: NSRect = switch kind {
-        // Inside, it leaves the window's title bar uncovered.
-        case .list: window.minX - width >= screen.minX ? NSRect(x: window.minX - width, y: window.minY, width: width, height: window.height)
-            : NSRect(x: window.minX, y: window.minY, width: width, height: window.height - 52)
-        case .outline, .agents, .backgroundTasks: window.maxX + width <= screen.maxX ? NSRect(x: window.maxX, y: window.minY, width: width, height: window.height)
-            : NSRect(x: window.maxX - width, y: window.minY, width: width, height: window.height - 52)
-        case .composer: NSRect(x: window.midX - 320, y: window.minY + 24, width: 640, height: 120)
-        }
-        return ToolFrame(frame, attachedTo: window)
-    }
-
     /// Where a tool window first opens: offset from its conversation window, on its screen.
     static func initialWindow(_ kind: ToolWindowKind, beside window: NSRect, screen: NSRect) -> ToolFrame {
         let size = kind == .composer ? NSSize(width: 640, height: 120) : NSSize(width: 320, height: min(640, window.height))
@@ -346,37 +397,9 @@ struct ToolFrame: Codable, Equatable {
     }
 }
 
-/// A tool window outside its conversation window.
-@MainActor protocol DetachedTool: NSWindow {
-    var kind: ToolWindowKind { get }
-    var model: ConversationWindowModel? { get }
-}
-
-/// A floating tool window: a utility panel above its conversation window.
-final class ToolPanel: NSPanel, DetachedTool {
-    let kind: ToolWindowKind
-    weak var model: ConversationWindowModel?
-
-    init(kind: ToolWindowKind, model: ConversationWindowModel) {
-        self.kind = kind
-        self.model = model
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 280, height: 400),
-                   styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
-        title = kind.title
-        isFloatingPanel = true
-        hidesOnDeactivate = true
-        becomesKeyOnlyIfNeeded = false
-        isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenAuxiliary]
-        minSize = kind == .composer ? NSSize(width: 360, height: 60) : NSSize(width: 200, height: 200)
-    }
-
-    override var canBecomeKey: Bool { true }
-}
-
 /// A tool window of its own: in Mission Control and the Window menu, able
 /// to go full screen.
-final class ToolWindow: NSWindow, DetachedTool {
+final class ToolWindow: NSWindow {
     let kind: ToolWindowKind
     weak var model: ConversationWindowModel?
 
@@ -394,27 +417,21 @@ final class ToolWindow: NSWindow, DetachedTool {
     }
 }
 
-/// The tool windows of one conversation window that are outside it. Floating
-/// panels dragged close to the window's edges, or to a panel attached to it,
-/// snap there and follow the window; with the pointer at its left, right or
-/// bottom edge they dock into that area.
+/// The tool windows of one conversation window that are outside it.
 @MainActor final class DetachedTools: NSObject, NSWindowDelegate {
     private unowned let model: ConversationWindowModel
-    private var hosts: [ToolWindowKind: any DetachedTool] = [:]
+    private var hosts: [ToolWindowKind: ToolWindow] = [:]
     private weak var main: NSWindow?
-    private var observers: [NSObjectProtocol] = []
-    /// Set while a panel moves because the window moved or it was snapped.
+    private var observer: NSObjectProtocol?
+    /// Set while a window is placed or fitted, not moved by the user.
     private var placing = false
-    private var dragging: Set<ToolWindowKind> = []
     private var syncScheduled = false
-    private static let snapDistance: CGFloat = 14
-    private static let dockDepth: CGFloat = 80
 
     init(model: ConversationWindowModel) {
         self.model = model
     }
 
-    /// Open and close panels and windows to match the layout, once the window exists.
+    /// Open and close tool windows to match the layout, once the window exists.
     func sync() {
         guard let window = model.window else {
             guard !syncScheduled else { return }
@@ -427,22 +444,17 @@ final class ToolWindow: NSWindow, DetachedTool {
         }
         if main !== window { attach(to: window) }
         for kind in ToolWindowKind.allCases {
-            let place = model.tools.isOpen(kind) ? model.tools[kind].place : nil
-            let wanted: Bool? = switch place {
-            case .floating: true
-            case .window: false
-            default: nil
-            }
-            if let host = hosts[kind], wanted != (host is ToolPanel) { close(kind) }
-            if let wanted, hosts[kind] == nil { open(kind, floating: wanted, beside: window) }
-            if let host = hosts[kind] as? ToolWindow { WindowPinning.apply(model.tools[kind].pinned, to: host) }
+            let wanted = model.tools.isOpen(kind) && model.tools[kind].place == .window
+            if !wanted { close(kind) }
+            else if hosts[kind] == nil { open(kind, beside: window) }
+            if let host = hosts[kind] { WindowPinning.apply(model.tools[kind].pinned, to: host) }
         }
     }
 
     func closeAll() {
         for kind in Array(hosts.keys) { close(kind) }
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers = []
+        observer.map(NotificationCenter.default.removeObserver)
+        observer = nil
     }
 
     func isHost(_ window: NSWindow) -> Bool { hosts.values.contains { $0 === window } }
@@ -451,8 +463,7 @@ final class ToolWindow: NSWindow, DetachedTool {
     /// conversation window leaves the active Space. Count only the host that
     /// actually presents this window's focused store.
     func hasVisibleComposerWindow(for store: ConversationStore) -> Bool {
-        guard model.tools.isOpen(.composer), model.focused.store === store,
-              let host = hosts[.composer] as? ToolWindow else { return false }
+        guard model.tools.isOpen(.composer), model.focused.store === store, let host = hosts[.composer] else { return false }
         return host.isVisible && host.isOnActiveSpace && !host.isMiniaturized
     }
 
@@ -463,77 +474,46 @@ final class ToolWindow: NSWindow, DetachedTool {
 
     /// A tool window's subtitle names the conversation its window shows.
     func setSubtitle(_ title: String, for kind: ToolWindowKind) {
-        if let window = hosts[kind] as? ToolWindow, window.subtitle != title { window.subtitle = title }
+        if let window = hosts[kind], window.subtitle != title { window.subtitle = title }
     }
-
-    private var panels: [ToolPanel] { hosts.values.compactMap { $0 as? ToolPanel } }
 
     private func attach(to window: NSWindow) {
-        observers.forEach(NotificationCenter.default.removeObserver)
+        observer.map(NotificationCenter.default.removeObserver)
         main = window
-        let center = NotificationCenter.default
-        observers = [
-            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.closeAll() }
-            },
-            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.followWindow() }
-            },
-            // Another conversation window coming forward takes its own panels; this one's step back.
-            center.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] notification in
-                MainActor.assumeIsolated { self?.mainChanged(notification.object as? NSWindow) }
-            },
-            center.addObserver(forName: NSWindow.didMiniaturizeNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.panels.forEach { $0.orderOut(nil) } }
-            },
-            center.addObserver(forName: NSWindow.didDeminiaturizeNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.showPanels() }
-            },
-        ]
+        observer = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closeAll() }
+        }
     }
 
-    private func mainChanged(_ window: NSWindow?) {
-        guard let window, let main else { return }
-        if window === main || isHost(window) { showPanels() }
-        else if ConversationWindowModel.isConversationWindow(window) { panels.forEach { $0.orderOut(nil) } }
-    }
-
-    private func showPanels() {
-        guard let main, main.isVisible, !main.isMiniaturized else { return }
-        for panel in panels where !panel.isVisible { panel.orderFront(nil) }
-    }
-
-    private func open(_ kind: ToolWindowKind, floating: Bool, beside window: NSWindow) {
-        let host: any DetachedTool = floating ? ToolPanel(kind: kind, model: model) : ToolWindow(kind: kind, model: model)
+    private func open(_ kind: ToolWindowKind, beside window: NSWindow) {
+        let host = ToolWindow(kind: kind, model: model)
         let hosting = NSHostingView(rootView: DetachedToolContent(kind: kind, window: model))
         // The window's size is the user's, not the content's.
         hosting.sizingOptions = []
         host.contentView = hosting
         host.delegate = self
-        host.addTitlebarAccessoryViewController(placeAccessory(for: kind, floating: floating))
+        host.addTitlebarAccessoryViewController(placeAccessory(for: kind))
         hosts[kind] = host
         let screen = window.screen?.visibleFrame ?? window.frame
-        let saved = floating ? model.tools[kind].panelFrame ?? .initialPanel(kind, beside: window.frame, screen: screen)
-            : model.tools[kind].windowFrame ?? .initialWindow(kind, beside: window.frame, screen: screen)
+        let saved = model.tools[kind].windowFrame ?? .initialWindow(kind, beside: window.frame, screen: screen)
         placing = true
         host.setFrame(saved.frame(beside: window.frame), display: false)
         placing = false
-        if floating, saved.attachment != nil { window.addChildWindow(host, ordered: .above) }
-        if floating, model.tools[kind].panelFrame == nil { model.tools[kind].panelFrame = saved }
-        if !floating, model.tools[kind].windowFrame == nil { model.tools[kind].windowFrame = saved }
+        // From here on its place is its own, on the screen.
+        if saved.attachment != nil || model.tools[kind].windowFrame == nil { record(host) }
         if window.isVisible { host.orderFront(nil) }
     }
 
     /// A borderless symbol at the title bar's trailing end, as title bar
     /// controls are, opening a menu of the tool's other places.
-    private func placeAccessory(for kind: ToolWindowKind, floating: Bool) -> NSTitlebarAccessoryViewController {
+    private func placeAccessory(for kind: ToolWindowKind) -> NSTitlebarAccessoryViewController {
         let image = NSImage(systemSymbolName: "pip.enter", accessibilityDescription: "位置")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
         let button = NSButton(image: image ?? NSImage(), target: self, action: #selector(placePressed(_:)))
         button.isBordered = false
         button.imagePosition = .imageOnly
         button.tag = ToolWindowKind.allCases.firstIndex(of: kind)!
-        button.toolTip = "停靠或改为\(floating ? "独立窗口" : "浮动")（也可把浮动面板拖到窗口的左、右或底边）"
+        button.toolTip = "停靠到窗口或移回原位"
         button.setAccessibilityLabel("位置")
         // In a box that keeps it clear of the window's edge. A tint colour
         // leaves a title bar accessory's symbol undrawn.
@@ -553,7 +533,6 @@ final class ToolWindow: NSWindow, DetachedTool {
         let current = model.tools[kind].place
         for (choice, title) in ToolChoice.all(for: kind) {
             guard case .place(let place) = choice, place != current else { continue }
-            if place == .floating || place == .window { menu.addItem(.separator()) }
             let item = NSMenuItem(title: title, action: #selector(placeChosen(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = PlaceChoice(kind: kind, place: place)
@@ -573,7 +552,7 @@ final class ToolWindow: NSWindow, DetachedTool {
         model.tools.move(choice.kind, to: choice.place)
     }
 
-    /// The floating composer is as tall as its content, growing upward as the docked one does.
+    /// The composer's window is as tall as its content, growing upward as the docked one does.
     func fitComposer(contentHeight: CGFloat) {
         guard let host = hosts[.composer], contentHeight > 0 else { return }
         let chrome = host.frame.height - host.contentLayoutRect.height
@@ -589,156 +568,47 @@ final class ToolWindow: NSWindow, DetachedTool {
 
     func windowWillResize(_ sender: NSWindow, to size: NSSize) -> NSSize {
         // Only the composer's width is the user's; its height follows its content.
-        guard (sender as? any DetachedTool)?.kind == .composer else { return size }
+        guard (sender as? ToolWindow)?.kind == .composer else { return size }
         return NSSize(width: size.width, height: sender.frame.height)
     }
 
     private func close(_ kind: ToolWindowKind) {
         guard let host = hosts.removeValue(forKey: kind) else { return }
-        host.parent?.removeChildWindow(host)
         host.delegate = nil
         host.orderOut(nil)
         host.close()
     }
 
-    /// Attached panels keep their place from the window's edges when it resizes.
-    private func followWindow() {
-        guard let main else { return }
-        placing = true
-        for panel in panels {
-            guard let frame = model.tools[panel.kind].panelFrame, frame.attachment != nil else { continue }
-            panel.setFrame(frame.frame(beside: main.frame), display: true)
-        }
-        placing = false
-    }
-
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let host = sender as? any DetachedTool else { return true }
+        guard let host = sender as? ToolWindow else { return true }
         model.tools.hide(host.kind)
         return false
     }
 
-    // Recorded once a resize or a window's move ends: the layout is
-    // published, and every publication lays the window's toolbar out again.
+    // Recorded once a resize or a move ends: the layout is published, and
+    // every publication lays the window's toolbar out again.
     func windowDidEndLiveResize(_ notification: Notification) {
-        guard let host = notification.object as? any DetachedTool else { return }
+        guard let host = notification.object as? ToolWindow else { return }
         record(host)
     }
 
-    /// Published only when it changes, for the same reason.
-    private func updateDockHint() {
-        let hint = dockSide(at: NSEvent.mouseLocation)
-        if model.dockHint != hint { model.dockHint = hint }
-    }
-
     func windowDidMove(_ notification: Notification) {
-        guard !placing, let host = notification.object as? any DetachedTool, NSEvent.pressedMouseButtons & 1 != 0 else { return }
-        let panel = host as? ToolPanel
-        if let panel, following(panel) { return }
-        // The title bar drag is the window server's; it ends when the button comes up.
-        if panel != nil { updateDockHint() }
-        guard !dragging.contains(host.kind) else { return }
-        dragging.insert(host.kind)
-        waitForDragEnd(host)
+        guard !placing, let host = notification.object as? ToolWindow else { return }
+        // The title bar drag is the window server's; record it once the button comes up.
+        if NSEvent.pressedMouseButtons & 1 != 0 { waitForDragEnd(host) } else { record(host) }
     }
 
-    /// An attached panel carried along by its window, not dragged itself.
-    private func following(_ panel: ToolPanel) -> Bool {
-        guard let main, panel.parent === main, let frame = model.tools[panel.kind].panelFrame, frame.attachment != nil else { return false }
-        let expected = frame.frame(beside: main.frame)
-        return abs(expected.minX - panel.frame.minX) < 1 && abs(expected.minY - panel.frame.minY) < 1
-    }
-
-    private func waitForDragEnd(_ host: any DetachedTool) {
+    private func waitForDragEnd(_ host: ToolWindow) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak host] in
             guard let self, let host else { return }
-            let panel = host as? ToolPanel
-            if NSEvent.pressedMouseButtons & 1 != 0 {
-                if panel != nil { updateDockHint() }
-                waitForDragEnd(host)
-                return
-            }
-            dragging.remove(host.kind)
-            guard let panel else { record(host); return }
-            let side = model.dockHint
-            if side != nil { model.dockHint = nil }
-            if let side { model.tools.move(panel.kind, to: .docked(side)) } else { snap(panel) }
+            if NSEvent.pressedMouseButtons & 1 != 0 { return waitForDragEnd(host) }
+            record(host)
         }
     }
 
-    /// The edge strip of the window the pointer is in: a panel dropped there docks into that area.
-    private func dockSide(at point: NSPoint) -> DockSide? {
-        guard let frame = main?.frame, frame.contains(point) else { return nil }
-        let depth = Self.dockDepth
-        if point.x < frame.minX + depth { return .left }
-        if point.x > frame.maxX - depth { return .right }
-        if point.y < frame.minY + depth { return .bottom }
-        return nil
-    }
-
-    /// Close to an edge of the window or of a panel attached to it, the panel
-    /// meets that edge (lining up with it where they run side by side) and
-    /// follows the window; elsewhere it floats free.
-    private func snap(_ panel: ToolPanel) {
-        guard let main else { return }
-        let attached = panels.filter { $0 !== panel && $0.parent === main }.map(\.frame)
-        var frame = panel.frame
-        var snapped = false
-        for (index, target) in ([main.frame] + attached).enumerated() {
-            if let moved = Self.snapped(frame, to: target, inside: index == 0) { frame = moved; snapped = true; break }
-        }
-        placing = true
-        panel.setFrame(frame, display: true, animate: snapped)
-        placing = false
-        if snapped, panel.parent !== main { main.addChildWindow(panel, ordered: .above) }
-        if !snapped, let parent = panel.parent { parent.removeChildWindow(panel) }
-        record(panel)
-    }
-
-    private func record(_ host: any DetachedTool) {
-        guard let main else { return }
-        if host is ToolPanel {
-            model.tools[host.kind].panelFrame = ToolFrame(host.frame, attachedTo: host.parent === main ? main.frame : nil)
-        } else {
-            model.tools[host.kind].windowFrame = ToolFrame(host.frame, attachedTo: nil)
-        }
-    }
-
-    /// `frame` moved onto an edge of `target` it is near: beside it, or, for
-    /// the window itself, just inside it.
-    static func snapped(_ frame: NSRect, to target: NSRect, inside: Bool) -> NSRect? {
-        let distance = snapDistance
-        var result = frame
-        var meets = false
-        let overlapsVertically = frame.maxY > target.minY && frame.minY < target.maxY
-        let overlapsHorizontally = frame.maxX > target.minX && frame.minX < target.maxX
-        if overlapsVertically {
-            var x: CGFloat?
-            if abs(frame.minX - target.maxX) < distance { x = target.maxX }
-            else if abs(frame.maxX - target.minX) < distance { x = target.minX - frame.width }
-            else if inside, abs(frame.minX - target.minX) < distance { x = target.minX }
-            else if inside, abs(frame.maxX - target.maxX) < distance { x = target.maxX - frame.width }
-            if let x {
-                result.origin.x = x
-                meets = true
-                if abs(frame.maxY - target.maxY) < distance { result.origin.y = target.maxY - frame.height }
-                else if abs(frame.minY - target.minY) < distance { result.origin.y = target.minY }
-            }
-        }
-        if !meets, overlapsHorizontally {
-            var y: CGFloat?
-            if abs(frame.minY - target.maxY) < distance { y = target.maxY }
-            else if abs(frame.maxY - target.minY) < distance { y = target.minY - frame.height }
-            else if inside, abs(frame.minY - target.minY) < distance { y = target.minY }
-            else if inside, abs(frame.maxY - target.maxY) < distance { y = target.maxY - frame.height }
-            if let y {
-                result.origin.y = y
-                meets = true
-                if abs(frame.minX - target.minX) < distance { result.origin.x = target.minX }
-                else if abs(frame.maxX - target.maxX) < distance { result.origin.x = target.maxX - frame.width }
-            }
-        }
-        return meets ? result : nil
+    private func record(_ host: ToolWindow) {
+        let frame = ToolFrame(host.frame, attachedTo: nil)
+        if model.tools[host.kind].windowFrame != frame { model.tools[host.kind].windowFrame = frame }
     }
 }
 
@@ -799,20 +669,20 @@ extension ConversationWindowModel {
     /// Show a tool, or hide it when it shows. The outline in its own place
     /// pops over or collapses the focused pane in place; the linked agents
     /// pop over, or, with their button customized out of the toolbar or the
-    /// toolbar hidden, move to a floating panel, since nothing would pop over.
+    /// toolbar hidden, move to a window of their own, since nothing would pop over.
     func toggle(_ kind: ToolWindowKind) {
         if kind == .agents, tools[.agents].place == .builtIn {
             if agentsPopover { agentsPopover = false }
             else if !focused.store.hasLinkedAgents { return }
             else if hasToolbarItem("sub-agents", fallback: .subAgents) { agentsPopover = true }
-            else { tools.move(.agents, to: .floating); detached.bringForward(.agents) }
+            else { tools.move(.agents, to: .window); detached.bringForward(.agents) }
             return
         }
         if kind == .backgroundTasks, tools[kind].place == .builtIn {
             if backgroundTasksPopover { backgroundTasksPopover = false }
             else if !focused.store.canShowBackgroundTasks { return }
             else if hasToolbarItem("background-tasks", fallback: .backgroundTasks) { backgroundTasksPopover = true }
-            else { tools.move(kind, to: .floating); detached.bringForward(kind) }
+            else { tools.move(kind, to: .window); detached.bringForward(kind) }
             return
         }
         if kind == .outline, tools[.outline].place == .builtIn {
@@ -844,22 +714,6 @@ extension ConversationWindowModel {
         }
         let item = NSMenuItem(title: "\(kind.title)位置", action: nil, keyEquivalent: "")
         item.submenu = places
-        return item
-    }
-
-    /// The window's layout as a menu, for a tab's context menu: each tool's
-    /// places, the bottom area, the editor area alone and keeping the window in front.
-    func layoutMenuItem() -> NSMenuItem {
-        let menu = NSMenu()
-        for kind in ToolWindowKind.allCases { menu.addItem(placeMenuItem(for: kind)) }
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(tools.tools(in: .bottom).isEmpty ? "显示底部区域" : "隐藏底部区域") { [weak self] in self?.tools.toggleArea(.bottom) })
-        menu.addItem(ClosureMenuItem(tools.isEditorOnly ? "恢复停靠区域" : "只显示编辑区") { [weak self] in self?.tools.toggleEditorOnly() })
-        let pin = ClosureMenuItem("保持在最前面") { [weak self] in self?.pinned.toggle() }
-        pin.state = pinned ? .on : .off
-        menu.addItem(pin)
-        let item = NSMenuItem(title: "布局", action: nil, keyEquivalent: "")
-        item.submenu = menu
         return item
     }
 

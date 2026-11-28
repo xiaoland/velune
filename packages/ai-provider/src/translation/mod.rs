@@ -11,6 +11,7 @@ fn wire(protocol: Protocol) -> &'static str {
         Protocol::ChatCompletions => "openai",
         Protocol::Responses => "openai_responses",
         Protocol::Messages => "claude",
+        Protocol::Gemini => "gemini",
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,10 @@ pub fn prepare(
         && ["max_tokens", "max_completion_tokens", "max_output_tokens"]
             .iter()
             .all(|key| body[*key].is_null())
+        && !(from == Protocol::Gemini
+            && body["generationConfig"]["maxOutputTokens"]
+                .as_u64()
+                .is_some_and(|limit| limit > 0))
     {
         return Err(invalid("max_tokens_required"));
     }

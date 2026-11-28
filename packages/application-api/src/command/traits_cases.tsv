@@ -1,0 +1,147 @@
+ReadComposerOwner	{"command": "readComposerOwner"}
+ReadComposerTarget	{"command": "readComposerTarget", "parameters": {"context": {"kind": "newConversation"}}}
+ReadComposerTargetIdentity	{"command": "readComposerTargetIdentity", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "conversation"}}}
+ReadComposerTargetBasis	{"command": "readComposerTargetBasis", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "conversation"}}}
+ManageComposerInputs	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "read", "parameters": {}}}}
+UploadComposerAttachment	{"command": "uploadComposerAttachment", "parameters": {"name": "name", "bytes": ""}}
+ReadComposerAttachment	{"command": "readComposerAttachment", "parameters": {"attachment_id": "attachment"}}
+ManageScheduledTasks	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "list"}}}
+ReleaseView	{"command": "releaseView"}
+SetObservedConversations	{"command": "setObservedConversations", "parameters": {"conversations": []}}
+ListResourceTemplates	{"command": "listResourceTemplates"}
+ReadResourceTemplate	{"command": "readResourceTemplate", "parameters": {"template_id": "template"}}
+SaveResourceTemplate	{"command": "saveResourceTemplate", "parameters": {"template": {"id": "template", "name": "Synthetic", "content": {"kind": "instructions", "body": "synthetic"}}}}
+DeleteResourceTemplate	{"command": "deleteResourceTemplate", "parameters": {"template_id": "template"}}
+ImportRuntimeResource	{"command": "importRuntimeResource", "parameters": {"runtime_id": "runtime", "kind": "userInstructions", "path": "path"}}
+AdoptRuntimeResource	{"command": "adoptRuntimeResource", "parameters": {"runtime_id": "runtime", "kind": "userInstructions", "path": "path"}}
+ReadResourceSyncStatus	{"command": "readResourceSyncStatus"}
+ReadResourceDrift	{"command": "readResourceDrift", "parameters": {"runtime_id": "runtime", "template_id": "template"}}
+ListUnmanagedRuntimeResources	{"command": "listUnmanagedRuntimeResources", "parameters": {"kind": "userInstructions"}}
+ApplyResourceTemplate	{"command": "applyResourceTemplate", "parameters": {"template_id": "template", "targets": []}}
+ReadResourceNativeImport	{"command": "readResourceNativeImport", "parameters": {"runtime_id": "runtime", "template_id": "template"}}
+ResolveResourceBinding	{"command": "resolveResourceBinding", "parameters": {"runtime_id": "runtime", "template_id": "template", "resolution": "unmanage"}}
+QueryAnalytics	{"command": "queryAnalytics", "parameters": {"query": {"fromMs": 1, "toMs": 2, "bucketBoundariesMs": [], "requestLimit": 10}}}
+ReadProviderAnalytics	{"command": "readProviderAnalytics", "parameters": {"refresh": false}}
+ReadRuntimeDiscoveryHints	{"command": "readRuntimeDiscoveryHints", "parameters": {"user_home": "user-home", "overrides": {}}}
+DiscoverRuntimes	{"command": "discoverRuntimes", "parameters": {"probes": []}}
+ReadConfiguration	{"command": "readConfiguration"}
+SetOutlinePresentation	{"command": "setOutlinePresentation", "parameters": {"presentation": "popover"}}
+SetLinkedConversationOpening	{"command": "setLinkedConversationOpening", "parameters": {"opening": "currentTab"}}
+SetUsageDisplay	{"command": "setUsageDisplay", "parameters": {"display": "used"}}
+SetContextUsageDisplay	{"command": "setContextUsageDisplay", "parameters": {"display": "used"}}
+SetStatusLine	{"command": "setStatusLine", "parameters": {"items": []}}
+SetConversationBrowserPreferences	{"command": "setConversationBrowserPreferences", "parameters": {"preferences": {"grouping": "none", "sort": "updated", "oldestFirst": false, "project": "all"}}}
+ReadComposerDrafts	{"command": "readComposerDrafts"}
+SetComposerDraft	{"command": "setComposerDraft", "parameters": {"conversation_id": "conversation", "text": "text"}}
+ReadComposerChoices	{"command": "readComposerChoices"}
+ReadRuntimeStartChoice	{"command": "readRuntimeStartChoice", "parameters": {"runtime_id": "runtime"}}
+SetNextTurnIntent	{"command": "setNextTurnIntent", "parameters": {"intent": {"conversationID": "conversation", "choices": []}}}
+SetRuntimeComposerChoices	{"command": "setRuntimeComposerChoices", "parameters": {"choices": {"runtimeID": "runtime", "runtimeType": "pi-1.0", "lastChosen": {}}}}
+SetConversationBrowserLimits	{"command": "setConversationBrowserLimits", "parameters": {"limits": {"page": 10, "total": 100}}}
+OrganizeConversations	{"command": "organizeConversations", "parameters": {"conversations": [{"runtimeInstanceID": "unrelated-runtime", "conversationID": "unrelated"}, {"runtimeInstanceID": "another-runtime", "conversationID": "conversation"}], "change": {"operation": "pin"}}}
+SetProject	{"command": "setProject", "parameters": {"path": "path", "primary_folder": "primary-folder", "folders": []}}
+LoadMoreConversations	{"command": "loadMoreConversations", "parameters": {"group": {"kind": "all"}}}
+ShowArchivedConversations	{"command": "showArchivedConversations", "parameters": {"archived": false}}
+SearchConversations	{"command": "searchConversations", "parameters": {"text": "text"}}
+FindConversation	{"command": "findConversation", "parameters": {"conversation_id": "conversation"}}
+ResolveAgentUri	{"command": "resolveAgentUri", "parameters": {"uri": "uri"}}
+UpsertRuntime	{"command": "upsertRuntime", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}}}
+UpsertRuntimeWithExecution	{"command": "upsertRuntimeWithExecution", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}, "execution": {"transport": "local", "home": "inherit"}}}
+UpsertAcpRuntime	{"command": "upsertAcpRuntime", "parameters": {"runtime": {"id": "runtime", "name": "Synthetic", "typeId": "pi-1.0", "gatewayId": "gateway", "settings": {}}, "execution": {"transport": "local", "home": "inherit"}, "launch": {"args": [], "environment": {}}}}
+SetRuntimeModelAutoCompaction	{"command":"setRuntimeModelAutoCompaction","parameters":{"runtime_id":"runtime","model":{"managed":{"model_record_key":"model"}},"setting":null}}
+ReadAcpLaunch	{"command": "readAcpLaunch", "parameters": {"runtime_id": "runtime"}}
+ReadAcpRuntimeInfo	{"command": "readAcpRuntimeInfo", "parameters": {"runtime_id": "runtime"}}
+ReadAcpSessionConfig	{"command": "readAcpSessionConfig", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+SetAcpSessionConfig	{"command": "setAcpSessionConfig", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "config_id": "config", "value": {"type": "boolean", "value": false}}}
+DeleteRuntime	{"command": "deleteRuntime", "parameters": {"id": "id"}}
+SelectRuntime	{"command": "selectRuntime", "parameters": {"id": "id"}}
+ReadRuntimeExecution	{"command": "readRuntimeExecution", "parameters": {"runtime_id": "runtime"}}
+ReadRuntimeHomeDirectory	{"command": "readRuntimeHomeDirectory", "parameters": {"runtime_id": "runtime"}}
+CreateConversation	{"command": "createConversation", "parameters": {"runtime_id": "runtime"}}
+ReadRuntimeModels	{"command": "readRuntimeModels", "parameters": {"runtime_id": "runtime"}}
+ReadComposerQuota	{"command": "readComposerQuota", "parameters": {"context": {"runtimeId": "runtime"}, "refresh": false}}
+OpenConversation	{"command": "openConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadConversation	{"command": "readConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+RenameConversation	{"command": "renameConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "title": "title"}}
+DeleteConversation	{"command": "deleteConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadSnapshot	{"command": "readSnapshot", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadSnapshotUpdate	{"command": "readSnapshotUpdate", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "since": {"generation": 1, "sequence": 2}}}
+ReadMessagePayloads	{"command": "readMessagePayloads", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "message_ids": []}}
+SendTurn	{"command": "sendTurn", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "target_runtime_id": "target-runtime", "turn": {"text": "synthetic", "attachments": []}}}
+ReadHandoffRequirements	{"command": "readHandoffRequirements", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "target_runtime_id": "target-runtime", "request_id": "request"}}
+BeginHandoffSummary	{"command": "beginHandoffSummary", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "target_runtime_id": "target-runtime", "summary_model": {"managed": {"model_record_key": "model"}}, "effort": "high"}}
+QueueHandoffSummary	{"command": "queueHandoffSummary", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "target_runtime_id": "target-runtime", "turn": {"text": "synthetic", "attachments": []}}}
+RetryQueuedHandoffSummary	{"command": "retryQueuedHandoffSummary", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "queued_message_id": "queued-message"}}
+ReadHandoffSummary	{"command": "readHandoffSummary", "parameters": {"work_id": "work"}}
+CancelHandoffSummary	{"command": "cancelHandoffSummary", "parameters": {"work_id": "work"}}
+SendPreparedHandoff	{"command": "sendPreparedHandoff", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "target_runtime_id": "target-runtime", "turn": {"text": "synthetic", "attachments": []}, "prepared_token": "prepared-token"}}
+SendCurrentTurn	{"command": "sendCurrentTurn", "parameters": {"source_runtime_id": "source-runtime", "conversation_id": "conversation", "turn": {"text": "synthetic", "attachments": []}}}
+ReadReasoningEfforts	{"command": "readReasoningEfforts", "parameters": {"runtime_id": "runtime", "model_record_key": "model-record-key"}}
+EditSendQueue	{"command": "editSendQueue", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "operation": {"kind": "remove", "id": "queued"}}}
+SteerTurn	{"command": "steerTurn", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "turn": {"text": "synthetic", "attachments": []}}}
+CompactConversation	{"command": "compactConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ResumeTurn	{"command": "resumeTurn", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+DeleteUserMessage	{"command": "deleteUserMessage", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "message_id": "message", "truncate": false, "expected_revision": "expected-revision"}}
+EditMessage	{"command": "editMessage", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "message_id": "message", "placement": "inPlace", "turn": {"text": "synthetic", "attachments": []}}}
+ForkConversation	{"command": "forkConversation", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "message_id": "message"}}
+Cancel	{"command": "cancel", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+StopSubAgents	{"command": "stopSubAgents", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadBackgroundTasks	{"command": "readBackgroundTasks", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadBackgroundTaskOutput	{"command": "readBackgroundTaskOutput", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "task_id": "task"}}
+StopBackgroundTask	{"command": "stopBackgroundTask", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "task_id": "task"}}
+SetConversationHandoff	{"command": "setConversationHandoff", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "release": false}}
+OpenSideChat	{"command": "openSideChat", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+SendSideChat	{"command": "sendSideChat", "parameters": {"side_chat_id": "side-chat", "target_runtime_id": "target-runtime", "turn": {"text": "synthetic", "attachments": []}}}
+CloseSideChat	{"command": "closeSideChat", "parameters": {"side_chat_id": "side-chat"}}
+ReadConversationActivity	{"command": "readConversationActivity", "parameters": {"since": 1}}
+ReadWorkingChanges	{"command": "readWorkingChanges", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadWorkingBranch	{"command": "readWorkingBranch", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation"}}
+ReadFileDiff	{"command": "readFileDiff", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "path": "path"}}
+PreviewProviderImport	{"command": "previewProviderImport", "parameters": {"gateway_id": "gateway", "runtime_id": "runtime"}}
+ApplyProviderImport	{"command": "applyProviderImport", "parameters": {"gateway_id": "gateway", "runtime_id": "runtime", "preview_token": "preview-token", "selections": [], "replace_existing": false}}
+ReadProviderBilling	{"command": "readProviderBilling", "parameters": {"gateway_id": "gateway", "provider_id": "provider", "refresh": false}}
+ReadProviderAccount	{"command": "readProviderAccount", "parameters": {"gateway_id": "gateway", "provider_id": "provider", "refresh": false}}
+SaveProviderBilling	{"command": "saveProviderBilling", "parameters": {"gateway_id": "gateway", "provider_id": "provider", "authentication_edit": {"kind": "keep"}, "confirmed": false}}
+ReadProviderQuota	{"command": "readProviderQuota", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+RefreshProviderQuota	{"command": "refreshProviderQuota", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+ReadProviderQuotaHistory	{"command": "readProviderQuotaHistory", "parameters": {"gateway_id": "gateway", "provider_id": "provider", "since_ms": 1}}
+ClearProviderQuotaHistory	{"command": "clearProviderQuotaHistory", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+ReadQuotaAlerts	{"command": "readQuotaAlerts", "parameters": {"since": 1}}
+SaveProvider	{"command": "saveProvider", "parameters": {"gateway_id": "gateway", "provider": {"id": "provider", "name": "Synthetic", "protocol": "responsesV1", "endpoint": "https://example.invalid", "executionBackend": "http", "requestProfile": "native", "authenticationSource": "none", "quotaSource": "none", "models": [], "quotaLimits": []}, "authentication_edit": {"kind": "keep"}}}
+DeleteProvider	{"command": "deleteProvider", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+SaveModelRoute	{"command": "saveModelRoute", "parameters": {"gateway_id": "gateway", "route": {"recordKey": "route", "name": "Synthetic", "members": [], "strategy": "order", "weights": {}, "sticky": false}}}
+DeleteModelRoute	{"command": "deleteModelRoute", "parameters": {"gateway_id": "gateway", "route_record_key": "route-record-key"}}
+ReadProviderApiKey	{"command": "readProviderApiKey", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+SaveModelTemplate	{"command": "saveModelTemplate", "parameters": {"template": {"id": "template", "name": "Synthetic", "suggestedProviderModelId": "model", "nickname": ""}}}
+DeleteModelTemplate	{"command": "deleteModelTemplate", "parameters": {"id": "id"}}
+ReplyRuntimeInteraction	{"command": "replyRuntimeInteraction", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "interaction_id": "interaction", "reply": {"type": "cancel"}}}
+InspectAuthentication	{"command": "inspectAuthentication", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+StartAuthentication	{"command": "startAuthentication", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+LogoutAuthentication	{"command": "logoutAuthentication", "parameters": {"gateway_id": "gateway", "provider_id": "provider"}}
+PollAuthentication	{"command": "pollAuthentication"}
+ReplyAuthentication	{"command": "replyAuthentication", "parameters": {"prompt_id": "prompt", "value": "value"}}
+CancelAuthentication	{"command": "cancelAuthentication"}
+FetchPublicModelCatalog	{"command": "fetchPublicModelCatalog"}
+UploadAttachment	{"command": "uploadAttachment", "parameters": {"name": "name", "bytes": ""}}
+ReadAttachment	{"command": "readAttachment", "parameters": {"runtime_id": "runtime", "conversation_id": "conversation", "message_id": "message", "block_index": 1}}
+ReadComposerTargetIdentity/NoAddress	{"command": "readComposerTargetIdentity", "parameters": {"request": {"runtimeId": "runtime", "conversationId": null}}}
+ReadComposerTargetIdentity/Draft	{"command": "readComposerTargetIdentity", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "draft:conversation"}}}
+ReadComposerTargetIdentity/SideChat	{"command": "readComposerTargetIdentity", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "side-chat:conversation"}}}
+ReadComposerTargetBasis/NoAddress	{"command": "readComposerTargetBasis", "parameters": {"request": {"runtimeId": "runtime", "conversationId": null}}}
+ReadComposerTargetBasis/Draft	{"command": "readComposerTargetBasis", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "draft:conversation"}}}
+ReadComposerTargetBasis/SideChat	{"command": "readComposerTargetBasis", "parameters": {"request": {"runtimeId": "runtime", "conversationId": "side-chat:conversation"}}}
+ManageComposerInputs/ensure	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "ensure", "parameters": {"context": {"kind": "newConversation"}, "inputId": "input", "seed": {"text": "synthetic", "attachments": []}}}}}
+ManageComposerInputs/save	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "save", "parameters": {"inputId": "input", "content": {"text": "synthetic", "attachments": []}}}}}
+ManageComposerInputs/ensureTarget	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "ensureTarget", "parameters": {"context": {"kind": "newConversation"}, "seed": {"choices": [], "choiceEdited": false}}}}}
+ManageComposerInputs/saveTarget	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "saveTarget", "parameters": {"context": {"kind": "newConversation"}, "choices": {"choices": [], "choiceEdited": false}}}}}
+ManageComposerInputs/bind	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "bind", "parameters": {"context": {"kind": "newConversation"}, "inputId": "input"}}}}
+ManageComposerInputs/promote	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "promote", "parameters": {"inputId": "input", "ownerId": "owner", "conversationId": "conversation", "runtimeId": "runtime"}}}}
+ManageComposerInputs/forget	{"command": "manageComposerInputs", "parameters": {"operation": {"operation": "forget", "parameters": {"context": {"kind": "newConversation"}}}}}
+ManageScheduledTasks/save	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "save", "parameters": {"task": {"name": "Synthetic", "prompt": "synthetic", "rrule": "FREQ=DAILY", "timeZone": "UTC", "status": "paused", "target": {"kind": "existingConversation", "runtimeId": "runtime", "conversationId": "conversation"}}}}}}
+ManageScheduledTasks/setEnabled	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "setEnabled", "parameters": {"id": "task", "revision": 1, "enabled": false}}}}
+ManageScheduledTasks/previewSchedule	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "previewSchedule", "parameters": {"rrule": "FREQ=DAILY", "timeZone": "UTC"}}}}
+ManageScheduledTasks/delete	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "delete", "parameters": {"id": "task", "revision": 1}}}}
+ManageScheduledTasks/runNow	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "runNow", "parameters": {"id": "task", "revision": 1}}}}
+ManageScheduledTasks/previewImport	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "previewImport", "parameters": {"sourceDirectory": "/synthetic", "runtimeId": "runtime", "timeZone": "UTC"}}}}
+ManageScheduledTasks/import	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "import", "parameters": {"sourcePath": "/synthetic", "fingerprint": "synthetic", "runtimeId": "runtime", "timeZone": "UTC"}}}}
+ManageScheduledTasks/confirmHandover	{"command": "manageScheduledTasks", "parameters": {"operation": {"operation": "confirmHandover", "parameters": {"id": "task", "revision": 1}}}}

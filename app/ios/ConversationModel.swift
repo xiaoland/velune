@@ -188,14 +188,13 @@ final class ConversationModel: ObservableObject {
         case .externalController: "另一个客户端正在控制此会话。草稿可继续编辑，暂不能发送。"
         case .controlUnavailable: "暂时无法确认会话控制权，正在重试。"
         case .externalExecution: "此会话正在其他客户端执行。"
-        case .readOnly: "此会话当前只可阅读。"
+        case .readOnly: "此会话当前不能提交消息。草稿可继续编辑。"
         }
     }
     var canSend: Bool {
         !loading && !loadingModels && !busy && (peer == "preview" || composerLoaded && effectiveNextTurn?.chosenModelUnavailable == false && !composerSaving && pendingCreation == nil && composerFailure == nil) && !runtimeID.isEmpty && (peer == "preview" || (inputRuntimeOwner == nil || inputRuntimeOwner == composerOwner) && runtimeAvailable && (selection == nil || models.contains { $0.selection == selection })) && (target.conversation == nil || snapshot != nil)
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !inputAttachments.isEmpty) && snapshot?.actions.canSend != false
     }
-    var canEditDraft: Bool { snapshot?.actions.inputAccess != .readOnly }
     func report(_ error: Error, source: String) {
         failure = mobileError(error)
         ProblemStore.shared.record(error, source: source, context: problemContext)

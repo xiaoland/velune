@@ -102,13 +102,35 @@ struct ProviderComposition: Sendable, Equatable {
         switch authenticationSource {
         case .codexOAuth: return "保存后在浏览器中登录一个 ChatGPT 账户。"
         case .claudeCli: return "保存后由 Claude Code CLI 在浏览器中登录一个 Claude 账户。"
-        case .none, .apiKey, .runtimeProvider: return nil
+        case .none, .apiKey, .runtimeProvider, .antigravityCli: return nil
         }
     }
-    /// The Claude Code CLI executable, when the CLI executes the provider's requests.
-    var claudeBinary: String? {
-        get { if case .claudeCli(let binary) = executionBackend { return binary }; return nil }
-        set { if let newValue { executionBackend = .claudeCli(binary: newValue) } }
+    var cliBinary: String? {
+        get {
+            switch executionBackend {
+            case .http: nil
+            case .claudeCli(let binary), .antigravityCli(let binary, _): binary
+            }
+        }
+        set {
+            guard let newValue else { return }
+            switch executionBackend {
+            case .http: break
+            case .claudeCli: executionBackend = .claudeCli(binary: newValue)
+            case .antigravityCli(_, let destination):
+                executionBackend = .antigravityCli(binary: newValue, sshDestination: destination)
+            }
+        }
+    }
+    var antigravitySSHDestination: String? {
+        get {
+            guard case .antigravityCli(_, let destination) = executionBackend else { return nil }
+            return destination
+        }
+        set {
+            guard case .antigravityCli(let binary, _) = executionBackend else { return }
+            executionBackend = .antigravityCli(binary: binary, sshDestination: newValue)
+        }
     }
 }
 

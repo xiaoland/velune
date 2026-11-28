@@ -450,6 +450,15 @@ impl Application {
                 Login::Blocks,
                 |core| core.upsert_acp_runtime(runtime, execution, launch),
             )?),
+            Command::SetRuntimeModelAutoCompaction {
+                runtime_id,
+                model,
+                setting,
+            } => Response::SetRuntimeModelAutoCompaction(application.runtime.serve(
+                Focus::None,
+                Login::Blocks,
+                |core| core.set_runtime_model_auto_compaction(&runtime_id, model, setting),
+            )?),
             Command::ReadAcpLaunch { runtime_id } => {
                 Response::ReadAcpLaunch(application.runtime.serve(
                     Focus::None,
@@ -517,10 +526,11 @@ impl Application {
                 cwd,
                 project,
                 selection,
-            } => Response::CreateConversation(application.runtime.serve_live_control(
-                Focus::New,
-                |core| core.create_conversation_target(&runtime_id, cwd, project, selection),
-            )?),
+            } => Response::CreateConversation(
+                application.runtime.serve_live_control(Focus::New, |core| {
+                    core.create_conversation_target(&runtime_id, cwd, project, selection)
+                })?,
+            ),
             Command::ReadComposerQuota { context, refresh } => {
                 Response::ReadComposerQuota(application.runtime.serve(
                     Focus::None,
@@ -528,13 +538,14 @@ impl Application {
                     |core| core.composer_quota(context, refresh),
                 )?)
             }
-            Command::ReadRuntimeModels { runtime_id } => {
-                Response::ReadRuntimeModels(application.runtime.serve(
-                    Focus::None,
-                    Login::Blocks,
-                    |core| core.runtime_models(runtime_id).map(|models| models.into_parts().0),
-                )?)
-            }
+            Command::ReadRuntimeModels { runtime_id } => Response::ReadRuntimeModels(
+                application
+                    .runtime
+                    .serve(Focus::None, Login::Blocks, |core| {
+                        core.runtime_models(runtime_id)
+                            .map(|models| models.into_parts().0)
+                    })?,
+            ),
             Command::OpenConversation {
                 runtime_id,
                 conversation_id,
@@ -640,10 +651,13 @@ impl Application {
                 source_runtime_id,
                 conversation_id,
                 turn,
-            } => Response::SendTurn(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.send_current_turn(source_runtime_id, conversation_id, turn),
-            )?),
+            } => Response::SendTurn(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.send_current_turn(source_runtime_id, conversation_id, turn)
+                    })?,
+            ),
             Command::ReadReasoningEfforts {
                 runtime_id,
                 model_record_key,
@@ -657,19 +671,37 @@ impl Application {
                 runtime_id: _,
                 conversation_id,
                 operation,
-            } => Response::EditSendQueue(application.runtime.serve(
-                Focus::Conversation(conversation_id.clone()),
-                Login::Blocks,
-                |core| core.send_queue_submission(&conversation_id, operation, submission_id),
-            )?),
+            } => {
+                let composer = &mut application.composer;
+                Response::EditSendQueue(application.runtime.serve(
+                    Focus::Conversation(conversation_id.clone()),
+                    Login::Blocks,
+                    |core| match operation {
+                        SendQueueOperation::Withdraw {
+                            id,
+                            expected_revision,
+                        } => core.withdraw_queued_turn(
+                            &conversation_id,
+                            id,
+                            expected_revision,
+                            composer,
+                        ),
+                        _ => core.send_queue_submission(&conversation_id, operation, submission_id),
+                    },
+                )?)
+            }
             Command::SteerTurn {
                 runtime_id: _,
                 conversation_id,
                 turn,
-            } => Response::SteerTurn(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.steer_turn(&turn),
-            )?),
+                target_runtime_id,
+            } => Response::SteerTurn(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.steer_turn(&turn, target_runtime_id.as_deref())
+                    })?,
+            ),
             Command::CompactConversation {
                 runtime_id,
                 conversation_id,
@@ -685,10 +717,13 @@ impl Application {
                 selection,
                 effort,
                 permission_mode,
-            } => Response::ResumeTurn(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.resume_turn(&runtime_id, selection, effort, permission_mode),
-            )?),
+            } => Response::ResumeTurn(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.resume_turn(&runtime_id, selection, effort, permission_mode)
+                    })?,
+            ),
             Command::DeleteUserMessage {
                 runtime_id,
                 conversation_id,
@@ -743,10 +778,13 @@ impl Application {
             Command::Cancel {
                 runtime_id,
                 conversation_id,
-            } => Response::Cancel(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.cancel(&runtime_id),
-            )?),
+            } => Response::Cancel(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.cancel(&runtime_id)
+                    })?,
+            ),
             Command::OpenSideChat {
                 runtime_id,
                 conversation_id,
@@ -787,11 +825,12 @@ impl Application {
             Command::ReadBackgroundTasks {
                 runtime_id,
                 conversation_id,
-            } => Response::ReadBackgroundTasks(
-                application
-                    .runtime
-                    .background_tasks(&runtime_id, &conversation_id)?,
-            ),
+                manual,
+            } => Response::ReadBackgroundTasks(application.runtime.background_tasks(
+                &runtime_id,
+                &conversation_id,
+                manual,
+            )?),
             Command::ReadBackgroundTaskOutput {
                 runtime_id,
                 conversation_id,
@@ -817,10 +856,13 @@ impl Application {
             Command::StopSubAgents {
                 runtime_id,
                 conversation_id,
-            } => Response::StopSubAgents(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.stop_sub_agents(&runtime_id),
-            )?),
+            } => Response::StopSubAgents(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.stop_sub_agents(&runtime_id)
+                    })?,
+            ),
             Command::SetConversationHandoff {
                 runtime_id,
                 conversation_id,
@@ -1031,10 +1073,13 @@ impl Application {
                 conversation_id,
                 interaction_id,
                 reply,
-            } => Response::ReplyRuntimeInteraction(application.runtime.serve_live_control(
-                Focus::Conversation(conversation_id.clone()),
-                |core| core.reply_runtime_interaction(&runtime_id, &interaction_id, reply),
-            )?),
+            } => Response::ReplyRuntimeInteraction(
+                application
+                    .runtime
+                    .serve_live_control(Focus::Conversation(conversation_id.clone()), |core| {
+                        core.reply_runtime_interaction(&runtime_id, &interaction_id, reply)
+                    })?,
+            ),
             Command::InspectAuthentication {
                 gateway_id,
                 provider_id,
@@ -1303,7 +1348,7 @@ impl Application {
         Ok(response)
     }
 }
-fn read_content(path: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn read_content(path: impl AsRef<std::path::Path>) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take((MAX_ATTACHMENT_BYTES + 1) as u64)

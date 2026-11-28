@@ -1,28 +1,51 @@
 //! A real protocol wait must not occupy the application owner.
 use super::*;
-use std::{
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use velune_test_support::TempRoot;
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 impl Fixture {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-control-gate-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("control-gate");
         let binary = root.join("claude");
         fs::write(
             &binary,
             r#"#!/usr/bin/env python3
-import json, pathlib, sys, time
+import json, os, pathlib, sys, time
 root = pathlib.Path(__file__).parent
 if '--version' in sys.argv:
     print('2.1.286 (Claude Code)')
     sys.exit(0)
 for line in sys.stdin:
     record = json.loads(line)
+    if record.get('type') == 'user':
+        text = record['message']['content'][0]['text']
+        with (root / 'steer-wire').open('a') as log:
+            log.write(text + '\n')
+        if record.get('uuid'):
+            lifecycle = {'type': 'command_lifecycle', 'command_uuid': record['uuid'],
+                         'session_id': record['session_id']}
+            if text == 'same settings follow-up':
+                print(json.dumps(dict(lifecycle, state='queued')), flush=True)
+                (root / 'composed-queued').touch()
+                deadline = time.monotonic() + 8
+                while not (root / 'composed-release').exists():
+                    if time.monotonic() >= deadline: sys.exit(2)
+                    time.sleep(0.005)
+            print(json.dumps(dict(lifecycle, state='started')), flush=True)
+        if text in ('synthetic insert', 'synthetic queue insert'):
+            (root / text.replace(' ', '-')).touch()
+        if text in ('start background work', 'same settings follow-up'):
+            with (root / 'background-owner').open('a') as log:
+                log.write(str(os.getpid()) + '\n')
+            if text == 'start background work':
+                print(json.dumps({'type': 'system', 'subtype': 'task_started',
+                                  'task_id': 'synthetic-work', 'task_type': 'local_workflow',
+                                  'description': 'Synthetic background work'}), flush=True)
+            print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                              'session_id': record['session_id']}), flush=True)
+            print(json.dumps({'type': 'system', 'subtype': 'session_state_changed', 'state': 'idle'}),
+                  flush=True)
     if record.get('type') != 'control_request':
         continue
     request = record['request']
@@ -45,6 +68,15 @@ for line in sys.stdin:
         response = {'mcpServers': []}
     elif subtype == 'mcp_set_servers':
         response = {'errors': {}}
+    elif subtype == 'set_permission_mode':
+        with (root / 'steer-wire').open('a') as log:
+            log.write(request['mode'] + '\n')
+        (root / 'steer-entered').touch()
+        deadline = time.monotonic() + 8
+        while not (root / 'release-steer').exists():
+            if time.monotonic() >= deadline:
+                sys.exit(2)
+            time.sleep(0.005)
     print(json.dumps({'type': 'control_response', 'response': {
         'subtype': result_type, 'request_id': record['request_id'], 'response': response
     }}), flush=True)
@@ -55,9 +87,7 @@ for line in sys.stdin:
         Self(root)
     }
     fn codex() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-bootstrap-gate-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("bootstrap-gate");
         let binary = root.join("codex");
         fs::write(
             &binary,
@@ -91,6 +121,118 @@ for line in sys.stdin:
         Self(root)
     }
 
+    fn codex_list_index() -> Self {
+        let root = TempRoot::new("codex-list");
+        root.dir("native/sessions/2026/11/23");
+        let binary = root.join("codex");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+if '--version' in sys.argv:
+    print('codex-cli 0.166.0')
+    sys.exit(0)
+for line in sys.stdin:
+    record = json.loads(line)
+    if 'id' not in record:
+        continue
+    method = record['method']
+    result = {}
+    if method == 'project/list':
+        result = {'data': [], 'nextCursor': None}
+    elif method == 'thread/list':
+        params = record['params']
+        indexed = params.get('useStateDbOnly', False)
+        with (root / 'list-wire').open('a') as log:
+            log.write('indexed\n' if indexed else 'repair\n')
+        database = root / 'list-db'
+        if not indexed:
+            (root / 'entered-1').touch()
+            deadline = time.monotonic() + 8
+            while not (root / 'release-1').exists():
+                if time.monotonic() >= deadline: sys.exit(2)
+                time.sleep(0.005)
+            rows = [{'id': 'known-thread', 'cwd': str(root), 'preview': 'Original thread',
+                     'createdAt': 100, 'updatedAt': 100, 'historyMode': 'paginated'}]
+            if any((pathlib.Path(os.environ['CODEX_HOME']) / 'sessions').rglob('rollout-*.jsonl')):
+                rows.append({'id': 'imported-thread', 'cwd': str(root), 'preview': 'Imported thread',
+                             'createdAt': 90, 'updatedAt': 90, 'historyMode': 'paginated'})
+            database.write_text(json.dumps(rows))
+        rows = json.loads(database.read_text()) if database.exists() else []
+        result = {'data': rows, 'nextCursor': None}
+    elif method == 'thread/read':
+        result = {'thread': {'id': record['params']['threadId'], 'cwd': str(root),
+                             'preview': 'Original thread', 'historyMode': 'paginated'}}
+    elif method == 'thread/items/list':
+        item = {'id': 'message', 'type': 'agentMessage', 'text': 'Readable while indexing'}
+        result = {'data': [{'turnId': 'turn', 'item': item}], 'nextCursor': None}
+    elif method == 'thread/turns/list':
+        result = {'data': [{'id': 'turn', 'status': 'completed'}], 'nextCursor': None}
+    print(json.dumps({'id': record['id'], 'result': result}), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(root)
+    }
+
+    fn claude_naming() -> Self {
+        let root = TempRoot::new("claude-naming");
+        let binary = root.join("claude");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import datetime, json, os, pathlib, re, sys, uuid
+
+if '--version' in sys.argv:
+    print('2.1.286 (Claude Code)')
+    sys.exit(0)
+
+for line in sys.stdin:
+    record = json.loads(line)
+    if record['type'] == 'control_request':
+        response = {'models': [], 'mcpServers': [], 'errors': {}}
+        print(json.dumps({'type': 'control_response', 'response': {
+            'subtype': 'success', 'request_id': record['request_id'], 'response': response
+        }}), flush=True)
+    elif record['type'] == 'user':
+        session = sys.argv[sys.argv.index('--session-id') + 1]
+        cwd = str(pathlib.Path.cwd())
+        project = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects' / re.sub(r'[^a-zA-Z0-9]', '-', cwd)
+        project.mkdir(parents=True, exist_ok=True)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        user = {'type': 'user', 'uuid': record['uuid'], 'parentUuid': None,
+                'sessionId': session, 'cwd': cwd, 'timestamp': now, 'message': record['message']}
+        assistant = {'type': 'assistant', 'uuid': str(uuid.uuid4()), 'parentUuid': user['uuid'],
+                     'sessionId': session, 'session_id': session, 'cwd': cwd, 'timestamp': now,
+                     'message': {'role': 'assistant', 'id': 'reply', 'stop_reason': 'end_turn',
+                                 'content': [{'type': 'text', 'text': 'synthetic assistant reply'}]}}
+        path = project / (session + '.jsonl')
+        with path.open('w') as history:
+            for row in [user, assistant]:
+                history.write(json.dumps(row) + '\n')
+        # Ordinary stream-json sends are accepted by this lifecycle event;
+        # assistant/result records alone deliberately cannot acknowledge them.
+        print(json.dumps({'type': 'command_lifecycle', 'state': 'started',
+                          'command_uuid': record['uuid'], 'session_id': session}), flush=True)
+        print(json.dumps(assistant), flush=True)
+        print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                          'session_id': session}), flush=True)
+        # Claude's title can be persisted separately from the stdout transcript.
+        if record['message']['content'][0]['text'] == 'native titled prompt':
+            with path.open('a') as history:
+                history.write(json.dumps({'type': 'ai-title', 'sessionId': session,
+                                          'aiTitle': 'Native Claude title'}) + '\n')
+        print(json.dumps({'type': 'system', 'subtype': 'session_state_changed', 'state': 'idle'}),
+              flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(root)
+    }
+
     fn wait(&self, name: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !self.0.join(name).exists() {
@@ -109,7 +251,6 @@ impl Drop for Fixture {
         for attempt in 1..=2 {
             let _ = fs::write(self.0.join(format!("release-{attempt}")), []);
         }
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -142,6 +283,274 @@ fn assert_read_before_release(service: &ApplicationService) {
             .unwrap(),
         Response::ReadRuntimeHomeDirectory(_)
     ));
+}
+
+#[test]
+fn codex_startup_prewarms_the_active_list_without_blocking_the_owner() {
+    let fixture = Fixture::codex_list_index();
+    let options = Options {
+        home_directory: fixture.0.join("app"),
+        resources_directory: fixture.0.to_path_buf(),
+    };
+    let mut application = Application::open(options.clone()).unwrap();
+    application
+        .runtime
+        .upsert_runtime_with_execution(
+            crate::config::RuntimeInstance {
+                enabled: true,
+                id: "synthetic".into(),
+                name: "Synthetic Codex".into(),
+                type_id: crate::conversation::RuntimeKind::Codex166,
+                gateway_id: "default".into(),
+                settings: BTreeMap::from([
+                    (
+                        "binary".into(),
+                        fixture.0.join("codex").display().to_string(),
+                    ),
+                    (
+                        "agentDir".into(),
+                        fixture.0.join("native").display().to_string(),
+                    ),
+                    ("nodeBinary".into(), "/synthetic/not-executed-node".into()),
+                ]),
+            },
+            crate::RuntimeExecution {
+                home: crate::RuntimeHome::Existing {
+                    path: fixture.0.display().to_string(),
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(application);
+
+    let app = ApplicationService::open(options).unwrap();
+    fixture.wait("entered-1");
+    // Enqueue the list before the transcript, including on a busy scheduler.
+    let (reply, first) = mpsc::channel();
+    app.sender
+        .send(Job::Execute {
+            view: ClientViewId("list".into()),
+            presentation_isolated: false,
+            context: None,
+            command: Box::new(Command::ReadConfiguration),
+            cancellation: None,
+            queued_at: Instant::now(),
+            history_completion: app.sender.clone(),
+            dispatch: tracing::dispatcher::get_default(Clone::clone),
+            span: tracing::Span::none(),
+            reply,
+        })
+        .unwrap();
+    assert_read_before_release(&app);
+    let transcript = request_later(
+        &app,
+        "transcript",
+        Command::ReadConversation {
+            runtime_id: "synthetic".into(),
+            conversation_id: "synthetic:known-thread".into(),
+        },
+    );
+    let read = transcript.recv_timeout(Duration::from_secs(3));
+    let list_pending = matches!(first.try_recv(), Err(mpsc::TryRecvError::Empty));
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    assert!(list_pending);
+    let Response::ReadConversation(history) = read.unwrap().unwrap() else {
+        panic!("transcript response")
+    };
+    let history = history.snapshot.unwrap();
+    assert_eq!(history.conversation.id, "synthetic:known-thread");
+    assert_eq!(history.messages.len(), 1);
+
+    let ids = |response| {
+        let Response::ReadConfiguration(configuration) = response else {
+            panic!("list response");
+        };
+        assert!(configuration.history_failures.is_empty());
+        configuration
+            .conversations
+            .into_iter()
+            .map(|row| row.conversation.id)
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        ids(first
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap()
+            .response),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    let wire = fixture.0.join("list-wire");
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+
+    fs::write(
+        fixture.0.join(
+            "native/sessions/2026/11/23/rollout-2026-11-23T01-02-03-00000000-0000-7000-8000-000000000001.jsonl",
+        ),
+        "{}\n",
+    )
+    .unwrap();
+    let refresh = || {
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap())
+    };
+    let complete = BTreeSet::from([
+        "synthetic:known-thread".into(),
+        "synthetic:imported-thread".into(),
+    ]);
+    assert_eq!(refresh(), complete);
+    assert_eq!(
+        fs::read_to_string(&wire).unwrap(),
+        "repair\nindexed\nrepair\n"
+    );
+
+    fs::write(fixture.0.join("list-db"), "[]").unwrap();
+    assert_eq!(refresh(), complete);
+    assert_eq!(
+        fs::read_to_string(&wire).unwrap(),
+        "repair\nindexed\nrepair\nindexed\nrepair\n"
+    );
+    app.close(false).unwrap();
+}
+
+#[test]
+fn codex_active_index_persists_across_restarts_and_repairs_on_external_change() {
+    let fixture = Fixture::codex_list_index();
+    let options = Options {
+        home_directory: fixture.0.join("app"),
+        resources_directory: fixture.0.to_path_buf(),
+    };
+    let mut application = Application::open(options.clone()).unwrap();
+    application
+        .runtime
+        .upsert_runtime_with_execution(
+            crate::config::RuntimeInstance {
+                enabled: true,
+                id: "synthetic".into(),
+                name: "Synthetic Codex".into(),
+                type_id: crate::conversation::RuntimeKind::Codex166,
+                gateway_id: "default".into(),
+                settings: BTreeMap::from([
+                    (
+                        "binary".into(),
+                        fixture.0.join("codex").display().to_string(),
+                    ),
+                    (
+                        "agentDir".into(),
+                        fixture.0.join("native").display().to_string(),
+                    ),
+                    ("nodeBinary".into(), "/synthetic/not-executed-node".into()),
+                ]),
+            },
+            crate::RuntimeExecution {
+                home: crate::RuntimeHome::Existing {
+                    path: fixture.0.display().to_string(),
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(application);
+
+    let ids = |response| {
+        let Response::ReadConfiguration(configuration) = response else {
+            panic!("list response");
+        };
+        assert!(configuration.history_failures.is_empty());
+        configuration
+            .conversations
+            .into_iter()
+            .map(|row| row.conversation.id)
+            .collect::<BTreeSet<_>>()
+    };
+    let wire = fixture.0.join("list-wire");
+
+    // First launch: warms via repair and persists proof.
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    app.close(false).unwrap();
+
+    let proof_dir = options.home_directory.join("codex-active-index");
+    let proof_files = fs::read_dir(&proof_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(proof_files.len(), 1);
+    let proof_path = proof_files[0].clone();
+
+    // Second launch with unchanged rollouts: warmup skips Codex, list uses indexed path.
+    fs::remove_file(&wire).unwrap();
+    fs::remove_file(fixture.0.join("release-1")).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "indexed\n");
+    app.close(false).unwrap();
+
+    // Third launch with externally wiped list-db: indexed fails result digest and repairs.
+    fs::write(fixture.0.join("list-db"), "[]").unwrap();
+    fs::remove_file(&wire).unwrap();
+    fs::write(fixture.0.join("release-1"), []).unwrap();
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        BTreeSet::from(["synthetic:known-thread".into()])
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "indexed\nrepair\n");
+    app.close(false).unwrap();
+
+    // Fourth launch with a new rollout file: warmup detects rollout change and repairs.
+    fs::write(
+        fixture.0.join(
+            "native/sessions/2026/11/23/rollout-2026-11-23T01-02-03-00000000-0000-7000-8000-000000000001.jsonl",
+        ),
+        "{}\n",
+    )
+    .unwrap();
+    fs::remove_file(&wire).unwrap();
+    let complete = BTreeSet::from([
+        "synthetic:known-thread".into(),
+        "synthetic:imported-thread".into(),
+    ]);
+    let app = ApplicationService::open(options.clone()).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        complete
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    app.close(false).unwrap();
+
+    // Fifth launch with unknown proof schema: falls back to repair and preserves original bytes.
+    let unknown = br#"{"schemaVersion":99,"future":true}"#;
+    fs::write(&proof_path, unknown).unwrap();
+    fs::remove_file(&wire).unwrap();
+    let app = ApplicationService::open(options).unwrap();
+    assert_eq!(
+        ids(app
+            .execute(ClientViewId("list".into()), Command::ReadConfiguration)
+            .unwrap()),
+        complete
+    );
+    assert_eq!(fs::read_to_string(&wire).unwrap(), "repair\nindexed\n");
+    assert_eq!(fs::read(&proof_path).unwrap(), unknown);
+    app.close(false).unwrap();
 }
 
 #[test]
@@ -286,6 +695,80 @@ fn native_control_wait_keeps_owner_responsive_and_rejection_retry_is_explicit() 
     )
     .unwrap();
 
+    let insert = request_later(
+        &app,
+        "control-view",
+        Command::SteerTurn {
+            runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: Some("synthetic".into()),
+            turn: crate::ComposedTurn {
+                text: "synthetic insert".into(),
+                effort: Some("xhigh".into()),
+                permission_mode: Some("bypassPermissions".into()),
+                attachments: Vec::new(),
+            },
+        },
+    );
+    fixture.wait("steer-entered");
+    assert_read_before_release(&app);
+    assert!(matches!(insert.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    let steer_wire = fixture.0.join("steer-wire");
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\n"
+    );
+    fs::write(fixture.0.join("release-steer"), []).unwrap();
+    assert!(matches!(
+        insert
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap(),
+        Response::SteerTurn(_)
+    ));
+    fixture.wait("synthetic-insert");
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\nsynthetic insert\n"
+    );
+
+    let queue = |operation| Command::EditSendQueue {
+        submission_id: None,
+        runtime_id: "synthetic".into(),
+        conversation_id: id.clone(),
+        operation,
+    };
+    app.execute(
+        view.clone(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: None,
+            turn: crate::ComposedTurn {
+                text: "synthetic queue insert".into(),
+                effort: None,
+                permission_mode: Some("acceptEdits".into()),
+                attachments: Vec::new(),
+            },
+        }),
+    )
+    .unwrap();
+    let pending = control_snapshot(&app, &id).follow_up.queue;
+    assert_eq!(pending.len(), 1);
+    app.execute(
+        view.clone(),
+        queue(crate::SendQueueOperation::Steer {
+            id: pending[0].id.clone(),
+        }),
+    )
+    .unwrap();
+    fixture.wait("synthetic-queue-insert");
+    assert!(control_snapshot(&app, &id).follow_up.queue.is_empty());
+    assert_eq!(
+        fs::read_to_string(&steer_wire).unwrap(),
+        "synthetic input\nbypassPermissions\nsynthetic insert\nacceptEdits\nsynthetic queue insert\n"
+    );
+
     let cancel = || Command::Cancel {
         runtime_id: "synthetic".into(),
         conversation_id: id.clone(),
@@ -366,10 +849,20 @@ held_echo = None
 flooded = False
 current_turn = 'turn'
 held_children = []
+managed_background_active = False
 attempt = 0
 turn_count = 0
 buffer = ''
 while True:
+    if managed_background_active and (root / 'finish-managed-background').exists():
+        managed_background_active = False
+        for child in ('child-a', 'child-b'):
+            emit('turn/completed', {'threadId':child,'turn':{'id':'turn-' + child,'status':'completed'}})
+            emit('thread/status/changed', {'threadId':child,'status':{'type':'idle'}})
+        # Fill the pipe after the terminal events, forcing the Rust reader to
+        # queue them before the read-only helper can unblock the Core owner.
+        emit('synthetic/pipeBarrier', {'threadId':'thread','padding':'x' * (2 * 1024 * 1024)})
+        (root / 'managed-background-finished').touch()
     if held_echo and (root / 'finish-without-echo').exists():
         emit('turn/completed', {'threadId':'thread','turn':{'id':current_turn,'status':'completed'}})
         held_echo = None
@@ -423,18 +916,44 @@ while True:
     elif method == 'thread/start':
         with (root / 'thread-processes').open('a') as log: log.write(str(os.getpid()) + '\n')
         ack(request, {'thread':{'id':'thread','name':'Synthetic','cwd':str(root)},'model':'synthetic-native'})
-    elif method == 'thread/resume': ack(request, {'thread':{'id':'thread','modelProvider':'openai'}})
+    elif method == 'thread/resume':
+        provider = 'velune' if (root / 'mode').read_text() == 'managed-queue-background' else 'openai'
+        ack(request, {'thread':{'id':'thread','modelProvider':provider}})
     elif method == 'thread/read':
         if (root / 'reject-provider-check').exists():
             print(json.dumps({'id':request['id'], 'error':{'code':-32600,'message':'provider-check-required'}}), flush=True)
             continue
         thread = request['params']['threadId']
-        ack(request, {'thread':{'id':thread,'modelProvider':'openai','historyMode':'legacy','turns':[],
+        provider = 'openai'
+        if (root / 'mode').read_text() == 'managed-queue-background':
+            provider = 'velune'
+            armed = root / 'finish-background-during-provider-read'
+            if thread == 'thread' and request['params'].get('includeTurns') is False and armed.exists():
+                armed.unlink()
+                (root / 'finish-managed-background').touch()
+                deadline = time.monotonic() + 5
+                while not (root / 'managed-background-finished').exists():
+                    if time.monotonic() >= deadline: sys.exit(2)
+                    time.sleep(0.005)
+        ack(request, {'thread':{'id':thread,'modelProvider':provider,'historyMode':'legacy','turns':[],
             'parentThreadId':'thread' if thread.startswith('child-') else None}})
     elif method == 'turn/start':
         with (root / 'turn-processes').open('a') as log: log.write(str(os.getpid()) + '\n')
         turn_count += 1
         mode = (root / 'mode').read_text()
+        if mode == 'managed-queue-background':
+            text = request['params']['input'][0]['text']
+            current_turn = 'managed-first' if text == 'start managed background' else 'managed-next'
+            ack(request, {'turn':{'id':current_turn}})
+            emit('turn/started', {'threadId':'thread','turn':{'id':current_turn}})
+            emit('item/completed', {'threadId':'thread','turnId':current_turn,'item':{'id':'user-' + current_turn,'type':'userMessage','content':request['params']['input']}})
+            if current_turn == 'managed-first':
+                managed_background_active = True
+                for child in ('child-a', 'child-b'):
+                    emit('thread/status/changed', {'threadId':child,'status':{'type':'active','activeFlags':[]}})
+                    emit('turn/started', {'threadId':child,'turn':{'id':'turn-' + child}})
+            emit('turn/completed', {'threadId':'thread','turn':{'id':current_turn,'status':'completed'}})
+            continue
         if mode == 'draft-first-reject':
             print(json.dumps({'id':request['id'], 'error':{'code':-32600,'message':'first input explicitly rejected'}}), flush=True)
             (root / 'send-entered').touch()
@@ -659,6 +1178,194 @@ fn open_control_service(fixture: &Fixture) -> ApplicationService {
     .unwrap()
 }
 
+#[tokio::test]
+async fn claude_automatic_naming_uses_configured_model_and_preserves_native_title() {
+    use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
+    use crate::conversation::{ConversationTitle, RunState};
+    use axum::{Router, body::Bytes, http::header, routing::post};
+    use serde_json::{Value, json};
+    use velune_application_api::{ProviderDraft, ProviderModel};
+
+    let (requests, received) = mpsc::channel();
+    let server = Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: Bytes| {
+            let requests = requests.clone();
+            async move {
+                let body = serde_json::from_slice::<Value>(&body).unwrap();
+                requests.send(body).unwrap();
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    json!({"choices":[{"message":{"content":"Velune fallback title"},"finish_reason":"stop"}]}).to_string(),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+
+    tokio::task::spawn_blocking(move || {
+        let fixture = Fixture::claude_naming();
+        let app = open_control_service(&fixture);
+        let view = ClientViewId("naming-observer".into());
+        let execute = |command| app.execute(view.clone(), command).unwrap();
+        let Response::SaveProvider(saved) = execute(Command::SaveProvider {
+            gateway_id: "default".into(),
+            provider: ProviderDraft {
+                id: "synthetic-text".into(),
+                name: "Synthetic text provider".into(),
+                protocol: Protocol::ChatCompletions,
+                endpoint: format!("http://{address}/v1"),
+                execution_backend: ExecutionBackend::Http,
+                request_profile: RequestProfile::Native,
+                codex_client_version: None,
+                authentication_source: crate::ProviderAuthenticationSource::ApiKey,
+                quota_source: ProviderQuotaSource::None,
+                quota_limits: Vec::new(),
+                models: ["synthetic-namer", "synthetic-turn-model"]
+                    .into_iter()
+                    .map(|id| ProviderModel {
+                        record_key: String::new(),
+                        provider_model_id: id.into(),
+                        nickname: String::new(),
+                        icon: None,
+                        context_window: None,
+                        max_output_tokens: None,
+                        reasoning_levels: None,
+                        request_parameters: None,
+                    })
+                    .collect(),
+            },
+            authentication_edit: crate::AuthenticationEdit::SetApiKey {
+                value: "synthetic-key".into(),
+            },
+            quota_authentication_edit: None,
+        }) else {
+            panic!("save naming provider response")
+        };
+        let model_key = |id| {
+            saved.gateways[0].providers[0]
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap()
+                .record_key
+                .clone()
+        };
+        let naming_model = model_key("synthetic-namer");
+        let instruction = "Name this synthetic conversation with a short descriptive title.";
+        let set_naming = |enabled: bool| {
+            execute(Command::UpsertRuntimeWithExecution {
+                runtime: crate::config::RuntimeInstance {
+                    enabled: true,
+                    id: "synthetic".into(),
+                    name: "Synthetic Claude".into(),
+                    type_id: crate::conversation::RuntimeKind::ClaudeCode,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        (
+                            "binary".into(),
+                            fixture.0.join("claude").to_string_lossy().into_owned(),
+                        ),
+                        ("automaticNaming".into(), enabled.to_string()),
+                        ("automaticNamingModel".into(), naming_model.clone()),
+                        ("automaticNamingPrompt".into(), instruction.into()),
+                    ]),
+                },
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            });
+        };
+        let run = |prompt, expected, selection: Option<crate::ModelSelection>| {
+            let Response::CreateConversation(created) = execute(Command::CreateConversation {
+                runtime_id: "synthetic".into(),
+                cwd: Some(fixture.0.to_string_lossy().into_owned()),
+                project: None,
+                selection: selection.clone(),
+            }) else {
+                panic!("create response")
+            };
+            let id = created.snapshot.unwrap().conversation.id;
+            execute(Command::SendTurn {
+                submission_id: None,
+                source_runtime_id: "synthetic".into(),
+                conversation_id: id.clone(),
+                target_runtime_id: "synthetic".into(),
+                selection,
+                turn: control_turn(prompt),
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let snapshot = control_snapshot(&app, &id);
+                if snapshot.conversation.title == expected && snapshot.run_state == RunState::Idle {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{id} did not receive {expected:?}; last title was {:?} ({:?})",
+                    snapshot.conversation.title,
+                    snapshot.run_state,
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            id
+        };
+        set_naming(false);
+        run(
+            "fallback disabled",
+            ConversationTitle::FirstMessage("fallback disabled".into()),
+            None,
+        );
+        set_naming(true);
+        let native = ConversationTitle::Native("Native Claude title".into());
+        let generated = ConversationTitle::Generated("Velune fallback title".into());
+        let generated_id = run(
+            "name this synthetic prompt",
+            generated.clone(),
+            Some(crate::ModelSelection::Managed {
+                model_record_key: model_key("synthetic-turn-model"),
+            }),
+        );
+        let native_id = run("native titled prompt", native.clone(), None);
+        let assert_list = |configuration: Response| {
+            let Response::ReadConfiguration(configuration) = configuration else {
+                panic!("read configuration response")
+            };
+            for (id, expected) in [(&native_id, &native), (&generated_id, &generated)] {
+                let listed = configuration
+                    .conversations
+                    .iter()
+                    .find(|row| &row.conversation.id == id);
+                assert_eq!(listed.map(|row| &row.conversation.title), Some(expected));
+            }
+        };
+        assert_list(execute(Command::ReadConfiguration));
+        app.close(true).unwrap();
+        let app = open_control_service(&fixture);
+        assert_list(app.execute(view, Command::ReadConfiguration).unwrap());
+        app.close(false).unwrap();
+
+        let request = received.try_recv().expect("fallback naming request");
+        assert_eq!(request["model"], "synthetic-namer");
+        let prompt = request["messages"][0]["content"].as_str().unwrap();
+        assert!(prompt.starts_with(instruction));
+        assert_eq!(
+            serde_json::from_str::<Value>(prompt.lines().last().unwrap()).unwrap(),
+            json!({"user": "name this synthetic prompt", "assistant": "synthetic assistant reply"})
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "the disabled fallback and the native title must not request naming"
+        );
+    })
+    .await
+    .unwrap();
+    server.abort();
+}
+
 #[test]
 fn codex_control_owner_polls_output_and_reply_during_ack_then_preserves_partial_parent_stop() {
     let fixture = Fixture::codex_control("reject");
@@ -722,6 +1429,7 @@ fn codex_control_owner_polls_output_and_reply_during_ack_then_preserves_partial_
         Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
+            target_runtime_id: None,
             turn: control_turn("still steerable"),
         },
     )
@@ -868,6 +1576,7 @@ fn codex_stop_child_is_exact_and_stop_background_preserves_each_delivery() {
                 Command::SteerTurn {
                     runtime_id: "synthetic".into(),
                     conversation_id: id.clone(),
+                    target_runtime_id: None,
                     turn: control_turn("parent was not cancelled"),
                 },
             )
@@ -1596,6 +2305,7 @@ fn codex_prepared_steer_keeps_snapshot_and_reply_live_before_its_ack() {
         Command::SteerTurn {
             runtime_id: "synthetic".into(),
             conversation_id: id.clone(),
+            target_runtime_id: None,
             turn: control_turn("one steer input"),
         },
     );
@@ -1615,6 +2325,164 @@ fn codex_prepared_steer_keeps_snapshot_and_reply_live_before_its_ack() {
             .filter(|record| record["method"] == "turn/steer")
             .count(),
         1
+    );
+    app.close(true).unwrap();
+}
+
+#[test]
+fn codex_steer_preserves_the_running_execution_configuration() {
+    let fixture = Fixture::codex_control("send-writer-full");
+    let app = open_control_service(&fixture);
+    let view = || ClientViewId("control-view".into());
+    let id = created_codex(&app, &fixture, "synthetic", native_selection());
+    let mut turn = control_turn("start with known settings");
+    turn.effort = Some("high".into());
+    turn.permission_mode = Some("workspace".into());
+    app.execute(
+        view(),
+        Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: "synthetic".into(),
+            selection: native_selection(),
+            turn,
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = control_snapshot(&app, &id);
+        if snapshot.follow_up.can_steer
+            && snapshot.transcript_turns.iter().any(|turn| {
+                turn.settings.as_ref().is_some_and(|settings| {
+                    settings.effort.as_deref() == Some("high")
+                        && settings.permission_mode.as_deref() == Some("workspace")
+                })
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "running configuration was not observed"
+        );
+    }
+
+    let steer =
+        |target: Option<&str>, effort: Option<&str>, mode: Option<&str>| Command::SteerTurn {
+            runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: target.map(str::to_owned),
+            turn: crate::ComposedTurn {
+                effort: effort.map(str::to_owned),
+                permission_mode: mode.map(str::to_owned),
+                ..control_turn("steer input")
+            },
+        };
+    let other_model = Some(crate::ModelSelection::Native {
+        provider_id: Some("openai".into()),
+        model_id: "other-model".into(),
+    });
+    for command in [
+        steer(Some("other-runtime"), None, None),
+        steer(Some("synthetic"), None, Some("read-only")),
+    ] {
+        let error = app
+            .execute(view(), command)
+            .err()
+            .expect("incompatible steer accepted");
+        assert!(error.message.contains("排队"), "{error:?}");
+    }
+
+    let queue = |operation| Command::EditSendQueue {
+        submission_id: None,
+        runtime_id: "synthetic".into(),
+        conversation_id: id.clone(),
+        operation,
+    };
+    let mut queued_turn = control_turn("keep queued permission change");
+    queued_turn.permission_mode = Some("read-only".into());
+    queued_turn.effort = Some("low".into());
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: other_model.clone(),
+            turn: queued_turn,
+        }),
+    )
+    .unwrap();
+    let queued = control_snapshot(&app, &id).follow_up.queue;
+    assert_eq!(queued.len(), 1);
+    let error = app
+        .execute(
+            view(),
+            queue(crate::SendQueueOperation::Steer {
+                id: queued[0].id.clone(),
+            }),
+        )
+        .err()
+        .expect("queued permission change was silently stripped");
+    assert!(error.message.contains("排队"), "{error:?}");
+    assert_eq!(control_snapshot(&app, &id).follow_up.queue, queued);
+    assert!(
+        !fixture
+            .wire()
+            .iter()
+            .any(|record| record["method"] == "turn/steer")
+    );
+
+    for command in [
+        steer(Some("synthetic"), Some("low"), Some("workspace")),
+        steer(None, Some("not-a-current-model-effort"), None),
+    ] {
+        assert!(matches!(
+            app.execute(view(), command).unwrap(),
+            Response::SteerTurn(_)
+        ));
+    }
+    let snapshot = control_snapshot(&app, &id);
+    assert_eq!(snapshot.run_state, crate::conversation::RunState::Running);
+    assert_eq!(snapshot.follow_up.queue, queued);
+    let mut queued_turn = control_turn("insert despite a different next model and effort");
+    queued_turn.effort = Some("low".into());
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Add {
+            source_runtime_id: "synthetic".into(),
+            target_runtime_id: "synthetic".into(),
+            selection: other_model,
+            turn: queued_turn,
+        }),
+    )
+    .unwrap();
+    let queued_with_insert = control_snapshot(&app, &id).follow_up.queue;
+    app.execute(
+        view(),
+        queue(crate::SendQueueOperation::Steer {
+            id: queued_with_insert[1].id.clone(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(control_snapshot(&app, &id).follow_up.queue, queued);
+    let wire = fixture.wire();
+    assert_eq!(
+        wire.iter()
+            .filter(|record| record["method"] == "turn/start")
+            .count(),
+        1
+    );
+    let steers: Vec<_> = wire
+        .iter()
+        .filter(|record| record["method"] == "turn/steer")
+        .collect();
+    assert_eq!(steers.len(), 3);
+    assert!(
+        steers
+            .iter()
+            .all(|record| record["params"]["expectedTurnId"] == "turn-1")
     );
     app.close(true).unwrap();
 }
@@ -1710,6 +2578,13 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
         2,
         "exercise both historical U1 and U2"
     );
+    let wakes = app
+        .native_user_message_events()
+        .expect("local owner is open");
+    let wait = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
     let mut turn = control_turn("new input with late native echo");
     turn.effort = Some("high".into());
     let submitted = request_later(
@@ -1732,9 +2607,15 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
     else {
         panic!("send response")
     };
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert!(!serde_json::to_string(&fixture.wire()).unwrap().contains("late-echo-client-token"));
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert!(
+        !serde_json::to_string(&fixture.wire())
+            .unwrap()
+            .contains("late-echo-client-token")
+    );
     // The ACK is real acceptance, but it cannot identify an echo that has not
     // happened. In particular neither historical user is this submission.
     assert!(
@@ -1755,30 +2636,52 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
             Some("high")
         );
     }
-    fs::write(fixture.0.join("release-echo"), []).unwrap();
-    fixture.wait("echo-written");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let snapshot = control_snapshot(&app, &id);
-        if let Some(turn) = snapshot
-            .transcript_turns
-            .iter()
-            .find(|turn| turn.user_message_id.contains("user-3"))
-        {
-            assert!(!historical_users.contains(&turn.user_message_id));
-            let settings = turn
-                .settings
-                .as_ref()
-                .expect("late echo must keep accepted settings");
-            assert_eq!(settings.effort.as_deref(), Some("high"));
-            assert_eq!(settings.model_selection, native_selection());
-            break;
-        }
+    // Sending the ACK and advancing the owner do not invent a transcript wake.
+    // Hold the echo longer than the old client's expedited-read window.
+    wait.block_on(async {
         assert!(
-            Instant::now() < deadline,
-            "late echo did not acquire its accepted settings"
+            tokio::time::timeout(Duration::from_millis(350), wakes.next())
+                .await
+                .is_err()
         );
-    }
+    });
+    fs::write(fixture.0.join("release-echo"), []).unwrap();
+    let wake = wait.block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), wakes.next())
+            .await
+            .expect("native input must wake the client without a snapshot read")
+            .expect("application owner is still open")
+    });
+    assert_eq!(wake.conversation_id.as_deref(), Some(id.as_str()));
+    let Response::ReadSnapshotUpdate(crate::SnapshotUpdate::Changed { snapshot }) = app
+        .execute(
+            ClientViewId("control-view".into()),
+            Command::ReadSnapshotUpdate {
+                runtime_id: "synthetic".into(),
+                conversation_id: id.clone(),
+                since: accepted.cursor,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("the wake must lead to an authoritative snapshot delta");
+    };
+    let new_users: Vec<_> = snapshot
+        .messages
+        .iter()
+        .filter(|message| message.role == crate::conversation::MessageRole::User)
+        .collect();
+    assert_eq!(new_users.len(), 1);
+    let new_user_id = &new_users[0].id;
+    assert!(new_user_id.contains("user-3") && !historical_users.contains(new_user_id));
+    let settings = snapshot
+        .transcript_turns
+        .iter()
+        .find(|turn| turn.user_message_id == *new_user_id)
+        .and_then(|turn| turn.settings.as_ref())
+        .expect("late echo must keep accepted settings");
+    assert_eq!(settings.effort.as_deref(), Some("high"));
+    assert_eq!(settings.model_selection, native_selection());
     assert_eq!(
         fixture
             .wire()
@@ -1788,6 +2691,14 @@ fn codex_send_ack_before_echo_never_selects_a_historical_user_and_binds_late_set
         3
     );
     app.close(true).unwrap();
+    wait.block_on(async {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), wakes.next())
+                .await
+                .expect("the owner must close the stream")
+                .is_none()
+        );
+    });
 }
 
 #[test]
@@ -1904,7 +2815,10 @@ fn codex_first_admission_error_still_cleans_failed_owner_when_poll_returns_ok_an
             {
                 break;
             }
-            Err(error) => assert!(error.message.contains("无效协议记录"), "{error:?}"),
+            Err(error) => {
+                assert_eq!(error.code, "invalid", "{error:?}");
+                assert!(error.message.starts_with("运行时事件读取失败"), "{error:?}");
+            }
             _ => {}
         }
         assert!(Instant::now() < deadline);
@@ -2556,6 +3470,262 @@ fn submission_receipt_idle_queue_reports_actual_dispatch_or_retained_rejection()
         fs::write(fixture.0.join("release-echo"), []).unwrap();
         app.close(true).unwrap();
     }
+}
+
+#[test]
+fn claude_background_send_reuses_inherited_options_and_queues_saved_configuration_change() {
+    let fixture = Fixture::new();
+    let app = open_control_service(&fixture);
+    let view = ClientViewId("control-view".into());
+    let mut runtime = crate::config::RuntimeInstance {
+        enabled: true,
+        id: "synthetic".into(),
+        name: "Synthetic Claude".into(),
+        type_id: crate::conversation::RuntimeKind::ClaudeCode,
+        gateway_id: "default".into(),
+        settings: BTreeMap::from([
+            (
+                "binary".into(),
+                fixture.0.join("claude").display().to_string(),
+            ),
+            (
+                "agentDir".into(),
+                fixture.0.join("native").display().to_string(),
+            ),
+        ]),
+    };
+    let save = |runtime| {
+        app.execute(
+            view.clone(),
+            Command::UpsertRuntimeWithExecution {
+                runtime,
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+    };
+    save(runtime.clone());
+    let Response::CreateConversation(created) = app
+        .execute(
+            view.clone(),
+            Command::CreateConversation {
+                runtime_id: "synthetic".into(),
+                cwd: Some(fixture.0.display().to_string()),
+                project: None,
+                selection: None,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("create response");
+    };
+    let id = created.snapshot.unwrap().conversation.id;
+    let send = |turn| {
+        let Response::SendTurn(result) = app
+            .execute(
+                view.clone(),
+                Command::SendTurn {
+                    submission_id: None,
+                    source_runtime_id: "synthetic".into(),
+                    conversation_id: id.clone(),
+                    target_runtime_id: "synthetic".into(),
+                    selection: None,
+                    turn,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("send response");
+        };
+        result
+    };
+    let wait_idle_with_work = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let snapshot = control_snapshot(&app, &id);
+            if snapshot.run_state == crate::conversation::RunState::Idle
+                && snapshot.follow_up.can_stop_sub_agents
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background work did not hold an idle child"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let first = send(crate::ComposedTurn {
+        effort: Some("medium".into()),
+        permission_mode: Some("manual".into()),
+        ..control_turn("start background work")
+    });
+    assert_eq!(
+        first.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    wait_idle_with_work();
+    let continued = std::thread::scope(|scope| {
+        let pending = scope.spawn(|| send(control_turn("same settings follow-up")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture.0.join("composed-queued").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "Claude did not queue the composed input"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !pending.is_finished(),
+            "a queued native command cannot settle the send"
+        );
+        assert!(control_snapshot(&app, &id).messages.iter().all(|message| {
+            !message.blocks.iter().any(|block| matches!(block, crate::DeliveredBlock::Text { text } if text == "same settings follow-up"))
+        }));
+        fs::write(fixture.0.join("composed-release"), []).unwrap();
+        pending.join().unwrap()
+    });
+    assert_eq!(
+        continued.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert!(continued.submitted_message_id.is_some());
+    wait_idle_with_work();
+    let replacement = fixture.0.join("claude-replacement");
+    fs::copy(fixture.0.join("claude"), &replacement).unwrap();
+    runtime
+        .settings
+        .insert("binary".into(), replacement.display().to_string());
+    save(runtime);
+    let receipt = send(control_turn("follow-up after a runtime edit")).submission_receipt;
+    let snapshot = control_snapshot(&app, &id);
+    let [queued] = snapshot.follow_up.queue.as_slice() else {
+        panic!("expected one waiting message");
+    };
+    assert_eq!(
+        receipt,
+        Some(crate::SubmissionReceipt::Queued {
+            queue_id: queued.id.clone()
+        })
+    );
+    assert_eq!(
+        snapshot.follow_up.waiting,
+        Some(crate::conversation::QueueWait::SubAgents)
+    );
+    let owners = fs::read_to_string(fixture.0.join("background-owner")).unwrap();
+    let owners: Vec<_> = owners.lines().collect();
+    assert_eq!(owners.len(), 2);
+    assert_eq!(owners[0], owners[1]);
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("steer-wire")).unwrap(),
+        "start background work\nsame settings follow-up\n"
+    );
+    app.close(true).unwrap();
+}
+
+#[test]
+fn managed_codex_sends_once_when_the_last_background_work_settles_during_submission() {
+    use crate::config::{ExecutionBackend, Protocol, ProviderQuotaSource, RequestProfile};
+    use crate::conversation::RunState;
+    use velune_application_api::{ProviderDraft, ProviderModel};
+
+    let fixture = Fixture::codex_control("managed-queue-background");
+    let app = open_control_service(&fixture);
+    let execute = |command| app.execute(ClientViewId("control-view".into()), command);
+    let Response::SaveProvider(saved) = execute(Command::SaveProvider {
+        gateway_id: "default".into(),
+        provider: ProviderDraft {
+            id: "synthetic".into(),
+            name: "Synthetic transport".into(),
+            protocol: Protocol::Responses,
+            // The fixture only records native dispatch. It never calls upstream.
+            endpoint: "http://127.0.0.1:9/v1".into(),
+            execution_backend: ExecutionBackend::Http,
+            request_profile: RequestProfile::Native,
+            codex_client_version: None,
+            authentication_source: crate::ProviderAuthenticationSource::ApiKey,
+            quota_source: ProviderQuotaSource::None,
+            quota_limits: Vec::new(),
+            models: vec![ProviderModel {
+                record_key: String::new(),
+                provider_model_id: "synthetic-managed".into(),
+                nickname: String::new(),
+                icon: None,
+                context_window: None,
+                max_output_tokens: None,
+                reasoning_levels: None,
+                request_parameters: None,
+            }],
+        },
+        authentication_edit: crate::AuthenticationEdit::SetApiKey {
+            value: "synthetic-key".into(),
+        },
+        quota_authentication_edit: None,
+    })
+    .unwrap() else {
+        panic!("save provider response");
+    };
+    let selection = Some(crate::ModelSelection::Managed {
+        model_record_key: saved.gateways[0].providers[0].models[0].record_key.clone(),
+    });
+    let id = created_codex(&app, &fixture, "synthetic", selection.clone());
+    let send = |text| {
+        let Response::SendTurn(result) = execute(Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "synthetic".into(),
+            conversation_id: id.clone(),
+            target_runtime_id: "synthetic".into(),
+            selection: selection.clone(),
+            turn: control_turn(text),
+        })
+        .unwrap() else {
+            panic!("send response");
+        };
+        assert_eq!(
+            result.submission_receipt,
+            Some(crate::SubmissionReceipt::Sending)
+        );
+    };
+    let first_text = "start managed background";
+    let next_text = "send during managed background settlement";
+    send(first_text);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let snapshot = control_snapshot(&app, &id);
+        if snapshot.run_state == RunState::Idle && snapshot.sub_agents.len() == 2 {
+            assert!(snapshot.actions.can_send);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "parent and background did not separate"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    fs::write(fixture.0.join("finish-background-during-provider-read"), []).unwrap();
+    send(next_text);
+    assert!(fixture.0.join("managed-background-finished").exists());
+
+    let wire = fixture.wire();
+    assert!(wire.iter().any(|record| {
+        record["method"] == "thread/start" && record["params"]["modelProvider"] == "velune"
+    }));
+    let starts: Vec<_> = wire
+        .iter()
+        .filter(|record| record["method"] == "turn/start")
+        .map(|record| &record["params"])
+        .collect();
+    assert_eq!(starts.len(), 2, "one native write per user input");
+    for (start, text) in starts.iter().zip([first_text, next_text]) {
+        assert_eq!(start["threadId"], "thread");
+        assert_eq!(start["input"][0]["text"], text);
+    }
+    assert_eq!(starts[0]["model"], starts[1]["model"]);
+    app.close(true).unwrap();
 }
 
 #[test]

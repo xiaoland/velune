@@ -72,6 +72,11 @@ struct Shortcut: Codable, Hashable {
         if modifiers.contains(.command) { text += "⌘" }
         return text + (Self.named[key]?.glyph ?? key.uppercased())
     }
+
+    /// On a keyboard with + above =, the recorder stores the shifted key.
+    fileprivate var conflictEquivalent: Shortcut {
+        self == Shortcut("=", [.command, .shift]) ? Shortcut("+") : self
+    }
 }
 
 /// How the composer sends: Return, with Shift-Return for a new line, or
@@ -92,30 +97,48 @@ enum SendMode: String, Codable, CaseIterable, Identifiable {
     var steerKey: String { self == .returnSends ? "⌘Return" : "⌥⌘Return" }
 }
 
-extension View {
-    /// The send mode's key on a sheet's primary button, so a message edited
-    /// there is sent as one typed in the composer; the other key is a new line.
-    func sendKeyboardShortcut() -> some View {
-        keyboardShortcut(KeyboardShortcutSettings.shared.sendMode == .returnSends ? .defaultAction : KeyboardShortcut(.return, modifiers: .command))
-    }
-}
-
 /// Velune's commands the user may give other shortcuts, with the ones they
 /// come with. Sending and steering stay with the composer's own keys (see
 /// `SendMode`); the global ones work while another app is active.
 enum ShortcutCommand: String, CaseIterable, Identifiable {
-    case newConversation, openConversation, newTab, newWindow, reopenClosedTab, closeTab, closeWindow
+    case newConversation, newConversationWindow, openConversation, newTab, newWindow, reopenClosedTab, closeTab, closeWindow
     case selectTab1, selectTab2, selectTab3, selectTab4, selectTab5, selectTab6, selectTab7, selectTab8, selectTab9
     case find
     case stop, stopSubAgents, continueTurn, compactContext, sideChat, attach, chooseRuntime, chooseModel, chooseEffort, choosePermission, chooseWorkingDirectory, nextAttention, reload
     case splitRight, splitDown, closeSplit, back, forward, nextPane, previousPane, nextTab, previousTab, moveTabToNewWindow, keepInFront
     case commandPalette, focusTranscript, showList, showOutline, focusComposer, showAgents, showBackgroundTasks, rightArea, bottomArea, editorOnly, problems
+    case zoomIn, zoomOut, resetZoom
     case shortcutHelp
     case globalShow, globalNewConversation
 
     var id: Self { self }
     static let numberedTabs: [Self] = [.selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9]
     var tabPosition: Int? { Self.numberedTabs.firstIndex(of: self).map { $0 + 1 } }
+    static let zoomCommands: [Self] = [.zoomIn, .zoomOut, .resetZoom]
+    /// Defaults added after people could set their own: a key someone
+    /// already gave another command stays theirs.
+    static let laterDefaults: [Self] = zoomCommands + [.newConversationWindow]
+
+    private var zoomStep: Int? {
+        switch self {
+        case .zoomIn: 1
+        case .zoomOut: -1
+        case .resetZoom: 0
+        default: nil
+        }
+    }
+
+    @MainActor var canPerformZoom: Bool {
+        guard let step = zoomStep else { return false }
+        let appearance = AppearancePreferences.shared
+        return step == 0 ? appearance.values.zoomPercent != 100 : appearance.canAdjustZoom(by: step)
+    }
+
+    @MainActor func performZoom() {
+        guard let step = zoomStep else { return }
+        let appearance = AppearancePreferences.shared
+        if step == 0 { appearance.resetZoom() } else { appearance.adjustZoom(by: step) }
+    }
 
     /// The menu it is in, which the settings group it by.
     enum Menu: String, CaseIterable, Identifiable {
@@ -126,12 +149,12 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
 
     var menu: Menu {
         switch self {
-        case .newConversation, .openConversation, .newTab, .newWindow, .reopenClosedTab, .closeTab, .closeWindow: .file
+        case .newConversation, .newConversationWindow, .openConversation, .newTab, .newWindow, .reopenClosedTab, .closeTab, .closeWindow: .file
         case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: .window
         case .find: .edit
         case .stop, .stopSubAgents, .continueTurn, .compactContext, .sideChat, .attach, .chooseRuntime, .chooseModel, .chooseEffort, .choosePermission, .chooseWorkingDirectory, .nextAttention, .reload: .conversation
         case .splitRight, .splitDown, .closeSplit, .back, .forward, .nextPane, .previousPane, .nextTab, .previousTab, .moveTabToNewWindow, .keepInFront: .window
-        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .showBackgroundTasks, .rightArea, .bottomArea, .editorOnly, .problems: .view
+        case .commandPalette, .focusTranscript, .showList, .showOutline, .focusComposer, .showAgents, .showBackgroundTasks, .rightArea, .bottomArea, .editorOnly, .problems, .zoomIn, .zoomOut, .resetZoom: .view
         case .shortcutHelp: .help
         case .globalShow, .globalNewConversation: .global
         }
@@ -142,6 +165,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .newConversation: "新建会话"
+        case .newConversationWindow: "在新窗口中新建会话"
         case .openConversation: "打开会话…"
         case .newTab: "新建标签页"
         case .newWindow: "新建窗口"
@@ -184,7 +208,10 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .rightArea: "显示／隐藏右侧区域"
         case .bottomArea: "显示／隐藏底部区域"
         case .editorOnly: "只显示编辑区"
-        case .problems: "问题…"
+        case .problems: "问题"
+        case .zoomIn: "放大界面"
+        case .zoomOut: "缩小界面"
+        case .resetZoom: "恢复默认缩放"
         case .shortcutHelp: "快捷键速查"
         case .globalShow: "显示 Velune"
         case .globalNewConversation: "新建会话（全局）"
@@ -197,6 +224,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         switch self {
         case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: "Go to Tab \(tabPosition!) in Group"
         case .newConversation: "New Conversation"
+        case .newConversationWindow: "New Conversation in New Window"
         case .openConversation: "Open Conversation"
         case .newTab: "New Tab"
         case .newWindow: "New Window"
@@ -239,6 +267,9 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .bottomArea: "Toggle Bottom Area"
         case .editorOnly: "Editor Only"
         case .problems: "Problems"
+        case .zoomIn: "Zoom In"
+        case .zoomOut: "Zoom Out"
+        case .resetZoom: "Reset Zoom"
         case .shortcutHelp: "Keyboard Shortcuts"
         case .globalShow: "Show Velune"
         case .globalNewConversation: "New Conversation (Global)"
@@ -249,6 +280,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     var keywords: [String] {
         switch self {
         case .newConversation: ["chat", "session"]
+        case .newConversationWindow: ["chat", "session", "window", "独立窗口"]
         case .openConversation: ["quick open", "switch conversation", "切换会话"]
         case .find: ["search", "搜索"]
         case .stop: ["cancel", "interrupt", "abort", "中断", "取消"]
@@ -274,6 +306,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .showBackgroundTasks: ["background", "task", "shell", "后台", "任务"]
         case .editorOnly: ["zen", "maximize", "专注"]
         case .problems: ["errors", "diagnostics", "issues", "错误"]
+        case .zoomIn, .zoomOut, .resetZoom: ["scale", "缩放", "字号", "间距"]
         case .shortcutHelp: ["keys", "keybindings", "cheat sheet", "help", "快捷键"]
         default: []
         }
@@ -288,6 +321,7 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     var standard: Shortcut? {
         switch self {
         case .newConversation: Shortcut("n")
+        case .newConversationWindow: Shortcut("n", [.command, .shift])
         // As VS Code's Quick Open.
         case .openConversation: Shortcut("p")
         case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8, .selectTab9: Shortcut(String(tabPosition!), .control)
@@ -309,6 +343,9 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         case .nextAttention: Shortcut("a", [.command, .shift])
         case .commandPalette: Shortcut("k")
         case .focusTranscript: Shortcut("0")
+        case .zoomIn: Shortcut("+")
+        case .zoomOut: Shortcut("-")
+        case .resetZoom: Shortcut("0", [.command, .option])
         case .shortcutHelp: Shortcut("/")
         case .splitRight: Shortcut("d")
         case .splitDown: Shortcut("d", [.command, .shift])
@@ -371,6 +408,8 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
         Shortcut("return"): "发送消息与插入本轮", Shortcut("return", [.command, .option]): "插入本轮",
         Shortcut("upArrow", .option): "编辑最后一条排队消息",
     ]
+    private static let zoomInAlias = Shortcut("=")
+    fileprivate var recordedCommand: ShortcutCommand?
 
     /// The user's changes; a command not here has its standard shortcut.
     @Published private(set) var changed: [ShortcutCommand: Shortcut?] = [:]
@@ -402,7 +441,13 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     }
 
     func shortcut(_ command: ShortcutCommand) -> Shortcut? {
-        if let shortcut = changed[command] { shortcut } else { command.standard }
+        if let shortcut = changed[command] { return shortcut }
+        guard let standard = command.standard else { return nil }
+        // Defaults added later yield to bindings already set by the user.
+        if ShortcutCommand.laterDefaults.contains(command), changed.contains(where: {
+            $0.key != command && $0.value?.conflictEquivalent == standard.conflictEquivalent
+        }) { return nil }
+        return standard
     }
 
     subscript(command: ShortcutCommand) -> KeyboardShortcut? { shortcut(command)?.keyboardShortcut }
@@ -415,7 +460,19 @@ enum ShortcutCommand: String, CaseIterable, Identifiable {
     /// Who already has `shortcut`: another command, or the system.
     func holder(of shortcut: Shortcut, except command: ShortcutCommand) -> String? {
         if let name = Self.reserved[shortcut] { return name }
-        return ShortcutCommand.allCases.first { $0 != command && self.shortcut($0) == shortcut }.map(\.title)
+        if let holder = ShortcutCommand.allCases.first(where: {
+            $0 != command && self.shortcut($0)?.conflictEquivalent == shortcut.conflictEquivalent
+        }) { return holder.title }
+        if command != .zoomIn, shortcut == Self.zoomInAlias, self.shortcut(.zoomIn) == ShortcutCommand.zoomIn.standard {
+            return ShortcutCommand.zoomIn.title
+        }
+        return nil
+    }
+
+    /// The unshifted = key shares the default plus command if it has no owner.
+    var usesZoomInAlias: Bool {
+        recordedCommand == nil && shortcut(.zoomIn) == ShortcutCommand.zoomIn.standard
+            && holder(of: Self.zoomInAlias, except: .zoomIn) == nil
     }
 
     func set(_ shortcut: Shortcut?, for command: ShortcutCommand) {
@@ -529,6 +586,7 @@ private struct ShortcutRecorder: View {
     private func start() {
         refusal = nil
         // Ahead of the menus, so the press records instead of running a command.
+        shortcuts.recordedCommand = command
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             take(event)
             return nil
@@ -538,6 +596,7 @@ private struct ShortcutRecorder: View {
     private func stop() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        if shortcuts.recordedCommand == command { shortcuts.recordedCommand = nil }
     }
 
     private func take(_ event: NSEvent) {

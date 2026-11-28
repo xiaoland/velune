@@ -28,7 +28,9 @@ import Combine
     static func removeEscapeHandler(_ id: UUID) { escapeHandlers.removeAll { $0.id == id } }
 
     private static func route(_ event: NSEvent) -> Bool {
-        guard let window = event.window ?? NSApp.keyWindow, window.sheetParent == nil, NSApp.modalWindow == nil else { return false }
+        guard let window = event.window ?? NSApp.keyWindow, NSApp.modalWindow == nil else { return false }
+        if routeZoomInAlias(event) { return true }
+        guard window.sheetParent == nil else { return false }
         // The conversation list's rows: ⌘⌫ deletes, typing searches.
         if let model = ConversationWindowModel.owning(window: window) ?? ConversationWindowModel.owning(detached: window),
            model.listHasKeyboard, let handle = model.listKeyHandler, handle(event) { return true }
@@ -40,6 +42,17 @@ import Combine
         }
         for handler in escapeHandlers.reversed() where handler.handle() { return true }
         return false
+    }
+
+    /// AppKit's `+` menu equivalent handles Shift+= and the keypad. The
+    /// unshifted `=` convenience key follows the same configurable command.
+    static func routeZoomInAlias(_ event: NSEvent) -> Bool {
+        guard event.charactersIgnoringModifiers == "=",
+              event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+              KeyboardShortcutSettings.shared.usesZoomInAlias,
+              ShortcutCommand.zoomIn.canPerformZoom else { return false }
+        ShortcutCommand.zoomIn.performZoom()
+        return true
     }
 }
 

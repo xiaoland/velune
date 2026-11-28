@@ -2,8 +2,9 @@
 use super::*;
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 use velune_conversation::{EditPlacement, MessageRole, RunState, RuntimeInteractionReply};
+use velune_test_support::TempRoot;
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 
 fn native_header(root: &std::path::Path, name: &str) -> String {
     let id = match name {
@@ -22,12 +23,7 @@ fn native_header(root: &std::path::Path, name: &str) -> String {
 
 impl Fixture {
     fn new(gate: &str, reject: bool) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("velune-pi-edit-async-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
-        // Native IDs, the index and execution cwd use one physical path on
-        // platforms whose temporary directory is reached through an alias.
-        let root = root.canonicalize().unwrap();
+        let root = TempRoot::new("pi-edit-async");
         fs::write(root.join("gate"), gate).unwrap();
         fs::write(root.join("reject"), if reject { "yes" } else { "no" }).unwrap();
         fs::write(root.join("pi"), "#!/bin/sh\nprintf '1.4.0\\n'\n").unwrap();
@@ -45,7 +41,7 @@ else: os.execv('/usr/bin/python3',['/usr/bin/python3']+sys.argv[1:])
                 native_header(&root, name),
             )
             .unwrap();
-            fs::write(root.join(format!("{name}-history.json")), serde_json::json!({"cwd":root,"messages":[
+            fs::write(root.join(format!("{name}-history.json")), serde_json::json!({"cwd":root.path(),"messages":[
                 {"id":"pi:synthetic:prefix-user:0","role":"user","content":"retained prompt"},
                 {"id":"pi:synthetic:prefix-reply:0","role":"assistant","content":"retained reply","stopReason":"stop"},
                 {"id":"pi:synthetic:edited-user:0","role":"user","content":"old selected body"},
@@ -104,6 +100,9 @@ elif '--delete-message' in sys.argv:
  with (root/'delete-count').open('a') as log: log.write('delete\n')
  print(json.dumps({'ok':True}))
 else:
+ if (root/'hold-index').exists():
+  (root/'entered-index').touch()
+  while (root/'hold-index').exists(): __import__('time').sleep(.005)
  request=json.load(sys.stdin); wanted=set(request['want']); files=[]
  for name in ['edit','other','fork']:
   path=root/(name+'.jsonl')
@@ -138,13 +137,18 @@ def gate(phase):
  while not (root/'release').exists(): time.sleep(.005)
  return reject
 primary_prompt=None; primary_clear=None; primary_abort=None
+compact_request=None
 def requests():
- global primary_prompt,primary_clear,primary_abort
- if mode!='primary-controls':
+ global primary_prompt,primary_clear,primary_abort,compact_request
+ if mode not in ('primary-controls', 'compact-recovery'):
   yield from sys.stdin; return
  import select
  buffered=b''
  while True:
+  if compact_request is not None and (root/'release-compact').exists():
+   emit({'type':'compaction_end','result':{}})
+   emit({'type':'response','id':compact_request['id'],'command':'compact','success':True})
+   compact_request=None
   if primary_clear is not None and (root/'release-primary-clear').exists():
    emit({'type':'response','id':primary_clear['id'],'command':'clear_queue','success':True,'data':{}}); primary_clear=None
   if primary_abort is not None and (root/'release-primary-abort').exists():
@@ -169,7 +173,9 @@ for line in requests():
    if branched and gate('snapshot'):
     emit({'type':'response','id':r['id'],'command':command,'success':False,'error':'synthetic snapshot rejection'}); continue
    messages=history['messages']
-   status('velune.session-metadata',{'requestId':r['id'],'snapshotVersion':1,'messages':messages,'messageIds':[m['id'] for m in messages],'identityConfirmations':[],'sessionFile':str(source),'name':'Synthetic','cwd':str(root)})
+   name_file=root/'name-written'
+   title=name_file.read_text() if name_file.exists() else 'Synthetic'
+   status('velune.session-metadata',{'requestId':r['id'],'snapshotVersion':1,'messages':messages,'messageIds':[m['id'] for m in messages],'identityConfirmations':[],'sessionFile':str(source),'name':title,'cwd':str(root)})
    data={'disposition':'handled'}
   elif text.startswith('/velune-background-work '):
    status('velune.background-work-v1',{'version':1,'kind':'unsupported','supported':False,'tasks':[]}); data={'disposition':'handled'}
@@ -195,6 +201,13 @@ for line in requests():
     emit({'type':'message_start','message':{'role':'user','content':text}})
     emit({'type':'extension_ui_request','method':'confirm','id':'primary-confirm','title':'Synthetic same-session question'})
     (root/'primary-prompt-read').touch(); continue
+   if mode in ('composed-send','composed-reject') and name=='edit':
+    emit({'type':'agent_start'})
+    (root/'entered-composed-send').touch()
+    while not (root/'release-composed-send').exists(): time.sleep(.005)
+    if mode=='composed-reject':
+     emit({'type':'response','id':r['id'],'command':command,'success':False,'error':'synthetic prompt rejection'}); continue
+    emit({'type':'response','id':r['id'],'command':command,'success':True,'data':{'disposition':'queued'}}); continue
    if mode in ('prompt-budget-model','prompt-budget-form') and name=='edit':
     emit({'type':'agent_start'})
     message={'id':'pi:synthetic:replacement:0','role':'user','content':text}
@@ -212,11 +225,16 @@ for line in requests():
     if mode!='prompt-eof': emit({'type':'response','id':r['id'] if mode=='prompt-success-eof' else 'unrelated-id','command':command,'success':True,'data':{}})
     sys.exit(0)
    else:
+    if name=='other':
+     # The idle session accepts the prompt before its turn asks a question.
+     emit({'type':'response','id':r['id'],'command':command,'success':True,'data':{'disposition':'started'}})
     emit({'type':'agent_start'})
     message={'id':'pi:synthetic:replacement:0','role':'user','content':text}
     history['messages'].append(message); root.joinpath(name+'-history.json').write_text(json.dumps(history))
     emit({'type':'message_start','message':message}); emit({'type':'message_end','message':message})
-    if name=='other': emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'}); data={'disposition':'awaiting_user'}
+    if name=='other':
+     emit({'type':'extension_ui_request','method':'confirm','id':'other-confirm','title':'Synthetic question'})
+     continue
  elif command=='set_model':
   if name=='fork':
    (root/'entered-fallback-model').touch()
@@ -228,6 +246,15 @@ for line in requests():
    (root/'entered-writer').touch()
    while not (root/'release').exists(): time.sleep(.005)
    continue
+ elif command=='compact':
+  emit({'type':'compaction_start'})
+  if mode=='compact-disconnect':
+   (root/'entered-compact').touch()
+   while not (root/'release-compact').exists(): time.sleep(.005)
+   sys.exit(0)
+  compact_request=r; (root/'entered-compact').touch(); continue
+ elif command=='set_session_name':
+  (root/'name-written').write_text(r['name'])
  elif command=='get_state': data={'sessionFile':str(source),'sessionName':'Synthetic'}
  elif command=='get_messages': data={'messages':history['messages']}
  elif command=='extension_ui_response':
@@ -251,7 +278,7 @@ for line in requests():
     fn open(&self) -> ApplicationService {
         let service = ApplicationService::open(Options {
             home_directory: self.0.join("app"),
-            resources_directory: self.0.clone(),
+            resources_directory: self.0.to_path_buf(),
         })
         .unwrap();
         service
@@ -311,10 +338,12 @@ impl Drop for Fixture {
             "release-primary-clear",
             "release-primary-abort",
             "release-primary-fact",
+            "release-composed-send",
+            "release-compact",
         ] {
             let _ = fs::write(self.0.join(marker), []);
         }
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_file(self.0.join("hold-index"));
     }
 }
 fn close_after_cleanup(service: &ApplicationService) {
@@ -358,6 +387,140 @@ fn snapshot(service: &ApplicationService, id: String) -> crate::DeliveredSnapsho
     };
     result.snapshot.unwrap()
 }
+
+#[test]
+fn pi_compaction_live_rename_does_not_read_the_native_index() {
+    let fixture = Fixture::new("compact-recovery", false);
+    let service = fixture.open();
+    let id = fixture.id("edit");
+    let initial = snapshot(&service, id.clone());
+    assert!(initial.follow_up.can_compact);
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::CompactConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                selection: None,
+            },
+        )
+        .unwrap();
+    fixture.wait("entered-compact");
+    fs::write(fixture.0.join("hold-index"), []).unwrap();
+    let rename = later(
+        &service,
+        "edit",
+        Command::RenameConversation {
+            runtime_id: "pi".into(),
+            conversation_id: id.clone(),
+            title: "Updated during compaction".into(),
+        },
+    )
+    .recv_timeout(Duration::from_secs(2));
+    fs::remove_file(fixture.0.join("hold-index")).unwrap();
+    let Response::RenameConversation(configuration) = rename
+        .expect("live rename must not wait for the session index")
+        .unwrap()
+    else {
+        panic!("rename response")
+    };
+    assert!(!fixture.0.join("entered-index").exists());
+    assert!(configuration.conversations.iter().any(|row| {
+        row.conversation.id == id
+            && row.conversation.title.display_text() == "Updated during compaction"
+    }));
+    fixture.wait("name-written");
+    fs::write(fixture.0.join("release-compact"), []).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = snapshot(&service, id.clone());
+        if current.actions.can_send {
+            assert_eq!(
+                current.conversation.title.display_text(),
+                "Updated during compaction"
+            );
+            assert_eq!(current.run_state, RunState::Idle);
+            break;
+        }
+        assert!(Instant::now() < deadline, "Pi compaction did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    close_after_cleanup(&service);
+}
+
+#[test]
+fn pi_compaction_disconnect_preserves_failure_and_allows_a_new_turn() {
+    let fixture = Fixture::new("compact-disconnect", false);
+    let service = fixture.open();
+    let id = fixture.id("edit");
+    let initial = snapshot(&service, id.clone());
+    assert!(initial.follow_up.can_compact);
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::CompactConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                selection: None,
+            },
+        )
+        .unwrap();
+    fixture.wait("entered-compact");
+    fs::write(fixture.0.join("release-compact"), []).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = snapshot(&service, id.clone());
+        if current.run_state == RunState::Failed && current.actions.can_send {
+            assert_eq!(
+                current.actions.input_access,
+                velune_conversation::InputAccess::Editable
+            );
+            assert!(
+                current
+                    .messages
+                    .iter()
+                    .any(|message| message.blocks.iter().any(|block| {
+                        matches!(block, crate::DeliveredBlock::ContextCompaction { text }
+                    if text.contains("上下文压缩已中断"))
+                    }))
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session remained unwritable after compact transport failure"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    service
+        .execute(
+            ClientViewId("edit".into()),
+            Command::SendTurn {
+                submission_id: None,
+                source_runtime_id: "pi".into(),
+                conversation_id: id,
+                target_runtime_id: "pi".into(),
+                selection: None,
+                turn: crate::ComposedTurn {
+                    text: "Explicit follow-up after failed compact".into(),
+                    attachments: vec![],
+                    effort: None,
+                    permission_mode: None,
+                },
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        fixture
+            .requests("edit")
+            .iter()
+            .filter(|request| request["message"] == "Explicit follow-up after failed compact")
+            .count(),
+        1
+    );
+    close_after_cleanup(&service);
+}
+
 fn start_edit(
     service: &ApplicationService,
     fixture: &Fixture,
@@ -503,24 +666,26 @@ fn other_session_progress(service: &ApplicationService, fixture: &Fixture) {
 }
 fn prepare_other(service: &ApplicationService, fixture: &Fixture) {
     snapshot(service, fixture.id("other"));
-    service
-        .execute(
-            ClientViewId("other".into()),
-            Command::SendTurn {
-                submission_id: None,
-                source_runtime_id: "pi".into(),
-                conversation_id: fixture.id("other"),
-                target_runtime_id: "pi".into(),
-                selection: None,
-                turn: crate::ComposedTurn {
-                    text: "synthetic other input".into(),
-                    attachments: vec![],
-                    effort: None,
-                    permission_mode: None,
-                },
+    later(
+        service,
+        "other",
+        Command::SendTurn {
+            submission_id: None,
+            source_runtime_id: "pi".into(),
+            conversation_id: fixture.id("other"),
+            target_runtime_id: "pi".into(),
+            selection: None,
+            turn: crate::ComposedTurn {
+                text: "synthetic other input".into(),
+                attachments: vec![],
+                effort: None,
+                permission_mode: None,
             },
-        )
-        .unwrap();
+        },
+    )
+    .recv_timeout(Duration::from_secs(4))
+    .expect("synthetic other session must acknowledge the accepted prompt")
+    .unwrap();
     let end = Instant::now() + Duration::from_secs(4);
     while snapshot(service, fixture.id("other"))
         .pending_interactions
@@ -631,18 +796,46 @@ fn pi_edit_blocked_writer_is_not_native_acceptance_and_cancel_does_not_replay() 
             conversation_id: fixture.id("edit"),
         },
     );
-    assert!(matches!(cancel.recv_timeout(Duration::from_millis(150)), Err(mpsc::RecvTimeoutError::Timeout)),
-        "reserved admission is not a native stop ACK through a blocked pipe");
+    assert!(
+        matches!(
+            cancel.recv_timeout(Duration::from_millis(150)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "reserved admission is not a native stop ACK through a blocked pipe"
+    );
     assert!(matches!(reply.try_recv(), Err(mpsc::TryRecvError::Empty)));
     // Release only after the no-false-acceptance assertions. The peer reads
     // the whole original prompt, ACKs ClearQueue, then reads Abort and exits
     // without its ACK: both remaining outcomes are genuinely indeterminate.
     fs::write(fixture.0.join("release"), []).unwrap();
     fixture.wait("writer-abort-read");
-    assert_eq!(cancel.recv_timeout(Duration::from_secs(3)).unwrap().err().expect("missing native Abort ACK").code, "runtime_operation_indeterminate");
-    assert_eq!(reply.recv_timeout(Duration::from_secs(3)).unwrap().err().expect("missing native preflight ACK").code, "runtime_operation_indeterminate");
+    assert_eq!(
+        cancel
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .err()
+            .expect("missing native Abort ACK")
+            .code,
+        "runtime_operation_indeterminate"
+    );
+    assert_eq!(
+        reply
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .err()
+            .expect("missing native preflight ACK")
+            .code,
+        "runtime_operation_indeterminate"
+    );
     assert!(fixture.0.join("writer-prompt-read").exists());
-    assert_eq!(fixture.requests("edit").iter().filter(|request| request["type"] == "abort").count(), 1);
+    assert_eq!(
+        fixture
+            .requests("edit")
+            .iter()
+            .filter(|request| request["type"] == "abort")
+            .count(),
+        1
+    );
     close_after_cleanup(&service);
 }
 
@@ -844,7 +1037,7 @@ fn pi_failed_cancel_keeps_real_child_and_home_until_bounded_cleanup_capacity_ret
     let third = &fixtures[2];
     let pid = fs::read_to_string(third.0.join("edit-pid")).unwrap();
     let alive = || {
-        std::process::Command::new("/bin/kill")
+        velune_agent_runtime::process::command("/bin/kill")
             .args(["-0", pid.trim()])
             .status()
             .unwrap()
@@ -1168,6 +1361,68 @@ fn pi_prompt_terminal_response_without_echo_keeps_acceptance_and_cleanup_separat
 }
 
 #[test]
+fn pi_composed_send_waits_for_exact_prompt_receipt_and_rejects_before_delivery() {
+    use std::sync::mpsc::TryRecvError;
+
+    for (mode, rejected) in [("composed-send", false), ("composed-reject", true)] {
+        let fixture = Fixture::new(mode, false);
+        let service = fixture.open();
+        let id = fixture.id("edit");
+        let _ = snapshot(&service, id.clone());
+        let reply = later(
+            &service,
+            "edit",
+            Command::SendTurn {
+                submission_id: Some("pi-composed-acceptance-test".into()),
+                source_runtime_id: "pi".into(),
+                conversation_id: id.clone(),
+                target_runtime_id: "pi".into(),
+                selection: None,
+                turn: crate::ComposedTurn {
+                    text: "ordinary composed prompt".into(),
+                    effort: None,
+                    permission_mode: None,
+                    attachments: Vec::new(),
+                },
+            },
+        );
+        fixture.wait("entered-composed-send");
+        assert!(
+            matches!(reply.try_recv(), Err(TryRecvError::Empty)),
+            "SendTurn replied after local enqueue, before Pi's exact prompt response"
+        );
+
+        fs::write(fixture.0.join("release-composed-send"), []).unwrap();
+        let outcome = reply.recv_timeout(Duration::from_secs(5)).unwrap();
+        if rejected {
+            let Err(error) = outcome else {
+                panic!("explicit Pi rejection must fail the submission");
+            };
+            assert_ne!(error.code, "message_delivery_accepted");
+            let failed = snapshot(&service, id);
+            assert_eq!(failed.run_state, RunState::Failed);
+            assert!(
+                failed.actions.can_send,
+                "rejected input must release Pi's send gate"
+            );
+        } else {
+            let Response::SendTurn(result) = outcome.unwrap() else {
+                panic!("expected composed SendTurn response");
+            };
+            assert_eq!(
+                result.submission_receipt,
+                Some(crate::SubmissionReceipt::Sending)
+            );
+            assert!(
+                result.submitted_message_id.is_none(),
+                "no native echo was fabricated"
+            );
+        }
+        close_after_cleanup(&service);
+    }
+}
+
+#[test]
 fn pi_delete_completed_and_mutating_io_retain_facts_across_cancel_and_source_switch() {
     use crate::local::execution_workers::pi_delete_test_gate;
     for stage in ["mutation", "install"] {
@@ -1423,7 +1678,7 @@ fn pi_edit_preparation_deadline_does_not_terminate_written_model_or_human_wait()
         );
         let pid = fs::read_to_string(fixture.0.join("edit-pid")).unwrap();
         let alive = || {
-            std::process::Command::new("/bin/kill")
+            velune_agent_runtime::process::command("/bin/kill")
                 .args(["-0", pid.trim()])
                 .status()
                 .unwrap()
@@ -1514,64 +1769,164 @@ fn pi_edit_preparation_deadline_does_not_terminate_written_model_or_human_wait()
 fn pi_same_session_reply_and_cancel_keep_edit_fact_channel_and_late_acceptance() {
     let fixture = Fixture::new("primary-controls", false);
     let service = fixture.open();
-    service.execute(ClientViewId("configuration".into()), Command::UpsertRuntimeWithExecution {
-        runtime: crate::config::RuntimeInstance {
-            enabled: true, id: "pi".into(), name: "Synthetic Pi".into(),
-            type_id: crate::conversation::RuntimeKind::Pi, gateway_id: "default".into(),
-            settings: BTreeMap::from([
-                ("binary".into(), fixture.0.join("pi").to_string_lossy().into_owned()),
-                ("nodeBinary".into(), fixture.0.join("node").to_string_lossy().into_owned()),
-                ("agentDir".into(), fixture.0.to_string_lossy().into_owned()),
-                ("sessionDir".into(), fixture.0.to_string_lossy().into_owned()),
-            ]),
-        },
-        execution: crate::RuntimeExecution { home: crate::RuntimeHome::Managed { remote_root: None }, ..Default::default() },
-    }).unwrap();
+    service
+        .execute(
+            ClientViewId("configuration".into()),
+            Command::UpsertRuntimeWithExecution {
+                runtime: crate::config::RuntimeInstance {
+                    enabled: true,
+                    id: "pi".into(),
+                    name: "Synthetic Pi".into(),
+                    type_id: crate::conversation::RuntimeKind::Pi,
+                    gateway_id: "default".into(),
+                    settings: BTreeMap::from([
+                        (
+                            "binary".into(),
+                            fixture.0.join("pi").to_string_lossy().into_owned(),
+                        ),
+                        (
+                            "nodeBinary".into(),
+                            fixture.0.join("node").to_string_lossy().into_owned(),
+                        ),
+                        ("agentDir".into(), fixture.0.to_string_lossy().into_owned()),
+                        (
+                            "sessionDir".into(),
+                            fixture.0.to_string_lossy().into_owned(),
+                        ),
+                    ]),
+                },
+                execution: crate::RuntimeExecution {
+                    home: crate::RuntimeHome::Managed { remote_root: None },
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
     let edit = start_edit(&service, &fixture, "replacement".into());
     fixture.wait("primary-prompt-read");
     let end = Instant::now() + Duration::from_secs(3);
     let question = loop {
         let view = snapshot(&service, fixture.id("edit"));
-        if let Some(interaction) = view.pending_interactions.first() { break interaction.clone(); }
-        assert!(Instant::now() < end); std::thread::sleep(Duration::from_millis(5));
+        if let Some(interaction) = view.pending_interactions.first() {
+            break interaction.clone();
+        }
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(5));
     };
-    let velune_conversation::InteractionKind::UserInput { questions } = &question.kind else { panic!("native form question") };
+    let velune_conversation::InteractionKind::UserInput { questions } = &question.kind else {
+        panic!("native form question")
+    };
     let answer = questions.first().unwrap();
-    let yes = answer.options.iter().find(|option| option.id == "yes").unwrap();
-    later(&service, "edit", Command::ReplyRuntimeInteraction {
-        runtime_id: "pi".into(), conversation_id: fixture.id("edit"), interaction_id: question.id.clone(),
-        reply: RuntimeInteractionReply::Answers { answers: vec![velune_conversation::InteractionAnswer {
-            question_id: answer.id.clone(), values: vec![yes.id.clone()],
-        }] },
-    }).recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    let yes = answer
+        .options
+        .iter()
+        .find(|option| option.id == "yes")
+        .unwrap();
+    later(
+        &service,
+        "edit",
+        Command::ReplyRuntimeInteraction {
+            runtime_id: "pi".into(),
+            conversation_id: fixture.id("edit"),
+            interaction_id: question.id.clone(),
+            reply: RuntimeInteractionReply::Answers {
+                answers: vec![velune_conversation::InteractionAnswer {
+                    question_id: answer.id.clone(),
+                    values: vec![yes.id.clone()],
+                }],
+            },
+        },
+    )
+    .recv_timeout(Duration::from_secs(2))
+    .unwrap()
+    .unwrap();
     fixture.wait("primary-answered");
-    assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)), "answer consumed the original edit wait");
+    assert!(
+        matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "answer consumed the original edit wait"
+    );
     let replies = fixture.requests("edit");
-    assert_eq!(replies.iter().filter(|r| r["type"] == "extension_ui_response").count(), 1);
-    let cancel = later(&service, "edit", Command::Cancel { runtime_id: "pi".into(), conversation_id: fixture.id("edit") });
+    assert_eq!(
+        replies
+            .iter()
+            .filter(|r| r["type"] == "extension_ui_response")
+            .count(),
+        1
+    );
+    let cancel = later(
+        &service,
+        "edit",
+        Command::Cancel {
+            runtime_id: "pi".into(),
+            conversation_id: fixture.id("edit"),
+        },
+    );
     fixture.wait("primary-clear-read");
     // The helper continues reading while withholding ClearQueue's ACK, so an
     // early Abort would actually be visible here, not hidden by a blocked stdin.
     snapshot(&service, fixture.id("edit"));
-    assert!(fixture.requests("edit").iter().all(|r| r["type"] != "abort"));
+    assert!(
+        fixture
+            .requests("edit")
+            .iter()
+            .all(|r| r["type"] != "abort")
+    );
     assert!(matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)));
     assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)));
     fs::write(fixture.0.join("release-primary-clear"), []).unwrap();
     fixture.wait("primary-abort-read");
-    assert!(matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)), "ClearQueue ACK fabricated Abort acceptance");
+    assert!(
+        matches!(cancel.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "ClearQueue ACK fabricated Abort acceptance"
+    );
     assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)));
     fs::write(fixture.0.join("release-primary-abort"), []).unwrap();
-    assert!(matches!(cancel.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(), Response::Cancel(_)));
-    assert!(matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)), "Cancel discarded the pending prompt fact channel");
-    assert_ne!(snapshot(&service, fixture.id("edit")).run_state, RunState::Running);
+    assert!(matches!(
+        cancel
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap(),
+        Response::Cancel(_)
+    ));
+    assert!(
+        matches!(edit.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "Cancel discarded the pending prompt fact channel"
+    );
+    assert_ne!(
+        snapshot(&service, fixture.id("edit")).run_state,
+        RunState::Running
+    );
     fs::write(fixture.0.join("release-primary-fact"), []).unwrap();
-    let Response::EditMessage(result) = edit.recv_timeout(Duration::from_secs(3)).unwrap().unwrap() else { panic!("late exact prompt fact") };
-    assert_eq!(result.submission_receipt, Some(crate::SubmissionReceipt::Sending));
-    assert_ne!(result.snapshot.unwrap().run_state, RunState::Running, "late preflight ACK restarted a cancelled native turn");
+    let Response::EditMessage(result) = edit.recv_timeout(Duration::from_secs(3)).unwrap().unwrap()
+    else {
+        panic!("late exact prompt fact")
+    };
+    assert_eq!(
+        result.submission_receipt,
+        Some(crate::SubmissionReceipt::Sending)
+    );
+    assert_ne!(
+        result.snapshot.unwrap().run_state,
+        RunState::Running,
+        "late preflight ACK restarted a cancelled native turn"
+    );
     let wire = fixture.requests("edit");
-    assert_eq!(wire.iter().filter(|r| r["message"] == "replacement").count(), 1);
-    assert_eq!(wire.iter().filter(|r| r["type"] == "clear_queue").count(), 1);
+    assert_eq!(
+        wire.iter()
+            .filter(|r| r["message"] == "replacement")
+            .count(),
+        1
+    );
+    assert_eq!(
+        wire.iter().filter(|r| r["type"] == "clear_queue").count(),
+        1
+    );
     assert_eq!(wire.iter().filter(|r| r["type"] == "abort").count(), 1);
-    assert_eq!(wire.iter().filter(|r| r["type"] == "extension_ui_response").count(), 1);
+    assert_eq!(
+        wire.iter()
+            .filter(|r| r["type"] == "extension_ui_response")
+            .count(),
+        1
+    );
     close_after_cleanup(&service);
 }

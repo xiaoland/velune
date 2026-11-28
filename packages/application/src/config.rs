@@ -36,6 +36,8 @@ pub struct ProviderDefinition {
     pub(crate) billing: crate::billing::Configuration,
     pub models: Vec<ProviderModel>,
     pub quota_limits: Vec<QuotaLimit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,15 +123,20 @@ pub(crate) struct ConversationHandoff {
 
 impl GatewayConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
+        let mut antigravity_targets = std::collections::BTreeSet::new();
         for provider in &self.providers {
             provider
                 .authentication
                 .validate_target(&provider.protocol, &provider.endpoint)?;
             provider.validate_composition()?;
-            if matches!(
-                provider.execution_backend,
-                ExecutionBackend::ClaudeCli { .. }
-            ) {
+            if let ExecutionBackend::AntigravityCli {
+                ssh_destination, ..
+            } = &provider.execution_backend
+                && !antigravity_targets.insert(ssh_destination.as_deref())
+            {
+                return Err("同一个 Antigravity 执行目标只能在网关中绑定一次");
+            }
+            if provider.execution_backend != ExecutionBackend::Http {
                 continue;
             }
             let endpoint = url::Url::parse(&provider.endpoint).map_err(|_| "提供商服务地址无效")?;
@@ -214,11 +221,7 @@ impl GatewayConfig {
         let identity = PiBindingIdentity {
             model_record_key,
             provider_id: provider.id.as_str(),
-            protocol: match provider.protocol {
-                Protocol::ChatCompletions => "chatCompletionsV1",
-                Protocol::Responses => "responsesV1",
-                Protocol::Messages => "messagesV1",
-            },
+            protocol: provider.protocol.id(),
             execution_backend: &provider.execution_backend,
             request_profile: provider.request_profile,
             endpoint: provider.endpoint.as_str(),
@@ -233,6 +236,20 @@ impl GatewayConfig {
         };
         let canonical = serde_json::to_vec(&identity).map_err(|_| "binding identity encoding")?;
         let digest = Sha256::digest(canonical);
+        if provider.protocol == Protocol::Gemini {
+            let model_id = binding
+                .provider_model_id
+                .strip_prefix("models/")
+                .unwrap_or(&binding.provider_model_id);
+            // Pi infers Gemini's thinking and tool parameter formats from the model name.
+            // Its two Flash aliases require an exact ID, so keep the corresponding family
+            // marker in the routing alias as well.
+            let family_marker = match model_id.to_ascii_lowercase().as_str() {
+                "gemini-flash-latest" | "gemini-flash-lite-latest" => "--gemini-3-flash",
+                _ => "",
+            };
+            return Ok(format!("{model_id}{family_marker}--vln_{digest:x}"));
+        }
         Ok(format!("vln_{digest:x}"))
     }
 
@@ -295,16 +312,12 @@ pub(crate) fn runtime_ingress(kind: RuntimeKind, upstream: &Protocol) -> Option<
         .cloned()
 }
 
-/// All three provider protocols are reachable through the LLM gateway.
+/// Runtimes with a gateway ingress can reach all provider protocols.
 pub(crate) fn runtime_provider_protocols(kind: RuntimeKind) -> Vec<Protocol> {
     if runtime_protocols(kind).is_empty() {
         return Vec::new();
     }
-    vec![
-        Protocol::ChatCompletions,
-        Protocol::Responses,
-        Protocol::Messages,
-    ]
+    Protocol::ALL.to_vec()
 }
 
 impl GatewayConfig {
@@ -324,7 +337,8 @@ impl GatewayConfig {
                         endpoint: p.endpoint.clone(),
                         execution_backend: gateway_execution_backend(&p.execution_backend),
                         request_profile: gateway_request_profile(p.request_profile),
-                        credential_ref: Some(p.id.clone()),
+                        codex_client_version: p.codex_request_version().map(str::to_owned),
+                        credential_ref: Some(p.credential_reference()),
                         quota_limits: p
                             .quota_limits
                             .iter()
@@ -440,7 +454,59 @@ impl ProjectRecord {
     }
 }
 impl ProviderDefinition {
+    pub(crate) fn effective_quota_source(&self) -> ProviderQuotaSource {
+        if self.quota_source == ProviderQuotaSource::None
+            && matches!(
+                self.execution_backend,
+                ExecutionBackend::AntigravityCli { .. }
+            )
+        {
+            // Legacy Antigravity settings predate the manual quota command.
+            return ProviderQuotaSource::AntigravityCliUsage;
+        }
+        self.quota_source
+    }
+
+    pub(crate) fn credential_reference(&self) -> String {
+        if let ExecutionBackend::AntigravityCli {
+            binary,
+            ssh_destination,
+        } = &self.execution_backend
+        {
+            // The gateway receives a credential reference without the
+            // executable or SSH destination. Reject a reference issued for an
+            // earlier binding even when the rest of the route is unchanged.
+            let target =
+                serde_json::to_vec(&(binary, ssh_destination)).expect("Antigravity target tuple");
+            let digest = Sha256::digest(target);
+            return format!(
+                "antigravity/{}/{digest:x}/{}",
+                self.authentication.generation, self.id
+            );
+        }
+        self.id.clone()
+    }
+
+    pub(crate) fn effective_codex_client_version(&self) -> &str {
+        self.codex_client_version
+            .as_deref()
+            .unwrap_or(crate::default_codex_client_version())
+    }
+
+    pub(crate) fn codex_request_version(&self) -> Option<&str> {
+        (self.request_profile == RequestProfile::CodexResponses)
+            .then(|| self.effective_codex_client_version())
+    }
+
     pub(crate) fn validate_composition(&self) -> Result<(), &'static str> {
+        if let Some(version) = &self.codex_client_version {
+            if self.request_profile != RequestProfile::CodexResponses {
+                return Err("只有 Codex Responses 提供商支持设置 Codex 客户端版本");
+            }
+            if !velune_ai_provider::valid_codex_client_version(version) {
+                return Err("Codex 客户端版本须为主版本.次版本.补丁版本");
+            }
+        }
         self.billing.validate(self)?;
         use crate::provider_authentication::ProviderAuthenticationSource as Auth;
         if !self
@@ -519,6 +585,9 @@ impl ProviderDefinition {
                 if source == Auth::ClaudeCli {
                     return Err("Claude CLI 认证必须由 Claude CLI 执行后端消费");
                 }
+                if source == Auth::AntigravityCli {
+                    return Err("Antigravity CLI 登录必须绑定到 Antigravity CLI 执行后端");
+                }
                 if source == Auth::CodexOAuth
                     && self.request_profile != RequestProfile::CodexResponses
                 {
@@ -544,6 +613,25 @@ impl ProviderDefinition {
                     );
                 }
             }
+            ExecutionBackend::AntigravityCli {
+                binary,
+                ssh_destination,
+            } => {
+                crate::antigravity_cli::validate_target(binary, ssh_destination.as_deref())?;
+                if source != Auth::AntigravityCli
+                    || self.protocol != Protocol::Messages
+                    || self.request_profile != RequestProfile::Native
+                    || !self.endpoint.is_empty()
+                    || !matches!(
+                        self.quota_source,
+                        ProviderQuotaSource::None | ProviderQuotaSource::AntigravityCliUsage
+                    )
+                {
+                    return Err(
+                        "Antigravity CLI 需要 Messages、Native 和 CLI 登录绑定，只支持其自带额度查询，服务地址须留空",
+                    );
+                }
+            }
         }
         match self.quota_source {
             ProviderQuotaSource::CodexUsage if source != Auth::CodexOAuth => {
@@ -551,6 +639,9 @@ impl ProviderDefinition {
             }
             ProviderQuotaSource::ClaudeCliUsage if source != Auth::ClaudeCli => {
                 Err("Claude CLI 额度来源需要 Claude CLI 认证")
+            }
+            ProviderQuotaSource::AntigravityCliUsage if source != Auth::AntigravityCli => {
+                Err("Antigravity CLI 额度只支持 Antigravity 订阅")
             }
             _ => Ok(()),
         }
@@ -594,6 +685,7 @@ pub(crate) fn gateway_execution_backend(
         ExecutionBackend::ClaudeCli { binary } => velune_gateway::ExecutionBackend::ClaudeCli {
             binary: binary.clone(),
         },
+        ExecutionBackend::AntigravityCli { .. } => velune_gateway::ExecutionBackend::AntigravityCli,
     }
 }
 pub(crate) fn gateway_request_profile(value: RequestProfile) -> velune_gateway::RequestProfile {

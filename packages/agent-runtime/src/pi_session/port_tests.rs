@@ -1,22 +1,17 @@
 use super::*;
 use std::time::{Duration, Instant};
+use velune_test_support::TempRoot;
 
 struct Fixture {
     session: PiSession,
-    root: std::path::PathBuf,
+    root: TempRoot,
 }
 impl Fixture {
     fn new(script: &str) -> Self {
-        let mut random = [0; 8];
-        getrandom::fill(&mut random).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-pi-owner-port-{:x}",
-            u64::from_le_bytes(random)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("pi-owner-port");
         let helper = root.join("rpc.py");
         std::fs::write(&helper, script).unwrap();
-        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root,"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
+        let config: Config = serde_json::from_value(json!({"execution":{"kind":"local"},"os_home":root.path(),"binary":"/usr/bin/python3","node_binary":"/usr/bin/python3","rpc_entry":helper})).unwrap();
         let client = Client::spawn(config.clone()).unwrap();
         let mut session = PiSession::new(config);
         session.start(
@@ -70,8 +65,74 @@ fn input(text: String) -> TurnInput {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.session.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn pi_cancellation_releases_only_notifications_in_its_successful_clear_queue_ack() {
+    let mut fixture = Fixture::new(
+        r#"
+import json,sys
+def emit(value): print(json.dumps(value),flush=True)
+clears=0
+for line in sys.stdin:
+ request=json.loads(line); command=request['type']; id=request['id']; data={}
+ if command=='get_commands': data={'commands':[]}
+ if command=='clear_queue':
+  clears+=1
+  data={'cancelledBackgroundNotificationIds':['removed']}
+  if clears==1:
+   emit({'type':'response','command':command,'id':'stale-clear','success':True,'data':data})
+   emit({'type':'response','command':command,'id':id,'success':False,'error':'clear refused','data':data})
+   continue
+ emit({'type':'response','command':command,'id':id,'success':True,'data':data})
+"#,
+    );
+    fixture.until(|session| !session.has_pending_metadata());
+    let terminal =
+        |id: &str| json!({"id":id,"status":"completed","notifyOnCompletion":true,"notified":true});
+    fixture.session.apply_background_frame(&json!({
+        "version":1,"kind":"snapshot","tasks":[terminal("removed")]
+    }));
+    let rejected = fixture.session.begin_cancel_confirmation().unwrap();
+    fixture.until(|session| {
+        session
+            .running
+            .as_ref()
+            .unwrap()
+            .wait(rejected)
+            .unwrap()
+            .result
+            .is_some()
+    });
+    assert!(
+        fixture
+            .session
+            .take_edit_wait_result(rejected)
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert!(fixture.session.has_pending_metadata());
+
+    fixture.session.cancel().unwrap();
+    fixture.until(|session| !session.pending_notifications.contains("removed"));
+    assert!(!fixture.session.has_pending_metadata());
+
+    // A delayed task snapshot may include both the cleared task and a later
+    // completion. Only the new notification still retains the idle host.
+    fixture.session.apply_background_frame(&json!({
+        "version":1,"kind":"snapshot","tasks":[terminal("removed"),terminal("later")]
+    }));
+    assert_eq!(
+        fixture.session.pending_notifications,
+        HashSet::from(["later".to_owned()])
+    );
+    fixture.session.observe_background_notification(&json!({
+        "type":"message_end",
+        "message":{"customType":"background-task-notification","details":{"id":"later"}}
+    }));
+    assert!(!fixture.session.has_pending_metadata());
 }
 
 #[test]
@@ -382,7 +443,6 @@ for line in sys.stdin:
 
 #[test]
 fn pi_session_parent_settlement_requeries_inflight_background_snapshot_and_retains_live_work() {
-    use crate::LiveConversation;
     let mut fixture = Fixture::new(
         r#"
 import json,sys,time
@@ -408,7 +468,7 @@ for line in sys.stdin:
     fixture.until(|session| !session.has_pending_metadata());
     assert_eq!(fixture.session.background_tasks().tasks[0].id, "survivor");
     assert!(
-        !fixture.session.work_settled(),
+        fixture.session.work_status() == crate::work::WorkStatus::Active,
         "parent settlement never releases surviving background work"
     );
 }
@@ -445,6 +505,52 @@ for line in sys.stdin:
     assert!(requests.find("compact").unwrap() < requests.find("clear_queue").unwrap());
     assert!(requests.find("clear_queue").unwrap() < requests.find("abort").unwrap());
     assert!(fixture.session.snapshot().unwrap().actions.can_send);
+}
+
+#[test]
+fn pi_background_run_end_keeps_the_pending_prompt_live() {
+    let mut fixture = Fixture::new(
+        r#"
+import json, os, sys, time
+root = os.path.dirname(__file__)
+def emit(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+ request = json.loads(line)
+ command = request['type']
+ if command == 'prompt':
+  emit({'type':'agent_start'})
+  emit({'type':'agent_settled'})
+  deadline = time.monotonic() + 5
+  while not os.path.exists(os.path.join(root, 'release-prompt')):
+   if time.monotonic() >= deadline: sys.exit(2)
+   time.sleep(.005)
+  emit({'type':'agent_start'})
+  emit({'type':'response','command':command,'id':request['id'],'success':True,'data':{}})
+  emit({'type':'agent_settled'})
+ else:
+  emit({'type':'response','command':command,'id':request['id'],'success':True,'data':{'commands':[]}})
+"#,
+    );
+    fixture.until(|session| !session.has_pending_metadata());
+    fixture.session.send(&input("next input".into())).unwrap();
+    fixture.until(|session| session.running.as_ref().unwrap().projection.turn_ended());
+    // Unblock the worker before asserting so a failing test can shut down.
+    let pending_kept_busy = fixture.session.turn_running();
+    std::fs::write(fixture.root.join("release-prompt"), []).unwrap();
+    assert!(
+        pending_kept_busy,
+        "the previous run must not release this input"
+    );
+    fixture.until(|session| !session.turn_running());
+    assert!(
+        fixture
+            .session
+            .running
+            .as_ref()
+            .unwrap()
+            .pending_prompt
+            .is_none()
+    );
 }
 
 #[test]
@@ -788,7 +894,9 @@ for line in sys.stdin:
             Some(deadline),
         )
         .unwrap();
-    running.pending.insert(old, PendingAction::RenameState);
+    running
+        .pending
+        .insert(old, PendingAction::Rename("old-query-title".into()));
     fixture.session.fork_at(Some("entry")).unwrap();
     let branch = *fixture
         .session

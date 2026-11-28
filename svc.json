@@ -352,6 +352,14 @@
         "start"
       ]
     },
+    "run-macos-dev": {
+      "argv": [
+        "python3",
+        "scripts/macos-dev.py",
+        "restart",
+        "--build"
+      ]
+    },
     "status-macos-dev": {
       "argv": [
         "python3",
@@ -508,6 +516,12 @@
         "python3",
         "scripts/check-macos-composer.py",
         "background"
+      ]
+    },
+    "acceptance": {
+      "argv": [
+        "python3",
+        "tests/acceptance/run.py"
       ]
     }
   }

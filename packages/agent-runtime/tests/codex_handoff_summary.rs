@@ -213,6 +213,7 @@ fn config(root: &Path, binary: PathBuf) -> NativeConfig {
         resources_directory: resources,
         projection_directory: projections,
         gateway: None,
+        auto_compaction: None,
         mcp_servers: vec![],
         session_agents: vec![],
     }
@@ -551,6 +552,11 @@ shell_snapshot = false
     let priority_request = provider.requests().last().unwrap().clone();
     assert_eq!(priority_request["model"], "gpt-6.1-sol");
     assert_eq!(priority_request["service_tier"], "priority");
+    assert!(
+        priority_request
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty))
+    );
     assert!(!canary.exists(), "MCP started during selected-tier summary");
 
     // Make archive fail after the owned fork has been verified and sampled.
@@ -568,7 +574,7 @@ shell_snapshot = false
     let archive_thread_id = match archive_status.as_deref() {
         Some(HandoffSummaryStatus::Running {
             temporary_thread_id: Some(id),
-            phase: HandoffSummaryPhase::Sampling,
+            phase: HandoffSummaryPhase::Compacting,
             ..
         }) => id,
         state => panic!("sampling fork identity was not observable: {state:?}"),
@@ -657,14 +663,14 @@ shell_snapshot = false
     assert!(!canary.exists());
     assert_eq!(provider.request_count(), baseline_http_requests + 6);
 
-    // The native thread/sample deadline is distinct from Velune's work budget.
+    // A live model response can take longer than Codex thread/sample allowed.
     provider.delay_next(Duration::from_secs(34));
-    start_summary(&mut session, "sample-timeout", &source_id, None);
-    let timed_out = wait_terminal(&mut session, "sample-timeout", Duration::from_secs(55));
+    start_summary(&mut session, "slow-compaction", &source_id, None);
+    let slow = wait_terminal(&mut session, "slow-compaction", Duration::from_secs(65));
     assert!(
-        matches!(&timed_out, HandoffSummaryStatus::Failed { code, detail }
-            if code == "summary_sample_timeout" && detail.contains("30 秒")),
-        "native sampling timeout lost its cause: {timed_out:?}"
+        matches!(&slow, HandoffSummaryStatus::Ready { summary, .. }
+            if summary.contains("Synthetic portable summary")),
+        "long compaction failed: {slow:?}"
     );
     assert_eq!(provider.request_count(), baseline_http_requests + 7);
     assert_eq!(fs::read(&source_path).unwrap(), expected_changed_source);

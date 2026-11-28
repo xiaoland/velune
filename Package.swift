@@ -1,6 +1,10 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+let developmentChecks = Context.environment["VELUNE_MAC_BUILD_PURPOSE"] == "development"
+let macSwiftSettings: [SwiftSetting] = [.unsafeFlags(["-parse-as-library", "-warnings-as-errors"])]
+    + (developmentChecks ? [.define("VELUNE_DEV_CHECKS")] : [])
+
 // The Mac unit consumes generated UniFFI Swift and the embedded Rust library.
 let package = Package(
     name: "VeluneMac",
@@ -16,6 +20,9 @@ let package = Package(
     targets: [
         .systemLibrary(name: "VeluneBindingsFFI", path: "target/swift-ffi"),
         .target(name: "VeluneBindings", dependencies: ["VeluneBindingsFFI"], path: "target/swift-bindings", swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]),
-        .executableTarget(name: "VeluneMac", dependencies: ["VeluneBindings", .product(name: "Markdown", package: "swift-markdown"), .product(name: "OpenTelemetryProtocolExporter", package: "opentelemetry-swift"), .product(name: "OpenTelemetryApi", package: "opentelemetry-swift-core"), .product(name: "OpenTelemetrySdk", package: "opentelemetry-swift-core"), .product(name: "GRPC", package: "grpc-swift"), .product(name: "NIO", package: "swift-nio"), .product(name: "NIOTransportServices", package: "swift-nio-transport-services")], path: "app/mac", exclude: ["README.md", "Assets", "Licenses"], swiftSettings: [.unsafeFlags(["-parse-as-library", "-warnings-as-errors"])])
+        // The workspace layout model: Foundation only, built and checked on any platform.
+        .target(name: "VeluneWorkspaceModel", path: "app/mac/WorkspaceModel", swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]),
+        .executableTarget(name: "velune-workspace-checks", dependencies: ["VeluneWorkspaceModel"], path: "app/mac/WorkspaceModelChecks", swiftSettings: [.unsafeFlags(["-warnings-as-errors"])]),
+        .executableTarget(name: "VeluneMac", dependencies: ["VeluneBindings", "VeluneWorkspaceModel", .product(name: "Markdown", package: "swift-markdown"), .product(name: "OpenTelemetryProtocolExporter", package: "opentelemetry-swift"), .product(name: "OpenTelemetryApi", package: "opentelemetry-swift-core"), .product(name: "OpenTelemetrySdk", package: "opentelemetry-swift-core"), .product(name: "GRPC", package: "grpc-swift"), .product(name: "NIO", package: "swift-nio"), .product(name: "NIOTransportServices", package: "swift-nio-transport-services")], path: "app/mac", exclude: ["README.md", "Assets", "Licenses", "WorkspaceModel", "WorkspaceModelChecks"], swiftSettings: macSwiftSettings)
     ]
 )

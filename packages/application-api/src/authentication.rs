@@ -10,6 +10,7 @@ pub enum ProviderAuthenticationSource {
     CodexOAuth,
     RuntimeProvider,
     ClaudeCli,
+    AntigravityCli,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
 #[serde(rename_all = "camelCase")]
@@ -47,11 +48,18 @@ impl SubscriptionDisclosure {
     pub fn claude_cli() -> Self {
         Self { title: "Claude Code CLI 订阅接入".into(), detail: "使用未修改的官方 Claude Code CLI 登录和执行，由 CLI 保存并刷新认证。订阅用量与供应商规则仍适用；此组合及自动路由不代表供应商认可，不承诺额度无限或跨工具任意使用。".into() }
     }
+    pub fn antigravity_cli() -> Self {
+        Self {
+            title: "Google Antigravity CLI 订阅接入".into(),
+            detail: "由官方 agy 使用执行环境中已有的登录。Google Antigravity 条款限制第三方接入，账户权限、可用模型和额度由 Google 决定。".into(),
+        }
+    }
     /// What choosing a subscription source means; other sources have nothing to disclose.
     pub fn for_source(source: ProviderAuthenticationSource) -> Option<Self> {
         match source {
             ProviderAuthenticationSource::CodexOAuth => Some(Self::codex_subscription()),
             ProviderAuthenticationSource::ClaudeCli => Some(Self::claude_cli()),
+            ProviderAuthenticationSource::AntigravityCli => Some(Self::antigravity_cli()),
             ProviderAuthenticationSource::None
             | ProviderAuthenticationSource::ApiKey
             | ProviderAuthenticationSource::RuntimeProvider => None,

@@ -47,6 +47,7 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import org.commonmark.ext.autolink.AutolinkExtension
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension
@@ -88,55 +89,67 @@ private fun Node.children(): List<Node> = generateSequence(firstChild) { it.next
  */
 @Composable
 fun Markdown(text: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+    MarkdownDocument(text, modifier, style, LocalAppearance.current.uiScale)
+}
+
+@Composable
+internal fun MessageMarkdown(text: String, baseStyle: TextStyle) {
+    val scale = LocalAppearance.current.messageScale
+    MarkdownDocument(text, Modifier, baseStyle.scaled(scale), scale)
+}
+
+@Composable
+private fun MarkdownDocument(text: String, modifier: Modifier, style: TextStyle, textScale: Float) {
     val document = remember(text) { parser.parse(text) as Document }
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        document.children().forEach { MarkdownBlock(it, style) }
+    val spacing = LocalAppearance.current.spacingScale
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp * spacing)) {
+        document.children().forEach { MarkdownBlock(it, style, textScale) }
     }
 }
 
 @Composable
-private fun MarkdownBlock(node: Node, style: TextStyle) {
+private fun MarkdownBlock(node: Node, style: TextStyle, textScale: Float) {
     val colors = MaterialTheme.colorScheme
-    val typography = MaterialTheme.typography
+    val spacing = LocalAppearance.current.spacingScale
     when (node) {
-        is Paragraph -> Text(inline(node), style = style)
-        is Heading -> Text(
-            inline(node),
-            style = when (node.level) {
-                1 -> typography.titleLarge
-                2 -> typography.titleMedium
-                else -> typography.titleSmall
-            }.copy(fontWeight = FontWeight.SemiBold),
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        is BulletList -> ListBlock(node.children(), style) { "•" }
+        is Paragraph -> Text(inline(node, style, textScale), style = style)
+        is Heading -> {
+            val headingStyle = when (node.level) {
+                1 -> BaseTypography.titleLarge
+                2 -> BaseTypography.titleMedium
+                else -> BaseTypography.titleSmall
+            }.scaled(textScale).copy(fontWeight = FontWeight.SemiBold)
+            Text(inline(node, headingStyle, textScale), style = headingStyle, modifier = Modifier.padding(top = 4.dp * spacing))
+        }
+        is BulletList -> ListBlock(node.children(), style, textScale) { "•" }
         is OrderedList -> {
             val start = node.markerStartNumber ?: 1
-            ListBlock(node.children(), style) { index -> "${start + index}." }
+            ListBlock(node.children(), style, textScale) { index -> "${start + index}." }
         }
         is BlockQuote -> Row(Modifier.height(IntrinsicSize.Min)) {
             Box(Modifier.width(3.dp).fillMaxHeight().background(colors.outlineVariant, RoundedCornerShape(2.dp)))
-            Column(Modifier.padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                node.children().forEach { MarkdownBlock(it, style.copy(color = colors.onSurfaceVariant)) }
+            Column(Modifier.padding(start = 12.dp * spacing), verticalArrangement = Arrangement.spacedBy(8.dp * spacing)) {
+                node.children().forEach { MarkdownBlock(it, style.copy(color = colors.onSurfaceVariant), textScale) }
             }
         }
         is FencedCodeBlock -> CodeBlock(node.literal.trimEnd('\n'), node.info?.substringBefore(' ')?.takeIf { it.isNotBlank() })
         is IndentedCodeBlock -> CodeBlock(node.literal.trimEnd('\n'), null)
         is HtmlBlock -> CodeBlock(node.literal.trimEnd('\n'), null)
-        is ThematicBreak -> HorizontalDivider(Modifier.padding(vertical = 4.dp))
-        is TableBlock -> Table(node, style)
-        else -> node.children().forEach { MarkdownBlock(it, style) }
+        is ThematicBreak -> HorizontalDivider(Modifier.padding(vertical = 4.dp * spacing))
+        is TableBlock -> Table(node, style, textScale)
+        else -> node.children().forEach { MarkdownBlock(it, style, textScale) }
     }
 }
 
 @Composable
-private fun ListBlock(items: List<Node>, style: TextStyle, marker: (Int) -> String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun ListBlock(items: List<Node>, style: TextStyle, textScale: Float, marker: (Int) -> String) {
+    val spacing = LocalAppearance.current.spacingScale
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp * spacing)) {
         items.filterIsInstance<ListItem>().forEachIndexed { index, item ->
             Row {
-                Text(marker(index), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.widthIn(min = 20.dp).padding(end = 6.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    item.children().forEach { MarkdownBlock(it, style) }
+                Text(marker(index), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.widthIn(min = 20.dp).padding(end = 6.dp * spacing))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp * spacing)) {
+                    item.children().forEach { MarkdownBlock(it, style, textScale) }
                 }
             }
         }
@@ -146,17 +159,19 @@ private fun ListBlock(items: List<Node>, style: TextStyle, marker: (Int) -> Stri
 @Composable
 fun CodeBlock(code: String, language: String?) {
     val copy = rememberCopy()
+    val appearance = LocalAppearance.current
+    val spacing = appearance.spacingScale
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
         Column {
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(language ?: "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp * spacing), verticalAlignment = Alignment.CenterVertically) {
+                Text(language.orEmpty(), style = BaseTypography.labelSmall.scaled(appearance.codeScale), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                 IconButton(onClick = { copy(code) }, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Outlined.ContentCopy, contentDescription = "复制代码", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Text(
-                code, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, softWrap = false,
-                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                code, style = BaseTypography.bodySmall.scaled(appearance.codeScale), fontFamily = FontFamily.Monospace, softWrap = false,
+                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp * spacing, end = 12.dp * spacing, bottom = 12.dp * spacing),
             )
         }
     }
@@ -164,11 +179,13 @@ fun CodeBlock(code: String, language: String?) {
 
 /** A grid: every column as wide as its widest cell (up to 240 dp), the header row shaded. */
 @Composable
-private fun Table(table: TableBlock, style: TextStyle) {
+private fun Table(table: TableBlock, style: TextStyle, textScale: Float) {
     val rows = table.children().flatMap { section -> section.children() }.map { row -> row.children().filterIsInstance<TableCell>() }
     val columns = rows.maxOfOrNull { it.size } ?: return
     val border = MaterialTheme.colorScheme.outlineVariant
     val headerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val spacing = LocalAppearance.current.spacingScale
+    val tableStyle = BaseTypography.bodyMedium.scaled(textScale)
     Box(Modifier.horizontalScroll(rememberScrollState())) {
         Layout(
             content = {
@@ -176,9 +193,10 @@ private fun Table(table: TableBlock, style: TextStyle) {
                     repeat(columns) { index ->
                         val cell = row.getOrNull(index)
                         Text(
-                            cell?.let { inline(it) } ?: AnnotatedString(""),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (cell?.isHeader == true) FontWeight.SemiBold else style.fontWeight),
-                            modifier = Modifier.background(if (cell?.isHeader == true) headerColor else Color.Transparent).padding(horizontal = 10.dp, vertical = 6.dp),
+                            cell?.let { inline(it, tableStyle, textScale) } ?: AnnotatedString(""),
+                            style = tableStyle.copy(fontWeight = if (cell?.isHeader == true) FontWeight.SemiBold else style.fontWeight),
+                            modifier = Modifier.background(if (cell?.isHeader == true) headerColor else Color.Transparent)
+                                .padding(horizontal = 10.dp * spacing, vertical = 6.dp * spacing),
                         )
                     }
                 }
@@ -208,8 +226,10 @@ private fun Table(table: TableBlock, style: TextStyle) {
 }
 
 @Composable
-private fun inline(node: Node): AnnotatedString {
-    val code = SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.9.em, background = MaterialTheme.colorScheme.surfaceContainerHigh)
+private fun inline(node: Node, style: TextStyle, textScale: Float): AnnotatedString {
+    val ratio = 0.9f * LocalAppearance.current.codeScale / textScale
+    val fontSize = if (style.fontSize.isSp) (style.fontSize.value * ratio).sp else ratio.em
+    val code = SpanStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize, background = MaterialTheme.colorScheme.surfaceContainerHigh)
     val link = TextLinkStyles(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline))
     return remember(node, code, link) {
         buildAnnotatedString {

@@ -14,6 +14,13 @@ pub(in crate::local) struct PiControl {
     cancel: bool,
 }
 
+/// An ordinary composed prompt whose exact Pi response is still pending.
+/// Keep the application command ticket until the runtime accepts or rejects it.
+pub(in crate::local) struct PiSubmission {
+    pub(in crate::local) application: ExecutionTicket,
+    pub(in crate::local) native: pi::PiTicket,
+}
+
 pub(in crate::local) struct PiEdit {
     application: ExecutionTicket,
     session: session::SessionKey,
@@ -135,6 +142,38 @@ impl Io {
 }
 
 impl CoreRuntime {
+    pub(in crate::local) fn advance_pi_submission(&mut self) {
+        let Some(submission) = self.session.pi_submission.take() else {
+            return;
+        };
+        let ActiveState::Pi(pi) = &mut self.session.active_state else {
+            self.execution_results.insert(
+                submission.application,
+                Err(RuntimeError::operation_indeterminate(
+                    "Pi 确认输入前，原运行时连接已改变",
+                )),
+            );
+            return;
+        };
+        let result = pi.take_confirmation(submission.native);
+        match result {
+            Ok(None) => self.session.pi_submission = Some(submission),
+            Ok(Some(Ok(()))) => {
+                if let Some(id) = self.session.conversation_id().map(str::to_owned) {
+                    self.restore_archived(&id);
+                }
+                self.execution_results
+                    .insert(submission.application, Ok(ExecutionSuccess::default()));
+            }
+            Ok(Some(Err(error))) | Err(error) => {
+                self.execution_results.insert(
+                    submission.application,
+                    Err(dependency_error("Pi 输入回执", error)),
+                );
+            }
+        }
+    }
+
     pub(in crate::local) fn try_start_pi_control(
         &mut self,
         reply: Option<(&str, velune_conversation::RuntimeInteractionReply)>,
@@ -731,7 +770,7 @@ impl CoreRuntime {
                 edit.phase = Phase::PrepareSource;
             }
             Phase::PrepareSource => {
-                if !self.session.work_settled() && !self.turn_running() {
+                if self.session.work_pending() && !self.turn_running() {
                     return Ok(false);
                 }
                 let source = edit
@@ -779,7 +818,7 @@ impl CoreRuntime {
             Phase::Stop | Phase::Retire => {
                 if matches!(self.session.active_state, ActiveState::Pending(_))
                     || self.turn_running()
-                    || !self.session.work_settled()
+                    || self.session.work_pending()
                 {
                     return Ok(false);
                 }
@@ -873,14 +912,12 @@ impl CoreRuntime {
                 if self.session.projected().is_none_or(|snapshot| {
                     digest(&snapshot.messages).ok().as_ref() != edit.native_digest.as_ref()
                 }) {
-                    return Err(RuntimeError::invalid(
-                        "会话已在编辑期间改变，请重新打开编辑",
-                    ));
+                    return Err(edit_history_changed("prepared_source"));
                 }
                 edit.phase = Phase::SourceVerified;
             }
             Phase::SourceVerified => {
-                if !self.session.work_settled() {
+                if self.session.work_pending() {
                     return Ok(false);
                 }
                 let current = self
@@ -933,9 +970,7 @@ impl CoreRuntime {
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
                 }) {
-                    return Err(RuntimeError::invalid(
-                        "会话已在编辑期间改变，请重新打开编辑",
-                    ));
+                    return Err(edit_history_changed("source_read"));
                 }
                 edit.authorized_source_digest = Some(source_digest);
                 self.require_input_access()?;
@@ -1184,7 +1219,7 @@ impl CoreRuntime {
                 // Association commits first. Any subsequent failure leaves this
                 // exact target available; it is never re-created or replayed.
                 let launch = self.capture_pi_edit_launch(edit, target.try_clone()?)?;
-                self.session.active_state = ActiveState::History(Box::new(target.into()));
+                self.session.active_state = ActiveState::History(Box::new(target));
                 edit.phase = Phase::Launch(self.pi_edit_io(edit.application, launch)?);
             }
             Phase::History(ticket) => {
@@ -1416,9 +1451,7 @@ impl CoreRuntime {
             }
         }
         if !same_edit_history(current, &displayed) {
-            return Err(RuntimeError::invalid(
-                "会话已在编辑期间改变，请重新打开编辑后再发送",
-            ));
+            return Err(edit_history_changed("source_read"));
         }
         Ok(())
     }
@@ -1552,6 +1585,14 @@ impl CoreRuntime {
         let runtime = &edit.runtime;
         let (context, preparation) = self.execution_preparation(runtime)?;
         let mut config = self.pi_history_configuration(runtime)?;
+        let managed_key = match &edit.selection {
+            Some(crate::ModelSelection::Managed { model_record_key }) => {
+                Some(model_record_key.as_str())
+            }
+            _ => None,
+        };
+        config.model_compaction_reserves =
+            crate::local::pi_composition::pi_compaction_reserves(runtime, managed_key)?;
         config.mcp_servers = self.collaboration_servers();
         config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
         config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
@@ -1606,16 +1647,13 @@ impl CoreRuntime {
                 id: edit.conversation_id.clone(),
             };
             let key = model_record_key.clone();
-            let protocol = match gateway
-                .resolve_dispatch(&key)
-                .map_err(RuntimeError::invalid)?
-                .provider()
-                .protocol
-            {
-                Protocol::ChatCompletions => "openai-completions",
-                Protocol::Responses => "openai-responses",
-                Protocol::Messages => "anthropic-messages",
-            };
+            let protocol = crate::local::pi_composition::pi_gateway_api(
+                gateway
+                    .resolve_dispatch(&key)
+                    .map_err(RuntimeError::invalid)?
+                    .provider()
+                    .protocol,
+            );
             let lane = self.lane_projection(&context.projection);
             config.provider = Some("velune".into());
             config.model = Some("auto".into());

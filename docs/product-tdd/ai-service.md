@@ -37,6 +37,7 @@ application 私有保存 API key 或认证来源定位，并向 gateway 注入�
 - **来源型 OAuth**：保留原来源的登录与刷新，由 adapter 在原存储锁内刷新，不复制 refresh credential。凭据 helper 在 Unix 上以独立进程组、在 Windows 上以 kill-on-close Job Object 运行，超时、取消与网关关闭时整树终止。
 - **Codex 订阅**：在 Velune 中按账户独立登录与续期，复用 Codex OAuth 客户端身份与 ChatGPT Codex backend 约定，不是正式 SIWC；不导入 `auth.json`。多订阅轮换与 SIWC 的规则存在冲突，产品按用户要求在接入与路由处披露，不宣称供应商认可（[PRD](../prd/model-routing.md)）。
 - **Claude 订阅**：经本机 Claude Code 执行后端接入，登录、秘密与续期归 Claude Code。独立登录使用专属 `CLAUDE_CONFIG_DIR`；也可沿用本机默认登录（不设置该变量）或某个 Claude Code 运行时实例的登录（使用其 `agentDir`），沿用时只经 `claude auth status` 检查状态。子进程保留真实系统 HOME 以访问 macOS Keychain。同一 Claude 账户只能绑定一个提供商。
+- **Antigravity 订阅**经官方 `agy acp` 使用执行环境中的现有登录。应用把本机或显式 SSH 目标、可执行文件与启动资源作为绑定快照交给执行后端。OAuth 凭据保存和刷新归 `agy`。同一系统账户的配置目录仍可能共享系统钥匙串。路由按各提供商绑定的执行环境运行，ACP 本身没有可用于跨环境核验 Google 账号身份的字段。 [Google 认证文档](https://antigravity.google/docs/install/?tab=cli) · [上游账号隔离报告](https://github.com/google-antigravity/antigravity-cli/issues/1610)
 
 ## 能力组合与执行后端
 
@@ -44,8 +45,10 @@ application 私有保存 API key 或认证来源定位，并向 gateway 注入�
 
 application 持有认证生命周期、额度采集与跨 Runner 的执行后端句柄；gateway 持有候选选择、使用上限、冷却与 fail-over；ai-provider 处理原生协议、请求适配与实际执行。HTTP 认证恢复由具名恢复能力与稳定身份判定，不按品牌判断。
 
-- **HTTP**：三种协议共用由 builder 构造的 HttpClient，禁用重定向与底层自动重试；代理、TLS 与超时仍可配置。ai-provider 输出中立的失败事实（认证、权限、配额耗尽、短暂限流等）并保留原 HTTP 状态。
+- **HTTP**：各原生协议共用由 builder 构造的 HttpClient，禁用重定向与底层自动重试；代理、TLS 与超时仍可配置。ai-provider 输出中立的失败事实（认证、权限、配额耗尽、短暂限流等）并保留原 HTTP 状态。
 - **Claude Code 后端**：只暴露调用方声明的工具，工具由调用方执行。执行会话按提供商绑定与显式会话身份隔离。尚未完成的工具交互绑定原提供商；取消、换绑或进程失败后，迟到的工具结果在候选选择前被拒绝，不启动新会话重做。外层 Harness 结束时显式结束该轮，正常完成的空闲进程可以复用。
+- **Antigravity CLI 后端**以 Messages 进入既有网关转换路径。ACP 会话模型按目标执行环境的声明选择。调用方工具通过本机回环 MCP 转交，SSH 执行使用回环转发。等待工具结果期间固定原提供商与认证绑定，续接同一次 ACP prompt。新的用户轮使用新的 ACP 会话并带上调用方历史。应用为进程准备临时工作区和权限配置，ACP 客户端拒绝原生工具授权。提交 prompt 后的失败结束本次派发。生成参数由 CLI 和选定模型管理。单次请求 token 用量保持未知。
+- **Antigravity 额度**使用同一执行目标及 `agy` 可执行文件。先核验稳定版 1.5.0 或更新版本，再通过 ACP 握手和建立空会话检查原生登录、取得模型目录。预检成功后以独立进程有界读取 `-p /usage --output-format json`。查询随现有额度需求刷新，也支持显式刷新。对照该目标声明的模型名称，将能唯一匹配的额度组关联到精确模型 ID。提供商详情展示全部有效组，网关额度快照和告警采用模型归属明确的组。已保存上限在对应窗口缺失或过期时沿用派发等待规则。历史和缓存按提供商执行目标与配置修订保存。原生登录在目标外部变化时无法自动核验 Google 账号身份。 [Google CLI 发布说明](https://antigravity.google/docs/changelog?tab=cli)
 - **Kimi Coding Plan**：HTTP、Messages、API Key、KimiCoding 请求适配与 KimiUsage 额度来源。账户由服务区域与 `user_id` 标识，经固定 `/me` 验证；同一区域内一个账户只能归属一个提供商。凭据版本取消旧任务并阻止旧结果回写，同账户换 Key 保留使用上限与冷却。
 - **ARK Coding Plan**：额度认证（AK/SK）由提供商单独持有，只供 application 的固定控制面调用，不进入模型认证或 Harness。用户保存时确认它与当前模型认证属于同一套餐；这是用户确认的关联，不是自动核验，更换任一认证或目标都撤销关联。
 - **账户额度来源**：`ApiAccount` 只接受以 API key 直连 DeepSeek、Moonshot、OpenRouter 精确官方主机的组合，查询发往同一主机，不跟随重定向、不重试，响应限 256 KiB。

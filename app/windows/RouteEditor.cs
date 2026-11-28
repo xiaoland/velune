@@ -26,7 +26,7 @@ sealed class RouteEditor : UserControl
     readonly Button save = new() { Content = "保存", Style = Ui.Style("AccentButtonStyle") };
     readonly List<string> members;
     readonly Dictionary<string, uint> weights;
-    readonly Dictionary<string, QuotaObservation> quotas = [];
+    readonly Dictionary<string, (ExecutionBackend Target, QuotaObservation Observation)> quotas = [];
     readonly List<MemberCard> cards = [];
     readonly DispatcherTimer timer = new();
     bool reading;
@@ -76,6 +76,10 @@ sealed class RouteEditor : UserControl
         sticky.IsOn = route?.Sticky ?? true;
         sticky.Toggled += (_, _) => dirty = true;
         body.Children.Add(Ui.Card(Ui.TwoLines("会话保持", "同一会话继续使用上次成功的成员，不越过健康检查与使用上限；只在应用运行期间保留。", true), sticky));
+        var compaction = new Button { Content = "自动压缩…", IsEnabled = recordKey.Length > 0 };
+        compaction.Click += (_, _) => EditCompaction(compaction);
+        body.Children.Add(compaction);
+        if (recordKey.Length == 0) body.Children.Add(Ui.Muted("保存路由后可配置自动压缩。"));
 
         var heading = new Grid();
         heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -119,6 +123,18 @@ sealed class RouteEditor : UserControl
     {
         var shown = name.Text.Trim();
         trail.ItemsSource = new[] { "模型路由", shown.Length > 0 ? shown : recordKey.Length == 0 ? "新路由" : "路由" };
+    }
+
+    async void EditCompaction(Button button)
+    {
+        if (!IsLoaded || recordKey.Length == 0 || !save.IsEnabled) return;
+        button.IsEnabled = false;
+        try
+        {
+            await ModelCompactionDialog.ShowManaged(page.Core, page.Window, recordKey, name.Text.Trim(), () => IsLoaded && save.IsEnabled);
+        }
+        catch (Exception problem) { Problems.Report("配置路由自动压缩", problem); }
+        finally { if (IsLoaded) button.IsEnabled = true; }
     }
 
     RoutingStrategy Strategy => strategy.SelectedIndex >= 0 ? strategies[strategy.SelectedIndex] : RoutingStrategy.Smart;
@@ -253,14 +269,15 @@ sealed class RouteEditor : UserControl
         timer.Stop();
         var soon = false;
         var providers = members.Select(page.Member).Where(member => member != null).Select(member => member!.Value.Provider)
-            .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured)
+            .Where(provider => provider.QuotaSource != ProviderQuotaSource.None && provider.Authentication.Configured
+                && provider.ExecutionBackend is not ExecutionBackend.AntigravityCli { SshDestination: not null })
             .DistinctBy(provider => provider.Id).ToList();
         foreach (var provider in providers)
         {
             try
             {
                 var status = await Task.Run(() => page.Core.Local.ProviderQuota(ProvidersPage.DefaultGateway, provider.Id).Observation);
-                quotas[provider.Id] = status;
+                quotas[provider.Id] = (provider.ExecutionBackend, status);
                 Problems.Recovered(Problems.Key("quota", Device.Local, provider.Id));
                 soon |= status.Refreshing || status.Windows.Length == 0 && status.Freshness == QuotaFreshness.Unknown;
             }
@@ -426,7 +443,19 @@ sealed class RouteEditor : UserControl
             var (provider, model) = member;
             var authentication = provider.Authentication;
             var reasons = new List<string>();
-            if (provider.AuthenticationSource != ProviderAuthenticationSource.None)
+            var antigravity = provider.ExecutionBackend as ExecutionBackend.AntigravityCli;
+            if (antigravity != null)
+            {
+                if (antigravity.SshDestination == null)
+                {
+                    status.Children.Add(Ui.Muted("执行目标已配置"));
+                }
+                else
+                {
+                    reasons.Add("请先在 AI 提供商设置中改用本机 agy。");
+                }
+            }
+            else if (provider.AuthenticationSource != ProviderAuthenticationSource.None)
             {
                 var account = authentication.AccountLabel is { Length: > 0 } label ? "：" + label : "";
                 var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -446,23 +475,41 @@ sealed class RouteEditor : UserControl
                 }
             }
             var limited = provider.QuotaLimits.Length > 0;
-            if (editor.quotas.TryGetValue(provider.Id, out var quota))
+            if (editor.quotas.TryGetValue(provider.Id, out var read) && read.Target == provider.ExecutionBackend)
             {
-                foreach (var window in quota.Windows.Where(window => Quota.Applies(window, model.ProviderModelId)))
+                var quota = read.Observation;
+                var mapped = antigravity == null ? quota.Windows : quota.Windows.Where(Quota.HasModelMapping).ToArray();
+                var applicable = mapped.Where(window => Quota.Applies(window, model.ProviderModelId)).ToArray();
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                foreach (var window in applicable)
                 {
                     var limit = provider.QuotaLimits.FirstOrDefault(saved => saved.WindowId == window.Id);
-                    status.Children.Add(Ui.Text(Quota.Name(window.Id) + "：" + Quota.Detail(window, quota.Freshness, editor.page.Usage, limit),
-                        Quota.Short(window, quota.Freshness) ? "CautionTextStyle" : "MutedTextStyle"));
+                    var name = antigravity != null ? Quota.AntigravityName(window.Id) : Quota.Name(window.Id);
+                    var freshness = antigravity == null ? quota.Freshness
+                        : Quota.IsCurrent(window, now) ? QuotaFreshness.Fresh : QuotaFreshness.Stale;
+                    var reached = antigravity != null && freshness == QuotaFreshness.Fresh
+                        && limit != null && window.UsedPercent >= limit.MaxUsedPercent;
+                    status.Children.Add(Ui.Text(name + "：" + Quota.Detail(window, freshness, editor.page.Usage, limit, reached),
+                        reached || Quota.Short(window, freshness) ? "CautionTextStyle" : "MutedTextStyle"));
                 }
-                foreach (var balance in quota.Balances)
+                if (antigravity == null)
                 {
-                    status.Children.Add(Ui.Muted(Quota.BalanceName(balance.Id) + "：" + Quota.Amount(balance.Amount, balance.Unit)));
+                    foreach (var balance in quota.Balances)
+                    {
+                        status.Children.Add(Ui.Muted(Quota.BalanceName(balance.Id) + "：" + Quota.Amount(balance.Amount, balance.Unit)));
+                    }
                 }
-                if (quota.Available == false)
+                if (antigravity == null && quota.Available == false)
                 {
                     status.Children.Add(Ui.Muted(Quota.LimitedObservation));
                 }
-                if (limited && quota.Freshness != QuotaFreshness.Fresh)
+                if (antigravity != null && provider.QuotaLimits.Any(limit => !mapped.Any(window => window.Id == limit.WindowId)))
+                {
+                    reasons.Add("设有上限的额度组缺少模型映射，暂停派发。");
+                }
+                else if (limited && (antigravity == null ? quota.Freshness != QuotaFreshness.Fresh
+                    : !mapped.Any(window => Quota.IsCurrent(window, now)) || applicable.Any(window =>
+                        !Quota.IsCurrent(window, now) && provider.QuotaLimits.Any(limit => limit.WindowId == window.Id))))
                 {
                     reasons.Add("设有使用上限而缺少最新额度，路由暂不使用它。");
                 }

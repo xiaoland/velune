@@ -193,7 +193,7 @@ final class DeviceDirectory: ObservableObject {
 func mobileError(_ error: Error) -> String {
     guard let binding = error as? BindingError else { return error.localizedDescription }
     switch binding {
-    case .Diagnostic(_, let detail, _, _, _), .RemoteRequest(_, let detail, _, _): return detail
+    case .Diagnostic(_, let detail, _, _, _), .RemoteRequest(_, let detail, _, _, _): return detail
     case .Invalid(let detail), .Unsupported(let detail), .Io(let detail), .Contract(let detail): return detail
     case .Closed: return "连接已关闭"
     case .Unavailable: return "远控服务不可用"

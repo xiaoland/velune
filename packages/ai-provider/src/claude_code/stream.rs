@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use velune_ai::{NativeEvent, NativeSink, Payload};
 
-pub(super) struct Segment {
+pub(crate) struct Segment {
     pub id: String,
     enabled: bool,
     started: bool,

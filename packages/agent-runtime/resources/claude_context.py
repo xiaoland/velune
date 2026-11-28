@@ -78,31 +78,13 @@ def claude_tool_result_branches(chain, entries, records, after_boundary=None):
     return result
 
 
-def export_context(path, sidechain=False, before_message_id=None, without_message_id=None, without_message_ids=None):
-    if before_message_id is not None and without_message_id is not None:
-        raise ValueError("conflicting native context boundaries")
-    with open(path, encoding="utf-8") as file:
-        records = [json.loads(line) for line in file if line.strip()]
-    boundary_parent = None
-    if before_message_id is not None:
-        boundary = next((i for i, entry in enumerate(records)
-                         if entry.get("uuid") == before_message_id
-                         and bool(entry.get("isSidechain")) == sidechain
-                         and entry.get("type") == "user"), None)
-        if boundary is None:
-            raise ValueError("native user message boundary was not found")
-        selected = records[boundary]
-        boundary_parent = selected.get("parentUuid")
-        # Tool results in this same native entry belong to preceding calls,
-        # not to the selected human prompt. Preserve them at the exact cut.
-        content = selected.get("message", {}).get("content")
-        results = [block for block in content if block.get("type") == "tool_result"] if isinstance(content, list) else []
-        records = records[:boundary]
-        if results:
-            records.append(dict(selected, message=dict(selected["message"], content=results)))
-            boundary_parent = selected["uuid"]
+def claude_replay_entries(records, sidechain):
     entries = {r["uuid"]: r for r in records if "uuid" in r and bool(r.get("isSidechain")) == sidechain}
-    leaf = boundary_parent if before_message_id is not None else next((r["uuid"] for r in reversed(records) if r.get("uuid") in entries and r.get("type") in ("user", "assistant")), None)
+    leaf = next((r["uuid"] for r in reversed(records) if r.get("uuid") in entries and r.get("type") in ("user", "assistant")), None)
+    return entries, leaf
+
+
+def claude_replay_chain(entries, leaf):
     chain, seen = [], set()
     while leaf is not None:
         if leaf in seen or leaf not in entries:
@@ -137,6 +119,35 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
         insertion = next(i for i, entry in enumerate(chain) if entry["uuid"] == anchor) + 1
         retained = [entries[key] for key in ids if key not in {r["uuid"] for r in chain}]
         chain[insertion:insertion] = retained
+    return chain
+
+
+def export_context(path, sidechain=False, before_message_id=None, without_message_id=None, without_message_ids=None):
+    if before_message_id is not None and without_message_id is not None:
+        raise ValueError("conflicting native context boundaries")
+    with open(path, encoding="utf-8") as file:
+        records = [json.loads(line) for line in file if line.strip()]
+    boundary_parent = None
+    if before_message_id is not None:
+        boundary = next((i for i, entry in enumerate(records)
+                         if entry.get("uuid") == before_message_id
+                         and bool(entry.get("isSidechain")) == sidechain
+                         and entry.get("type") == "user"), None)
+        if boundary is None:
+            raise ValueError("native user message boundary was not found")
+        selected = records[boundary]
+        boundary_parent = selected.get("parentUuid")
+        # Tool results in this same native entry belong to preceding calls,
+        # not to the selected human prompt. Preserve them at the exact cut.
+        content = selected.get("message", {}).get("content")
+        results = [block for block in content if block.get("type") == "tool_result"] if isinstance(content, list) else []
+        records = records[:boundary]
+        if results:
+            records.append(dict(selected, message=dict(selected["message"], content=results)))
+            boundary_parent = selected["uuid"]
+    entries, workspace_leaf = claude_replay_entries(records, sidechain)
+    leaf = boundary_parent if before_message_id is not None else workspace_leaf
+    chain = claude_replay_chain(entries, leaf)
     for without_message_id in without_message_ids or ([without_message_id] if without_message_id is not None else []):
         matches = [i for i, entry in enumerate(chain)
                    if entry.get("uuid") == without_message_id and entry.get("type") == "user"]
@@ -183,7 +194,7 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
     discarded = {identity for identity in interrupted if api_calls.get(identity)
                  and not api_calls[identity].intersection(answered)}
 
-    def content_blocks(content):
+    def content_blocks(content, inside_tool_result=False):
         if isinstance(content, str):
             return [{"type": "text", "text": content}]
         result = []
@@ -196,7 +207,11 @@ def export_context(path, sidechain=False, before_message_id=None, without_messag
             elif kind == "tool_use":
                 result.append({"type": "tool_call", "id": block["id"], "name": block["name"], "arguments": block["input"]})
             elif kind == "tool_result":
-                result.append({"type": "tool_result", "id": block["tool_use_id"], "content": content_blocks(block.get("content", "")), "is_error": block.get("is_error", False)})
+                result.append({"type": "tool_result", "id": block["tool_use_id"], "content": content_blocks(block.get("content", ""), inside_tool_result=True), "is_error": block.get("is_error", False)})
+            elif kind == "tool_reference" and inside_tool_result and isinstance(block.get("tool_name"), str) and block["tool_name"].strip():
+                # A portable target has its own tool catalog. Preserve which
+                # tool was found without asking it to expand a Claude reference.
+                result.append({"type": "text", "text": "Tool reference: " + block["tool_name"]})
             elif kind not in ("thinking", "redacted_thinking"):
                 raise ValueError("unsupported Claude context block: " + kind)
         return result

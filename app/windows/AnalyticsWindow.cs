@@ -762,6 +762,7 @@ sealed class AnalyticsWindow : Window
         Protocol.ChatCompletions => "OpenAI ChatCompletions",
         Protocol.Responses => "OpenAI Responses",
         Protocol.Messages => "Anthropic Messages",
+        Protocol.Gemini => "Gemini GenerateContent",
         _ => protocol.ToString(),
     };
 }

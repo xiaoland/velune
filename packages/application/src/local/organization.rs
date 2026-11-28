@@ -92,7 +92,7 @@ impl CoreRuntime {
         std::cell::Ref::map(self.last_listed.borrow(), |projection| &projection.entries)
     }
 
-    pub(super) fn shows_archived(&self) -> bool {
+    pub(crate) fn shows_archived(&self) -> bool {
         self.browser_window.archived
     }
 
@@ -113,7 +113,7 @@ impl CoreRuntime {
             match source.and_then(|source| {
                 self.history_config(runtime)
                     .and_then(|config| {
-                        if config.provider == "codex" {
+                        if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 {
                             self.read_codex_projects(runtime, true)
                         } else {
                             Ok(browsing::shared_summaries(history::list_archived(
@@ -439,7 +439,7 @@ impl CoreRuntime {
     /// recent activity, each loading its pages while the list's total lasts
     /// and any further page the user asked for. A search loads every match
     /// up to the total instead.
-    fn browse_window(
+    pub(super) fn browse_window(
         &self,
         sources: Vec<ListedSource>,
         search: Option<&str>,
@@ -971,7 +971,7 @@ impl CoreRuntime {
                 self.listed(&source, &places),
             ));
         }
-        let mut native_updated = BTreeSet::new();
+        let mut native_updated = BTreeMap::new();
         // Native CAS uses the receipt actually seen by the caller. Never
         // substitute a newer cache revision or retry an acknowledgement.
         if matches!(
@@ -1013,15 +1013,18 @@ impl CoreRuntime {
                             RuntimeError::context("修改原生已读状态", error)
                         }
                     })?;
-                    self.keep_native_read_state(result)?;
-                    native_updated.insert(summary.id.clone());
+                    self.keep_native_read_state(&result);
+                    native_updated.insert(
+                        summary.id.clone(),
+                        (summary.native_read_state.clone(), result),
+                    );
                 }
             }
         }
         let mut next = self.organization.clone();
         let now = unix_ms_now();
         for (summary, archived_natively, listed) in &targets {
-            if native_updated.contains(&summary.id) {
+            if native_updated.contains_key(&summary.id) {
                 continue;
             }
             let native_archive = matches!(
@@ -1112,8 +1115,10 @@ impl CoreRuntime {
             }
         }
         next.conversations.retain(|marks| !marks.is_empty());
-        self.store_organization(next)?;
-        let listing = if matches!(
+        if native_updated.len() != targets.len() {
+            self.store_organization(next)?;
+        }
+        let mut listing = if matches!(
             change,
             ConversationOrganizationChange::Archive | ConversationOrganizationChange::Unarchive
         ) {
@@ -1121,6 +1126,18 @@ impl CoreRuntime {
         } else {
             self.cached_list()
         };
+        // Use the committed native receipt in this response even when a
+        // separate retained cache could not accept a copy. Keep any newer
+        // receipt already read from the runtime while building the list.
+        for item in &mut listing.conversations {
+            if let Some((previous, receipt)) = native_updated.get(&item.conversation.id)
+                && (item.conversation.native_read_state.is_none()
+                    || item.conversation.native_read_state == *previous)
+            {
+                item.conversation.native_read_state = Some(receipt.as_ref().clone());
+                item.unread = !item.archived && receipt.unread;
+            }
+        }
         // The list read again may already show newer activity than the mark.
         let listed = self.listed_sources();
         for (summary, _, _) in &targets {
@@ -1235,13 +1252,12 @@ mod pagination_tests {
     use super::*;
     use crate::{ApplicationService, ClientViewId, Command, Options, Response};
     use std::time::Instant;
+    use velune_test_support::TempRoot;
 
-    struct Fixture(PathBuf);
+    struct Fixture(TempRoot);
     impl Fixture {
         fn new(collapsed: bool) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("velune-pagination-{}", crate::new_record_key()));
-            fs::create_dir(&root).unwrap();
+            let root = TempRoot::new("pagination");
             // Deliberately slow unrelated history reader. Paging an existing index
             // must neither restart it nor require it to remain available.
             fs::write(
@@ -1310,8 +1326,8 @@ print(json.dumps({'contractVersion':1,'sessions':[
         }
         fn open(&self) -> ApplicationService {
             ApplicationService::open(Options {
-                home_directory: self.0.clone(),
-                resources_directory: self.0.clone(),
+                home_directory: self.0.to_path_buf(),
+                resources_directory: self.0.to_path_buf(),
             })
             .unwrap()
         }
@@ -1349,19 +1365,12 @@ print(json.dumps({'contractVersion':1,'sessions':[
             value
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn archive_reads_native_pages_and_only_locally_archived_titles() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root =
-            std::env::temp_dir().join(format!("velune-archive-list-{}", crate::new_record_key()));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("archive-list");
         let fixture = Fixture(root);
         let root = &fixture.0;
         let codex = root.join("codex");
@@ -1397,7 +1406,7 @@ for line in sys.stdin:
             continue
         result = {"data": [
             {"id": f"thread-{i}", "name": f"Codex session {i}", "projectId": "work",
-             "createdAt": 1, "updatedAt": 10000-i}
+             "createdAt": 1, "updatedAt": 10000-i, "historyMode": "paginated"}
             for i in range(start, end)
         ], "nextCursor": str(end) if end < total else None}
     print(json.dumps({"id": request["id"], "result": result}), flush=True)
@@ -1521,13 +1530,21 @@ print(json.dumps({"contractVersion": 3, "files": [
             "{:?}",
             snapshot.history_failures
         );
-        let codex_scans = fs::read_to_string(root.join("codex-scans")).unwrap();
+        // The service's startup index warmup lists active threads on its own
+        // worker, so only archived pages belong to the archive view.
+        let archive_scans = || {
+            fs::read_to_string(root.join("codex-scans"))
+                .unwrap()
+                .lines()
+                .filter(|scan| *scan == "archive")
+                .count()
+        };
+        let codex_scans = archive_scans();
         eprintln!(
-            "cold archive: {:?}; {} Codex pages",
-            started.elapsed(),
-            codex_scans.lines().count()
+            "cold archive: {:?}; {codex_scans} archived Codex pages",
+            started.elapsed()
         );
-        assert_eq!(codex_scans.lines().collect::<Vec<_>>(), ["archive"; 4]);
+        assert_eq!(codex_scans, 4);
         let group = snapshot
             .conversation_groups
             .iter()
@@ -1566,10 +1583,7 @@ print(json.dumps({"contractVersion": 3, "files": [
             assert_eq!(result.conversations.len(), 1);
             assert_eq!(result.conversations[0].conversation.id, expected);
         }
-        assert_eq!(
-            fs::read_to_string(root.join("codex-scans")).unwrap(),
-            codex_scans
-        );
+        assert_eq!(archive_scans(), codex_scans);
         let pi_scans = fs::read_to_string(root.join("pi-scans")).unwrap();
         assert_eq!(
             pi_scans

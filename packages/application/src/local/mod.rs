@@ -63,12 +63,15 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
     velune_agent_runtime::version::variants().iter().map(|variant| {
         let mut binary=field("binary","运行时入口",crate::conversation::SettingKind::FilePath,true,String::new(),"当前运行时版本的绝对可执行路径。执行准备时会核对实际版本。");
         if variant.kind==RuntimeKind::Acp {binary.help=Some("支持 ACP v1 的命令或 bridge 的绝对路径；启动参数与环境变量在下方设置，启动时协商协议。".into());}
-        if variant.family_id=="pi" {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"pi".into(),minimum_version:"1.0.2".into()});}
-        if matches!(variant.kind, RuntimeKind::Codex166) {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"codex".into(),minimum_version:"0.166.0".into()});}
-        if variant.kind==RuntimeKind::DeepSeek {binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"dsh".into(),minimum_version:"0.2.0".into()});}
+        if let Some((command, minimum)) = variant.executable() {
+            binary.executable_discovery = Some(crate::conversation::ExecutableDiscovery {
+                command: command.into(),
+                minimum_version: minimum.into(),
+            });
+        }
         let mut runtime_node = node.clone();
-        runtime_node.required = variant.family_id != "claude-code";
-        if variant.family_id == "claude-code" { binary.executable_discovery=Some(crate::conversation::ExecutableDiscovery{command:"claude".into(),minimum_version:"2.1.286".into()}); }
+        // Claude Code ships a native binary; the other CLIs run on Node.
+        runtime_node.required = variant.kind != RuntimeKind::ClaudeCode;
         let mut fields=vec![binary,runtime_node,field("agentDir","运行时目录",crate::conversation::SettingKind::DirectoryPath,true,String::new(),match variant.kind {RuntimeKind::ClaudeCode=>"该实例的 CLAUDE_CONFIG_DIR；配置与原生会话目录，不是任务工作目录。",RuntimeKind::Codex166 =>"该实例的 CODEX_HOME；配置与会话根目录，不是任务工作目录。",RuntimeKind::DeepSeek=>"该实例的 DeepSeek Harness 配置与会话根目录，不是任务工作目录。",_=>"该实例的 Pi 配置与状态根目录，不是任务工作目录。"})];
         if variant.kind==RuntimeKind::Acp {fields.retain(|field| field.key=="binary");}
         if variant.kind==RuntimeKind::Pi {fields.push(field("sessionDir","会话存储目录",crate::conversation::SettingKind::DirectoryPath,false,String::new(),"覆盖 Pi 默认的会话存储位置；留空采用运行时目录的 sessions，此项不是任务工作目录。"));}
@@ -77,6 +80,7 @@ fn runtime_types() -> Vec<crate::config::RuntimeTypeDescriptor> {
             naming.options = vec![crate::conversation::SettingOption { id: "false".into(), label: "关闭".into() }, crate::conversation::SettingOption { id: "true".into(), label: "开启".into() }];
             fields.push(naming);
             fields.push(field("automaticNamingModel", "命名模型", crate::conversation::SettingKind::Text, false, String::new(), "Velune 中配置的模型记录键。"));
+            fields.push(field("automaticNamingPrompt", "命名提示词", crate::conversation::SettingKind::Text, false, String::new(), "留空使用默认命名提示词。"));
         }
         crate::config::RuntimeTypeDescriptor {
             id: variant.kind,
@@ -167,6 +171,7 @@ struct UnsubmittedDraft {
 pub struct CoreRuntime {
     pub(crate) submission_cancellation: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
     telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
+    pub(crate) native_user_messages: Option<tokio::sync::broadcast::Sender<String>>,
     options: RuntimeOptions,
     client_baseline: Option<Box<ClientState>>,
     local_presentation_commit: std::cell::RefCell<Option<crate::repository::PresentationDefaults>>,
@@ -238,6 +243,8 @@ pub struct CoreRuntime {
     acp_capability_cache: std::cell::RefCell<BTreeMap<String, crate::AcpCapabilities>>,
     native_projects: std::cell::RefCell<BTreeMap<String, projects::NativeProjects>>,
     history_listings: std::cell::RefCell<BTreeMap<String, browsing::HistoryListing>>,
+    history_index_generation: std::cell::Cell<u64>,
+    codex_active_indexes: std::cell::RefCell<BTreeMap<String, list_refresh::CodexActiveIndex>>,
     delivery: delivery::TranscriptDelivery,
     prepared_remote_resources: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// HOME of each inherited-HOME SSH location, by its execution settings.
@@ -249,6 +256,8 @@ pub struct CoreRuntime {
     worktree_origins: std::cell::RefCell<BTreeMap<String, Option<String>>>,
     turn_failures:
         std::cell::RefCell<BTreeMap<PathBuf, (velune_agent_runtime::activity::Signature, bool)>>,
+    pi_binding_aliases:
+        std::cell::RefCell<std::collections::HashMap<String, model_selection::PiBindingAliases>>,
     analytics: Arc<crate::analytics::AnalyticsStore>,
     /// Shared admission, recovery and session affinity across gateway runners.
     scheduling_state: velune_gateway::SchedulingState,
@@ -269,6 +278,7 @@ pub(crate) use client_state::ClientState;
 mod agent_uri;
 mod authentication_coordination;
 mod browsing;
+mod claude_submission;
 mod collaboration;
 mod composer_choices;
 mod composer_target;
@@ -294,6 +304,7 @@ use crate::SendQueueOperation;
 mod background_tasks;
 mod collaborators;
 mod control;
+pub(crate) mod list_refresh;
 pub(crate) mod live;
 mod model_selection;
 mod native_composition;
@@ -345,9 +356,13 @@ impl CoreRuntime {
             options.home_directory.clone(),
             &persisted.gateways,
         );
+        let execution_backends = velune_gateway::ExecutionBackends::with_claude_cache_directory(
+            options.home_directory.join("claude-bridge-cache"),
+        );
         Ok(Self {
             submission_cancellation: None,
             telemetry: None,
+            native_user_messages: None,
             options,
             collaboration: Default::default(),
             session: Default::default(),
@@ -406,15 +421,18 @@ impl CoreRuntime {
             acp_capability_cache: Default::default(),
             native_projects: Default::default(),
             history_listings: Default::default(),
+            history_index_generation: Default::default(),
+            codex_active_indexes: Default::default(),
             delivery: delivery::TranscriptDelivery::new(),
             prepared_remote_resources: Default::default(),
             remote_homes: Default::default(),
             sub_agent_failures: Default::default(),
             worktree_origins: Default::default(),
             turn_failures: Default::default(),
+            pi_binding_aliases: Default::default(),
             analytics,
             scheduling_state,
-            execution_backends: Default::default(),
+            execution_backends,
             retired_gateway_providers: Vec::new(),
             pending_provider_identity_changes: Default::default(),
             provider_account,
@@ -449,7 +467,7 @@ impl CoreRuntime {
             });
         if leased {
             self.subscription_quota = self.subscription_quota.fork_configuration(&self.gateways);
-            self.execution_backends = Default::default();
+            self.execution_backends = self.execution_backends.fork();
         }
         for gateway in previous {
             for provider in &gateway.providers {
@@ -592,6 +610,33 @@ impl CoreRuntime {
         snapshot.model_record_key = self.session.model_record_key.clone();
         Ok(Some(snapshot))
     }
+    /// Preserve a cold view's source capability when discarding connection state.
+    fn owned_history_for_release(&self) -> Result<Option<browsing::HistorySnapshot>, RuntimeError> {
+        let mut source = self.owned_native_snapshot()?;
+        if let Some(history) = &mut source {
+            let can_continue = if self.session.active_state.live().is_some() {
+                self.session.side.is_some()
+                    || (!self.session.requires_live_connection()
+                        && self.execution_source_is_current())
+            } else {
+                history.actions.can_send
+            };
+            history.detach_execution(can_continue);
+        }
+        Ok(source)
+    }
+
+    fn execution_source_is_current(&self) -> bool {
+        self.session
+            .execution_configuration
+            .as_ref()
+            .is_none_or(|execution| {
+                self.runtime_instance(&execution.runtime.id)
+                    .is_ok_and(|runtime| {
+                        runtime.enabled && self.same_runtime_source(&execution.runtime, runtime)
+                    })
+            })
+    }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
             snapshot.model_record_key = self.session.model_record_key.clone();
@@ -633,7 +678,10 @@ impl CoreRuntime {
         if let Some(state) = &child_run_state {
             snapshot.run_state = state.clone();
         } else if external_turn
-            && matches!(snapshot.run_state, RunState::Idle | RunState::Elsewhere | RunState::Failed)
+            && matches!(
+                snapshot.run_state,
+                RunState::Idle | RunState::Elsewhere | RunState::Failed
+            )
         {
             snapshot.run_state = RunState::Elsewhere;
         }
@@ -796,6 +844,47 @@ impl CoreRuntime {
                 && snapshot.conversation.id == conversation_id
         }))
     }
+    fn poll_runtime_events(&mut self) -> Result<(), RuntimeError> {
+        fn latest_user_id(snapshot: &crate::conversation::ConversationSnapshot) -> Option<&str> {
+            snapshot.messages.iter().rev().find_map(|message| {
+                (message.role == crate::conversation::MessageRole::User)
+                    .then_some(message.id.as_str())
+            })
+        }
+
+        let Some(live) = self.session.active_state.live_mut() else {
+            return Ok(());
+        };
+        let wakes = self
+            .native_user_messages
+            .as_ref()
+            .filter(|sender| sender.receiver_count() != 0);
+        let previous_user = wakes
+            .and_then(|_| live.snapshot())
+            .and_then(latest_user_id)
+            .map(str::to_owned);
+        let result = live
+            .poll()
+            .map_err(|error| RuntimeError::context("运行时事件读取失败", error));
+
+        if let Some(wakes) = wakes
+            && let Some(snapshot) = live.snapshot()
+            && let Some(user) = latest_user_id(snapshot)
+            && previous_user.as_deref() != Some(user)
+            && !snapshot
+                .message_identity_confirmations
+                .iter()
+                .any(|confirmation| {
+                    Some(confirmation.previous_id.as_str()) == previous_user.as_deref()
+                        && confirmation.current_id == user
+                })
+            && let Some(conversation_id) = self.session.conversation_id()
+        {
+            let _ = wakes.send(conversation_id.to_owned());
+        }
+        result
+    }
+
     fn drain_runtime(&mut self) -> Result<(), RuntimeError> {
         if self
             .session
@@ -816,6 +905,7 @@ impl CoreRuntime {
                     pi.poll();
                 }
                 self.advance_pi_control();
+                self.advance_pi_submission();
                 self.advance_pi_edit();
                 if matches!(self.session.active_state, ActiveState::Pi(_)) {
                     let _ = self.start_native_cleanup_worker();
@@ -848,9 +938,28 @@ impl CoreRuntime {
             return Ok(());
         }
         if let ActiveState::Pending(pending) = &mut self.session.active_state {
-            let Some((ticket, state, outcome)) = pending.complete() else {
+            let Some((ticket, mut state, outcome)) = pending.complete() else {
                 return Ok(());
             };
+            if outcome.cleanup
+                && let ActiveState::History(history) = &mut state
+            {
+                let recreatable_draft =
+                    self.session
+                        .unsubmitted_draft
+                        .as_ref()
+                        .is_some_and(|draft| {
+                            self.runtime_instance(&draft.runtime_id)
+                                .is_ok_and(|runtime| {
+                                    velune_agent_runtime::version::variant(runtime.type_id)
+                                        .persists_on_first_turn
+                                })
+                        });
+                let can_continue = self.session.side.is_some()
+                    || ((self.session.can_reopen_execution() || recreatable_draft)
+                        && self.execution_source_is_current());
+                history.detach_execution(can_continue);
+            }
             self.session.active_state = state;
             let result = self.apply_execution_outcome(outcome);
             self.execution_results
@@ -859,15 +968,12 @@ impl CoreRuntime {
         if was_executing {
             self.session.last_execution = Some(std::time::Instant::now());
         }
-        let result = match self.session.active_state.live_mut() {
-            Some(live) => live
-                .poll()
-                .map_err(|error| RuntimeError::context("运行时事件读取失败", error)),
-            None => Ok(()),
-        };
+        let result = self.poll_runtime_events();
         self.harvest_native_controls();
         self.advance_native_submissions();
+        self.advance_claude_submission();
         self.advance_pi_control();
+        self.advance_pi_submission();
         self.advance_pi_edit();
         self.refresh_native_accepted_settings();
         let pi_failure = matches!(&self.session.active_state,
@@ -915,15 +1021,14 @@ impl CoreRuntime {
             })
         {
             if !self.session.executing() {
-                self.finish_managed_backend_turn();
                 self.session.pi_cleanup_required = true;
                 let _ = self.start_native_cleanup_worker();
                 // Consume the outcome when the worker returns the projection.
                 return result;
             }
-            // A next turn can share a connection with actual background work.
-            // Settlement of metadata alone must finish before draining the queue.
-            if self.session.work().is_ok_and(|work| work.is_empty()) {
+            // Only actual background work allows the next turn to share this
+            // connection before the current managed execution is collected.
+            if self.session.work_status() != velune_agent_runtime::work::WorkStatus::Active {
                 return result;
             }
         }
@@ -988,16 +1093,12 @@ impl CoreRuntime {
         {
             tracing::warn!(target: "velune_application", event = "gateway_release_restore_failed", detail = %error);
         }
-        let snapshot = self.native_snapshot();
+        let snapshot = self.owned_history_for_release();
         let selection = self.session.model_selection.clone();
         let result = self.shutdown_active();
         self.session.model_selection = selection;
-        if let Some(mut snapshot) = snapshot {
+        if let Some(snapshot) = snapshot? {
             self.session.model_record_key = snapshot.model_record_key.clone();
-            snapshot
-                .pending_interactions
-                .retain(|interaction| !interaction.requires_live_reply());
-            snapshot.actions.can_cancel = false;
             self.session.set_history(snapshot);
         }
         synchronized.and(result)

@@ -168,7 +168,10 @@ struct ConversationContent: View {
                     ScrollView {
                         VStack(spacing: 8) {
                             ForEach(interactions, id: \.id) { interaction in
-                                InteractionView(interaction: interaction, busy: model.busy) { model.reply(interaction.id, $0) }
+                                InteractionView(interaction: interaction, busy: model.busy,
+                                                childConversation: model.snapshot?.conversation.parentConversationId != nil) {
+                                    model.reply(interaction.id, $0)
+                                }
                             }
                         }
                     }.frame(maxHeight: 240)
@@ -223,9 +226,14 @@ private struct TranscriptPosition: Equatable {
 private struct InteractionView: View {
     let interaction: RuntimeInteraction
     let busy: Bool
+    let childConversation: Bool
     let reply: (RuntimeInteractionReply) -> Void
     @State private var answers: [String: String] = [:]
     @State private var selected: [String: String] = [:]
+    private var readOnlyQuestion: Bool {
+        if case .asyncUserInput(_, .conversationInput) = interaction.kind { return childConversation }
+        return false
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             switch interaction.kind {
@@ -236,34 +244,45 @@ private struct InteractionView: View {
                     HStack { approvalButtons(options) }
                     VStack(alignment: .leading) { approvalButtons(options) }
                 }
-            case .userInput(let questions):
-                ForEach(questions, id: \.id) { question in
-                    Text(question.text).font(.callout)
-                    if question.secret {
-                        SecureField("回答", text: answer(question.id)).textFieldStyle(.roundedBorder)
-                    } else {
-                        TextField("回答", text: answer(question.id), axis: .vertical).textFieldStyle(.roundedBorder)
+            case .userInput(let questions), .asyncUserInput(let questions, _):
+                if readOnlyQuestion {
+                    ForEach(questions, id: \.id) { question in
+                        Text(question.text).font(.callout)
+                        ForEach(question.options, id: \.id) { option in Text(option.label).font(.caption) }
                     }
-                    if !question.options.isEmpty {
-                        ScrollView(.horizontal) {
-                            HStack { ForEach(question.options, id: \.id) { option in
-                                Button {
-                                    selected[question.id] = option.id; answers[question.id] = ""
-                                } label: {
-                                    Label(option.label, systemImage: selected[question.id] == option.id ? "checkmark.circle.fill" : "circle")
-                                }.buttonStyle(.bordered)
-                            } }
-                        }
-                    }
-                }
-                HStack {
-                    Button("取消") { reply(.cancel) }
-                    Spacer()
-                    Button("提交") { reply(.answers(answers: questions.map { .init(questionId: $0.id, values: [value($0.id)]) })) }
-                        .disabled(questions.contains { (value($0.id)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                    Text("在父会话回答").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    questionFields(questions)
                 }
             }
         }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12)).disabled(busy)
+    }
+    @ViewBuilder private func questionFields(_ questions: [InteractionQuestion]) -> some View {
+        ForEach(questions, id: \.id) { question in
+            Text(question.text).font(.callout)
+            if question.secret {
+                SecureField("回答", text: answer(question.id)).textFieldStyle(.roundedBorder)
+            } else {
+                TextField("回答", text: answer(question.id), axis: .vertical).textFieldStyle(.roundedBorder)
+            }
+            if !question.options.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack { ForEach(question.options, id: \.id) { option in
+                        Button {
+                            selected[question.id] = option.id; answers[question.id] = ""
+                        } label: {
+                            Label(option.label, systemImage: selected[question.id] == option.id ? "checkmark.circle.fill" : "circle")
+                        }.buttonStyle(.bordered)
+                    } }
+                }
+            }
+        }
+        HStack {
+            Button("取消") { reply(.cancel) }
+            Spacer()
+            Button("提交") { reply(.answers(answers: questions.map { .init(questionId: $0.id, values: [value($0.id)]) })) }
+                .disabled(questions.contains { (value($0.id)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+        }
     }
     private func value(_ id: String) -> String { selected[id] ?? answers[id] ?? "" }
     private func answer(_ id: String) -> Binding<String> { Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0; selected[id] = nil }) }

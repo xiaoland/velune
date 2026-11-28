@@ -2,144 +2,164 @@ import Combine
 import Foundation
 import VeluneBindings
 
-struct SubmittedMessage: Equatable {
-    var message: DeliveredMessage
-    var status: String?
-}
-
-/// A submission is visible from the local action through acknowledgement and
-/// canonical presentation. Send, queue and steer differ in delivery, not ownership.
+/// Presents only this composer's submissions while the Core returns the
+/// delivery result and the native transcript catches up.
 @MainActor final class OutgoingSubmissions {
-    enum Route: Equatable { case send, queue, steer }
     private struct Submission {
         let id: String
-        var route: Route
-        let message: DeliveredMessage
-        let knownUserIDs: Set<String>
-        var queueID: String?
-        var queueObserved = false
+        let text: String
+        let attachments: [String]
+        let showsInTranscript: Bool
+        let previousUserRowID: String?
         var receiptSettled = false
+        var submittedMessageID: String?
+        var echoVisible = false
+        var pendingQueueID: String?
+        var queueObserved = false
         var visible = true
-        var accepted = false
     }
     private var submissions: [Submission] = []
-    private var claimedUserIDs = Set<String>()
     let changes = PassthroughSubject<Void, Never>()
-    var displayed: [SubmittedMessage] {
-        submissions.filter { $0.visible && $0.route != .queue }.map { submission in
-            let status: String?
-            switch (submission.route, submission.accepted) {
-            case (.send, false): status = "发送中"
-            case (.queue, false): status = "排队中"
-            case (.steer, false): status = "插入中"
-            case (.steer, true): status = "已插入本轮"
-            default: status = nil
-            }
-            return SubmittedMessage(message: submission.message, status: status)
+    var message: TranscriptRow? {
+        guard let submission = submissions.last(where: {
+            $0.showsInTranscript && $0.visible && !$0.echoVisible && !$0.queueObserved && $0.pendingQueueID == nil
+        }) else { return nil }
+        let blocks = (submission.text.isEmpty ? [] : [DeliveredBlock.text(text: submission.text)])
+            + submission.attachments.map(Self.attachmentBlock)
+        return TranscriptRow(DeliveredMessage(id: submission.id, role: .user, blocks: blocks),
+                             id: submission.id, sending: !submission.receiptSettled, copies: false)
+    }
+    private static func attachmentBlock(_ path: String) -> DeliveredBlock {
+        let mediaType: String? = switch URL(fileURLWithPath: path).pathExtension.lowercased() {
+        case "png": "image/png"
+        case "jpg", "jpeg": "image/jpeg"
+        case "gif": "image/gif"
+        case "webp": "image/webp"
+        default: nil
         }
+        return mediaType.map { .image(mediaType: $0, source: .path(path: path)) } ?? .file(path: path)
     }
     var queued: [QueuedMessage] {
-        submissions.filter { $0.visible && $0.route == .queue && $0.receiptSettled && !$0.queueObserved }.map { submission in
-            QueuedMessage(id: submission.queueID ?? submission.id, submissionId: submission.id, text: submission.message.blocks.compactMap {
-                if case .text(let text) = $0 { return text }; return nil
-            }.joined(separator: "\n"), attachments: submission.message.blocks.compactMap {
-                switch $0 {
-                case .file(let path), .image(_, .path(let path)): return path
-                default: return nil
-                }
-            })
+        submissions.compactMap { submission in
+            guard let queueID = submission.pendingQueueID else { return nil }
+            return QueuedMessage(id: queueID, submissionId: submission.id, text: submission.text, attachments: submission.attachments)
         }
     }
-    @discardableResult func begin(_ route: Route, text: String, attachments: [String], snapshot: ConversationSnapshot?) -> String {
+
+    func begin(text: String, attachments: [String], sendingFrom snapshot: ConversationSnapshot? = nil) -> String {
         let id = "submission:" + UUID().uuidString.lowercased()
-        let images: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
-        let blocks: [DeliveredBlock] = (text.isEmpty ? [] : [.text(text: text)]) + attachments.map {
-            images.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) ? .image(mediaType: nil, source: .path(path: $0)) : .file(path: $0)
-        }
-        let message = DeliveredMessage(id: id, role: .user, timestampUnixMs: Int64(Date().timeIntervalSince1970 * 1000), blocks: blocks)
-        submissions.append(Submission(id: id, route: route, message: message, knownUserIDs: Set(userIDs(snapshot))))
-        changes.send()
+        submissions.append(Submission(id: id, text: text, attachments: attachments,
+                                      showsInTranscript: snapshot != nil, previousUserRowID: snapshot?.transcriptOutline.last?.id))
+        if snapshot != nil { changes.send() }
         return id
     }
-    /// Business admission is independent of projection installation. A send
-    /// intent may have been queued by the core while the UI still looked idle.
-    func accept(_ id: String, receipt: SubmissionReceipt? = nil, snapshot: ConversationSnapshot?) {
+
+    /// Even an ordinary send can be admitted to the queue if the core became
+    /// busy. Only a receipt with an exact queue ID can fill a missing projection.
+    func accept(_ id: String, receipt: SubmissionReceipt?, hasSnapshot: Bool, submittedMessageID: String?) {
         guard let index = submissions.firstIndex(where: { $0.id == id }) else { return }
-        submissions[index].receiptSettled = true
-        submissions[index].accepted = true
         switch receipt {
         case .queued(let queueID):
-            submissions[index].route = .queue
-            submissions[index].queueID = queueID
-            // This complete post-admission receipt already owns the queue, or
-            // has observed its dispatch/removal. Never turn absence into send.
-            if snapshot != nil || submissions[index].queueObserved || !submissions[index].visible {
-                submissions.remove(at: index); changes.send(); return
+            if !hasSnapshot, !submissions[index].queueObserved, submissions[index].visible {
+                submissions[index].pendingQueueID = queueID
+            } else {
+                submissions.remove(at: index)
             }
-        case .sending:
-            if submissions[index].route != .steer { submissions[index].route = .send }
-        case nil:
-            break
+        case .sending, nil:
+            if submissions[index].showsInTranscript && submissions[index].visible && !submissions[index].queueObserved {
+                submissions[index].receiptSettled = true
+                submissions[index].submittedMessageID = submittedMessageID
+            } else {
+                submissions.remove(at: index)
+            }
         }
-        reconcile(snapshot)
-        submissions.removeAll { $0.id == id && !$0.visible }
         changes.send()
     }
-    /// A canonical queue observation is admission even when the RPC response
-    /// fails later. Restoring its draft would invite a duplicate retry.
-    @discardableResult func fail(_ id: String) -> Bool {
-        let restoreDraft = submissions.first(where: { $0.id == id }).map { !$0.accepted && !$0.queueObserved } ?? true
-        submissions.removeAll { $0.id == id }
+
+    /// A poll can confirm queue admission before the request reports its result.
+    func fail(_ id: String) -> Bool {
+        guard let index = submissions.firstIndex(where: { $0.id == id }) else { return true }
+        let submission = submissions.remove(at: index)
         changes.send()
-        return restoreDraft
+        return !submission.queueObserved
     }
+
     func reset() {
-        // Keep only in-flight receipt ownership, detached from the new view.
-        // Its callback still settles the original captured composer input.
-        submissions.removeAll { $0.receiptSettled }
+        submissions.removeAll { $0.pendingQueueID != nil || $0.receiptSettled }
+        // Late callbacks still settle the captured input, without a row in the new view.
         for index in submissions.indices { submissions[index].visible = false }
-        claimedUserIDs.removeAll(); changes.send()
+        changes.send()
     }
-    func reconcile(_ snapshot: ConversationSnapshot?) {
-        guard let snapshot, !submissions.isEmpty else { return }
-        let ids = userIDs(snapshot)
-        claimedUserIDs.formIntersection(ids)
+
+    func reconcile(_ snapshot: ConversationSnapshot, afterReceipt: Bool = false) {
+        guard !submissions.isEmpty else { return }
+        let observed = Set(snapshot.followUp.queue.compactMap(\.submissionId))
         var changed = false
-        for index in submissions.indices {
-            if let canonical = snapshot.followUp.queue.first(where: {
-                $0.submissionId == submissions[index].id || $0.id == submissions[index].queueID
-            }) {
-                if submissions[index].route != .queue || !submissions[index].queueObserved { changed = true }
-                submissions[index].route = .queue
-                submissions[index].queueID = canonical.id
-                submissions[index].queueObserved = true
-                submissions[index].accepted = true
-            }
-        }
-        let oldCount = submissions.count
         submissions.removeAll { submission in
-            if submission.route == .queue {
-                return submission.receiptSettled && (submission.queueObserved || submission.queueID != nil)
-            }
-            guard submission.accepted else { return false }
-            if let own = ids.first(where: { !submission.knownUserIDs.contains($0) && !claimedUserIDs.contains($0) }) {
-                claimedUserIDs.insert(own); return true
+            // A complete projection either owns the queue row or has already seen its dispatch.
+            if !afterReceipt && submission.pendingQueueID != nil {
+                changed = true
+                return true
             }
             return false
         }
-        if changed || oldCount != submissions.count { changes.send() }
+        for index in submissions.indices {
+            if observed.contains(submissions[index].id), !submissions[index].queueObserved {
+                submissions[index].queueObserved = true
+                changed = true
+            }
+            guard submissions[index].visible, submissions[index].showsInTranscript else { continue }
+            let echoVisible = Self.echoVisible(for: submissions[index], in: snapshot)
+            if submissions[index].echoVisible != echoVisible {
+                submissions[index].echoVisible = echoVisible
+                changed = true
+            }
+        }
+        let count = submissions.count
+        submissions.removeAll { submission in
+            guard submission.receiptSettled else { return false }
+            return submission.echoVisible || submission.queueObserved
+                || (!afterReceipt && snapshot.runState != .running && snapshot.runState != .stopping)
+        }
+        if changed || submissions.count != count { changes.send() }
     }
+
+    private static func echoVisible(for submission: Submission, in snapshot: ConversationSnapshot) -> Bool {
+        if let id = submission.submittedMessageID {
+            let currentID = snapshot.messageIdentityConfirmations.first { $0.previousId == id }?.currentId ?? id
+            return snapshot.transcriptOutline.contains { $0.messageId == currentID }
+        }
+        // Some adapters echo after the response. Only consider the next native
+        // user entry past the stable pre-send anchor. This only reconciles local
+        // presentation. It does not settle the RPC or remove any native row.
+        let next: TranscriptOutlineEntry?
+        if let anchor = submission.previousUserRowID {
+            guard let index = snapshot.transcriptOutline.firstIndex(where: { $0.id == anchor }) else { return false }
+            next = snapshot.transcriptOutline.dropFirst(index + 1).first
+        } else {
+            next = snapshot.transcriptOutline.first
+        }
+        guard let next, let message = snapshot.messages.first(where: { $0.id == next.messageId && $0.role == .user }) else { return false }
+        guard !message.blocks.contains(where: { if case .agentSender = $0 { return true }; return false }) else { return false }
+        let attachments = message.blocks.compactMap { block -> DeliveredBlock? in
+            switch block { case .file, .image: block; default: nil }
+        }
+        let expected = submission.attachments.map(attachmentBlock)
+        guard attachments.count == expected.count else { return false }
+        // Images may arrive as native payload bytes; file references keep their paths.
+        func attachmentIdentity(_ block: DeliveredBlock) -> String? {
+            switch block {
+            case .file(let path): path
+            case .image: "image"
+            default: nil
+            }
+        }
+        return message.copiedText.trimmingCharacters(in: .whitespacesAndNewlines) == submission.text
+            && attachments.compactMap(attachmentIdentity).sorted() == expected.compactMap(attachmentIdentity).sorted()
+    }
+
     static func queuedCancellation(_ receipt: SubmissionReceipt?) -> SendQueueOperation? {
         if case .queued(let id) = receipt { return .remove(id: id) }
         return nil
-    }
-    private func userIDs(_ snapshot: ConversationSnapshot?) -> [String] {
-        guard let snapshot else { return [] }
-        let own = Set(snapshot.messages.filter { message in
-            message.role == .user && !message.blocks.contains { if case .agentSender = $0 { return true }; return false }
-        }.map(\.id))
-        // Application presentation identities survive native ID confirmation;
-        // replacing old history cannot be mistaken for this submission's echo.
-        return snapshot.transcriptMessageIdentities.filter { own.contains($0.messageId) }.map(\.id)
     }
 }

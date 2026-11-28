@@ -1,7 +1,8 @@
 //! Private ledger assertions for the public cold facade; never contacts an agent.
 use super::*;
 use crate::history::{self, HistoryConfig};
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+use crate::process::command;
+use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
 struct ColdFixture {
     directory: PathBuf,
@@ -26,7 +27,6 @@ impl ColdFixture {
             kind: crate::version::RuntimeKind::Codex166,
             execution: crate::execution::ExecutionTarget::Local,
             os_home: Some(directory.clone()),
-            provider: "codex".into(),
             binary,
             node_binary: PathBuf::new(),
             resources_directory: directory.clone(),
@@ -38,7 +38,7 @@ impl ColdFixture {
     fn assert_process_closed(&self) {
         let pid = fs::read_to_string(self.directory.join("rpc.pid")).unwrap();
         assert!(
-            !Command::new("kill")
+            !command("kill")
                 .args(["-0", pid.trim()])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -62,7 +62,13 @@ fn ledger_after_io<T>(value: &Retained<T>) -> Arc<ReadLedger> {
     );
     // A short-lived reader can still be unwinding after the child exits.
     // A data guard must never be what keeps its IO anchor alive.
-    let io_alive = || value.retention.0.iter().any(|lease| lease.account.upgrade().is_some());
+    let io_alive = || {
+        value
+            .retention
+            .0
+            .iter()
+            .any(|lease| lease.account.upgrade().is_some())
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while io_alive() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -93,15 +99,17 @@ fn cold_history_pages_release_framing_headroom_but_keep_payload_credit() {
     let payload = "x".repeat(128 * 1024);
     let frame = serde_json::to_vec(&serde_json::json!({"data":[{"text":payload}]})).unwrap();
     let read = |account: &Arc<ReadAccount>| {
-        read_record(&mut std::io::Cursor::new(&frame), account)
-            .map(|record| {
-                let ReadRecord { value, lease } = record.unwrap();
-                Retained::from_record(value, lease)
-            })
+        read_record(&mut std::io::Cursor::new(&frame), account).map(|record| {
+            let ReadRecord { value, lease } = record.unwrap();
+            Retained::from_record(value, lease)
+        })
     };
     let old = account();
     let _unsettled = [read(&old).unwrap(), read(&old).unwrap()];
-    assert!(read(&old).is_err(), "retaining full input reservations exhausts the budget");
+    assert!(
+        read(&old).is_err(),
+        "retaining full input reservations exhausts the budget"
+    );
 
     let account = account();
     let mut pages = Vec::new();
@@ -144,8 +152,12 @@ fn cold_long_codex_history_retains_every_page_and_tool_output() {
     assert_eq!(read.1.messages.len(), 165 * 4);
     for (index, message) in read.1.messages.iter().enumerate() {
         let prefix = format!("page-{}-{}\n", index / 4, index % 4);
-        let [crate::conversation::MessageBlock::Tool { output: Some(output), .. }] =
-            message.blocks.as_slice()
+        let [
+            crate::conversation::MessageBlock::Tool {
+                output: Some(output),
+                ..
+            },
+        ] = message.blocks.as_slice()
         else {
             panic!("tools must retain their output");
         };

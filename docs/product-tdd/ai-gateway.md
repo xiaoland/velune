@@ -12,13 +12,14 @@
 
 应用在关闭旧运行时前捕获会话身份。新会话尚无原生 ID 时分配独立执行身份，Runner、开始轮次、取消和完成操作始终消费同一捕获身份。订阅重新登录使用独立凭据目录，旧凭据由应用等使用者结束后清理。直接写入既有来源的登录与 CLI 退出登录需等待相应使用者结束。
 
-fail-over 由网关单独决策，provider 每次只执行一次尝试。候选只来自路由的显式成员，同协议是必要条件，历史、文件、缓存、加密推理或服务端状态能否交给另一账户须单独判断（[S30](../sources/ai-routing.md#s30)）。
+fail-over 由网关单独决策，provider 每次只执行一次尝试。候选来自路由的显式成员。网关按候选协议单独准备请求，涉及历史、文件、缓存、加密推理或服务端状态时须判断能否交给另一账户。 [路由范围来源 S30](../sources/ai-routing.md#s30)
 
 - 普通认证 401 停止；Codex 订阅允许同账户有界恢复一次，失效后可在提交前切换。
-- 限流、配额耗尽（含结构化的 402 配额错误）、过载、5xx 与未获答复的连接或传输失败，在提交前可以切换下一成员；权限错误与其他请求错误停止。
-- 聚合路由明确拒绝 `previous_response_id` 与 `conversation` 等上游状态引用，不静默删字段或改投其他账户。
+- 上游 HTTP 403 在提交前可切换下一成员。普通 403 不触发冷却，已识别的额度耗尽仍按额度规则处理。
+- 限流、配额耗尽（含结构化的 402 配额错误）、过载、5xx 与未获答复的连接或传输失败，在提交前可以切换下一成员。其他请求错误和其他状态上的权限错误结束请求。
+- 聚合路由明确拒绝 `previous_response_id`、`conversation`、Gemini 的 `cachedContent` 与 `continuationToken` 等上游状态引用。Gemini 的这两项只在直连同协议模型时传递。
 - 成功响应头交付后不再切换，包括之后的 SSE 业务失败；不拼接两个流，也不缓存完整流来扩大切换窗口。
-- Claude Code 子进程启动后，或向已有进程写入本次输入前，即进入不可自动重放状态；之后的退出、超时与解析错误不切换账户重做。CLI 故障不伪装成 HTTP 401。
+- Claude Code 启动新进程后或开始写入已有进程时进入不可自动重放状态。Antigravity 在开始写入 ACP `session/prompt` 时提交。此后退出、超时与解析错误结束本次派发。Antigravity 的 ACP 未登录错误映射为 401，遵循普通认证失败的终止规则。
 - 取消结束本次调用，不触发 fail-over，也不声称撤销已发生的上游执行。
 
 半开探测的准入恢复与业务成功分别处理：只有当前认证 epoch、当前冷却 generation 的探测收到 adapter 已通过协议检查的有效 2xx `Headers`，才解除该次健康冷却；不等待首个业务增量或完整流结束。未收到上游响应的取消只释放探测名额；上游已响应后，下游断开不撤销这份上游证据，也不建立业务成功或黏性。有效响应头交付后，Transport／Timeout 或业务失败只结束本次流并保留失败事实，不冷却提供商，也不切换重放。未获答复的连接失败、上游 5xx 与明确限流仍按提交前分类更新健康；旧响应不能解除新冷却。
@@ -29,12 +30,13 @@ fail-over 由网关单独决策，provider 每次只执行一次尝试。候选�
 
 ## 原生派发与观测
 
-ChatCompletions、Responses 与 Messages 是同一原生派发操作的三种线协议：`velune_ai::NativeProvider` 以 `Protocol` 区分，共用请求、事件、失败与完成类型，每个 adapter 只服务构造时确定的一个协议。ai-provider 的 `NativeHttp` 按协议区分端点、认证头、输出上限字段与终态；Claude Code 本机后端实现同一契约。协议实现按协议组织，服务商名称、端点与模型标识是配置数据，不选择不同的通用执行路径。
+Chat Completions、Responses、Messages 与 Gemini GenerateContent 共用原生派发操作：`velune_ai::NativeProvider` 以 `Protocol` 区分，共用请求、事件、失败与完成类型，每个 adapter 只服务构造时确定的一个协议。ai-provider 的 `NativeHttp` 按协议区分端点、认证头、输出上限字段与终态；Claude Code 与 Antigravity CLI 后端通过 Messages 实现同一契约。协议实现按协议组织，服务商名称、端点与模型标识是配置数据，不选择不同的通用执行路径。
 
 gateway 按路由绑定写入精确的 `providerModelId`，其余请求字段保持原样；原生 JSON／SSE、HTTP 状态与安全响应头经同一保真边界。保真以非路由字段与响应事件的内容、顺序及含义为准，不要求 JSON 空白与成员顺序不变；同协议的未知扩展不丢弃。原生事件 sink 可等待，下游以容量为 1 的通道施加背压；取消关闭派发 Future。HTTP 入口使用 Axum。
 
 - **Messages**：baseURL 追加 `/v1/messages`，同协议请求的版本由调用方的 `anthropic-version` 决定，异协议转换为 Messages 时使用 `2023-06-01`；API key 以 `x-api-key` 发送。缺少请求输出上限时使用目标模型配置的上限，不用硬编码常数。
-- **注入地址**：Pi 与 DSH 的 Messages 注入使用网关 origin，OpenAI 协议使用 `/v1`。Codex 发给网关的协议是 Responses，上游可经转换使用其他协议。
+- **Gemini GenerateContent**：在配置的版本化 base URL 下，按路由解析的模型 ID 构建 `models/{model}:generateContent` 或 `models/{model}:streamGenerateContent?alt=sse`。Gemini Developer API key 以 `x-goog-api-key` 发送。网关提供 `/v1beta/models/{model}:…` 入口，从路径取得路由别名和执行方式。原生请求保留内容分块、思考签名和额外字段。
+- **注入地址**：Pi 与 DSH 的 Messages 注入使用网关 origin，OpenAI 协议使用 `/v1`。Pi 的原生 Gemini 入口使用 `/v1beta`。Codex 发给网关的协议是 Responses，上游可经转换使用其他协议。
 
 协议终态与传输结束分别观察：原生 completed、incomplete、failed 与 finish reason 保留原义；HTTP 200、EOF 或客户端没有收到事件都不能单独证明成功或未执行。用量不足时保持未知，不补零。
 
@@ -53,10 +55,10 @@ gateway 按路由绑定写入精确的 `providerModelId`，其余请求字段保
 
 ## 用量与性能分析契约
 
-计量来源是经过 Velune 网关的真实上游请求。ai-provider 从三种协议的原生 JSON／SSE 提取计量事实；gateway 在协议转换之前观察这些事实，关联请求与实际提供商和模型身份，交给调用方注入的统计接收器。统计与 tracing 独立，转换补造的占位值不进入统计；采集不改写同协议的原始响应。
+计量来源是经过 Velune 网关的真实上游请求。ai-provider 从各协议的原生 JSON／SSE 提取计量事实；gateway 在协议转换之前观察这些事实，关联请求与实际提供商和模型身份，交给调用方注入的统计接收器。统计与 tracing 独立，转换补造的占位值不进入统计；采集不改写同协议的原始响应。
 
 application 持有分析存储、查询与记录生命周期，文件为配置根目录下的 `analytics.sqlite`。记录保留发生时的提供商身份、名称与实际 provider model ID，之后删除或改名不改变历史含义；它不是会话正文数据库。只统计启用后经过 Velune 的请求，不扫描运行时历史。采集与存储失败不影响模型业务结果，但要在本地诊断与分析读取状态中可辨认。
 
-每项 token 数独立保留“已报告”或“未知”。OpenAI 的缓存读取属于输入子集、推理属于输出子集；Messages 的输入总量包含普通输入、缓存读取与缓存创建，缓存字段缺失时总量未知但保留已报告的普通输入。流式累计 usage 覆盖已知值，不逐事件累加。聚合同时返回报告覆盖数量：总量只合计输入与输出均已报告的请求，输入列与输出列各自合计已报告部分；缓存与推理细项不重复计入总量。依据为 [OpenAI usage 字段](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)与 [Anthropic 缓存计量](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
+每项 token 数独立保留“已报告”或“未知”。OpenAI 的缓存读取属于输入子集、推理属于输出子集；Messages 的输入总量包含普通输入、缓存读取与缓存创建，缓存字段缺失时总量未知但保留已报告的普通输入。Gemini 的缓存计数是输入子集，输出包含已报告的候选与思考 token。流式累计 usage 按上游报告更新已知值，不逐事件累加。聚合同时返回报告覆盖数量：总量只合计输入与输出均已报告的请求，输入列与输出列各自合计已报告部分；缓存与推理细项不重复计入总量。依据为 [OpenAI usage 字段](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)与 [Anthropic 缓存计量](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
 
 有效输出速率是已报告输出 token 除以从上游派发到业务终态的耗时，包含等待，不是纯生成速度；跨请求聚合用同一组有效请求的输出总量除以耗时总量。首输出延迟单列，只由流式的实际文本、推理或工具参数触发，headers、心跳与仅含 role 的事件不算；非流式不推测。失败或取消请求的已知用量仍保留。日期查询使用平台给出的本地日边界，存储为 UTC 瞬时。费用、订阅余额与输出质量不由这些指标推断。

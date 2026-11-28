@@ -2,9 +2,9 @@
 //! several; requests address one at a time through `CoreRuntime::session`.
 use super::*;
 use velune_agent_runtime::{
-    creation::{DataRetention, Retained},
     LiveError,
-    work::BackgroundTask,
+    creation::{DataRetention, Retained},
+    work::{BackgroundTask, WorkStatus},
 };
 
 /// Identifies a session while it moves between addressed and parked.
@@ -20,13 +20,16 @@ impl Default for SessionKey {
 
 #[derive(Default)]
 pub(super) struct Session {
+    pub(super) claude_submission: Option<super::claude_submission::ClaudeSubmission>,
     pub(super) pi_io_cleanup: Option<Box<execution_workers::PendingExecution>>,
     pub(super) pi_control: Option<editing::PiControl>,
+    pub(super) pi_submission: Option<editing::PiSubmission>,
     pub(super) pi_edit: Option<editing::PiEdit>,
     pub(super) pi_edit_advancing: bool,
     pub(super) pi_cleanup_required: bool,
     pub(super) naming: Option<super::naming::Job>,
     pub(super) naming_attempted: bool,
+    pub(super) claude_title_checked: bool,
     pub(super) finished_activity: Option<String>,
     pub(super) scheduled_run: Option<(String, bool)>,
     pub(super) turn_observation: Option<velune_telemetry::Operation>,
@@ -98,7 +101,8 @@ impl Session {
     /// Keep the unpersisted fork's actual recovery provenance across reconfiguration.
     pub(super) fn refresh_pending_native_fork(&mut self) -> Result<(), RuntimeError> {
         if let ActiveState::Native(native) = &self.active_state {
-            self.pending_native_fork = native.pending_fork()
+            self.pending_native_fork = native
+                .pending_fork()
                 .map_err(|error| RuntimeError::context("保留待创建原生分支", error))?;
         }
         Ok(())
@@ -129,16 +133,23 @@ impl Session {
         )
     }
 
-    pub(super) fn work_settled(&self) -> bool {
+    pub(super) fn work_status(&self) -> WorkStatus {
         self.active_state
             .live()
-            .is_none_or(LiveConversation::work_settled)
+            .map_or(WorkStatus::Untracked, LiveConversation::work_status)
+    }
+
+    /// Only known outstanding work or a pending observation can hold execution open.
+    pub(super) fn work_pending(&self) -> bool {
+        self.work_status().is_pending()
     }
 
     /// Its runtime connection is still needed by execution or metadata;
     /// visible activity remains the user turn and native background work.
     pub(super) fn executing(&self) -> bool {
-        self.pi_io_cleanup.is_some()
+        self.claude_submission.is_some()
+            || self.pi_io_cleanup.is_some()
+            || self.pi_submission.is_some()
             || self.pi_edit.is_some()
             || self.pi_edit_advancing
             || self.pi_cleanup_required
@@ -149,7 +160,7 @@ impl Session {
                 .live()
                 .is_some_and(LiveConversation::has_pending_requests)
             || self.turn_running()
-            || !self.work_settled()
+            || self.work_pending()
             || self
                 .active_state
                 .live()
@@ -476,10 +487,10 @@ impl CoreRuntime {
     /// Refuses what would end the addressed session's runtime process while
     /// work besides its turn still runs there.
     pub(super) fn ensure_work_ended(&self) -> Result<(), RuntimeError> {
-        if self.session.work_settled() {
-            Ok(())
-        } else {
+        if self.session.work_pending() {
             Err(RuntimeError::OutstandingWork)
+        } else {
+            Ok(())
         }
     }
 
@@ -489,7 +500,7 @@ impl CoreRuntime {
         let ActiveState::Native(native) = &session.active_state else {
             return false;
         };
-        native.work().map_or(true, |work| !work.is_empty())
+        session.work_status() == WorkStatus::Active
             || native.snapshot().is_some_and(|view| {
                 view.messages
                     .iter()
@@ -675,20 +686,20 @@ impl CoreRuntime {
                 })
                 .count();
             let observation = session.work();
-            let work = observation.as_ref().map_or(&[][..], |tasks| tasks.as_slice());
-            let local_work = observation.is_err()
-                || work.iter().any(|task| task.conversation_id.is_none())
-                || (work.is_empty() && !session.work_settled());
-            if session.turn_running() || pending > 0 || local_work {
+            let work = observation
+                .as_ref()
+                .map_or(&[][..], |tasks| tasks.as_slice());
+            let local_work = work.iter().filter(|task| task.conversation_id.is_none());
+            let has_local_work = local_work.clone().next().is_some();
+            let turn_running = session.turn_running();
+            if turn_running || pending > 0 || has_local_work {
                 active.push(crate::ActiveConversation {
                     context_runtime_id: view.conversation.runtime_id.clone(),
                     conversation_id: id.into(),
-                    run_state: if local_work && !session.turn_running() {
-                        if !work.is_empty()
-                            && work.iter().all(|task| {
-                                task.state == velune_agent_runtime::work::BackgroundState::Stopping
-                            })
-                        {
+                    run_state: if has_local_work && !turn_running {
+                        if local_work.clone().all(|task| {
+                            task.state == velune_agent_runtime::work::BackgroundState::Stopping
+                        }) {
                             RunState::Stopping
                         } else {
                             RunState::Running
@@ -698,11 +709,13 @@ impl CoreRuntime {
                     },
                     pending_interactions: pending as u32,
                     parent_conversation_id: None,
-                    blocks_idle_submission: session.turn_running() || pending > 0,
+                    blocks_idle_submission: turn_running || pending > 0,
                 });
             }
             active.extend(work.iter().filter_map(|task| {
-                task.conversation_id.as_ref().cloned()
+                task.conversation_id
+                    .as_ref()
+                    .cloned()
                     .map(|conversation_id| crate::ActiveConversation {
                         context_runtime_id: view.conversation.runtime_id.clone(),
                         conversation_id,
@@ -854,7 +867,7 @@ mod history_cache_tests {
         let mut hidden = history_session("hidden", 1);
         first.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
         second.history_cache_weight = Some((1, 1, 40 * 1024 * 1024));
-        hidden.history_cache_weight = Some((1, 1, 1 * 1024 * 1024));
+        hidden.history_cache_weight = Some((1, 1, 1024 * 1024));
         let mut parked = vec![first, second, hidden];
         let mut kept = vec![false; parked.len()];
         let visible = std::collections::BTreeSet::from([

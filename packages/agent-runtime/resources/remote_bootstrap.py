@@ -96,19 +96,33 @@ def path_metadata(path, directory):
     return not directory or stat.S_ISDIR(metadata.st_mode)
 
 
+def signal_group(child, signum):
+    try:
+        os.killpg(child.pid, signum)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Darwin can return EPERM for a group with only unreaped zombies.
+        # Keep the group ID pinned and propagate denials for live members.
+        if sys.platform != "darwin" or not child_exited(child):
+            raise
+        members = subprocess.check_output(
+            ["/bin/ps", "-ax", "-o", "pgid=", "-o", "stat="], text=True, timeout=2)
+        group = str(child.pid)
+        for row in members.splitlines():
+            fields = row.split()
+            if len(fields) == 2 and fields[0] == group and not fields[1].startswith("Z"):
+                raise
+        return False
+    return True
+
+
 def terminate_group(child):
-    try:
-        os.killpg(child.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        child.wait()
-        return
-    deadline = time.monotonic() + 1
-    while not child_exited(child) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    try:
-        os.killpg(child.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    if signal_group(child, signal.SIGTERM):
+        deadline = time.monotonic() + 1
+        while not child_exited(child) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        signal_group(child, signal.SIGKILL)
     child.wait()
 
 

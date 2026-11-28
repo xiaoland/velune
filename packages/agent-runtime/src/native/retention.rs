@@ -18,6 +18,10 @@ pub(super) enum DataOwner {
     TurnError,
     Thread(String),
     Task(String),
+    #[allow(
+        dead_code,
+        reason = "Claude task issues have no registered receive owner yet"
+    )]
     TaskIssue,
     Stream,
     SideHistory,
@@ -161,7 +165,9 @@ impl NativeSession {
             DataOwner::Turn => self.turn_id.is_some(),
             DataOwner::TurnError => codex.turn_error.is_some(),
             DataOwner::Thread(id) => codex.threads.contains_key(id),
-            DataOwner::Task(id) => claude.task_infos.contains_key(id),
+            DataOwner::Task(id) => {
+                claude.task_infos.contains_key(id) || codex.terminals.contains(id)
+            }
             DataOwner::TaskIssue => claude.task_issue.is_some(),
             DataOwner::Stream => claude.stream_id.is_some() || claude.context.is_some(),
             DataOwner::Catalog => !self.available_models.is_empty(),

@@ -128,6 +128,23 @@ impl SendQueue {
         }
         Ok(index)
     }
+
+    fn position_at_revision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<usize, RuntimeError> {
+        let index = self.editable_position(id)?;
+        if self.turns[index].edit_revision != expected_revision {
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Conflict,
+                "此排队消息已被修改，请刷新后重试",
+            );
+            failure.code = "queued_message_changed".into();
+            return Err(RuntimeError::Contract(failure));
+        }
+        Ok(index)
+    }
 }
 
 fn queued_id() -> String {
@@ -492,10 +509,11 @@ impl CoreRuntime {
         permission_mode: Option<String>,
     ) -> Result<SnapshotResult, RuntimeError> {
         self.ensure_active(runtime_id)?;
-        self.require_input_access()?;
         let snapshot = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("conversation is not active"))?;
+        self.check_handoff_input(&snapshot)?;
+        Self::check_input_access(snapshot.actions.input_access)?;
         if !snapshot.follow_up.can_resume {
             return Err(RuntimeError::invalid("当前会话不能继续"));
         }
@@ -554,6 +572,24 @@ impl CoreRuntime {
         self.send_queue_submission(conversation_id, operation, None)
     }
 
+    pub(crate) fn withdraw_queued_turn(
+        &mut self,
+        conversation_id: &str,
+        id: String,
+        expected_revision: u64,
+        composer: &mut crate::composer::ComposerInputs,
+    ) -> Result<SnapshotResult, RuntimeError> {
+        if self.session.conversation_id() != Some(conversation_id) {
+            return Err(RuntimeError::invalid("排队会话已不可用"));
+        }
+        let queue = &self.session.send_queue;
+        let index = queue.position_at_revision(&id, expected_revision)?;
+        composer.restore_queued_turn(conversation_id, &queue.turns[index].request)?;
+        // The same application owner still controls the queue, so its item
+        // and dispatch eligibility cannot change between saving and removal.
+        self.send_queue(conversation_id, SendQueueOperation::Remove { id })
+    }
+
     fn replace_queued_turn(
         &mut self,
         id: &str,
@@ -564,16 +600,8 @@ impl CoreRuntime {
         mut turn: ComposedTurn,
     ) -> Result<SnapshotResult, RuntimeError> {
         let queue = &self.session.send_queue;
-        let index = queue.editable_position(id)?;
+        let index = queue.position_at_revision(id, expected_revision)?;
         let queued = &queue.turns[index];
-        if queued.edit_revision != expected_revision {
-            let mut failure = crate::Failure::new(
-                crate::FailureKind::Conflict,
-                "此排队消息已被修改，请重新打开编辑并核对内容",
-            );
-            failure.code = "queued_message_changed".into();
-            return Err(RuntimeError::Contract(failure));
-        }
         let previous = &queued.request;
         let target_changed = previous.runtime_id != target_runtime_id;
         let config_changed = target_changed
@@ -773,6 +801,9 @@ impl CoreRuntime {
                     // The service observes this exact gate's disappearance and
                     // revokes only its work/token; remaining items stay paused.
                     queue.preparation = None;
+                    if queue.waiting == Some(QueueWait::ContextPreparation) {
+                        queue.waiting = None;
+                    }
                 }
                 if queue.turns.is_empty() {
                     queue.paused = None;
@@ -797,12 +828,19 @@ impl CoreRuntime {
                 }
                 queue.paused = None;
             }
+            SendQueueOperation::Withdraw { .. } => {
+                return Err(RuntimeError::invalid("撤回排队消息需要共享输入存储"));
+            }
             SendQueueOperation::Steer { id } => {
                 let index = queue.position(&id)?;
                 let turn = queue.turns.remove(index).expect("queued turn");
-                if let Err(error) = self.steer(&turn.request.turn) {
+                if let Err(error) = self.steer(&turn.request.turn, Some(&turn.request.runtime_id)) {
                     let queue = &mut self.session.send_queue;
                     queue.turns.insert(index.min(queue.turns.len()), turn);
+                    if matches!(&error, RuntimeError::Contract(failure) if failure.code == "runtime_operation_indeterminate")
+                    {
+                        queue.paused = Some(QueuePause::SendFailed);
+                    }
                     return Err(error);
                 }
                 if self.session.send_queue.turns.is_empty() {
@@ -836,23 +874,42 @@ impl CoreRuntime {
         }
     }
 
-    /// Deliver a composed message into the running turn through the
-    /// runtime's own channel. Its next-turn choices do not apply: the turn
-    /// keeps its own.
+    /// Deliver input and any requested permission change to the active turn.
+    /// The runtime already owns this turn's model and reasoning effort.
     pub(crate) fn steer_turn(
         &mut self,
         turn: &ComposedTurn,
+        target_runtime_id: Option<&str>,
     ) -> Result<SnapshotResult, RuntimeError> {
-        self.steer(turn)?;
+        self.steer(turn, target_runtime_id)?;
         self.snapshot_result().map_err(RuntimeError::after_delivery)
     }
 
-    fn steer(&mut self, turn: &ComposedTurn) -> Result<(), RuntimeError> {
-        self.require_input_access()?;
-        if !self.can_steer() {
+    fn steer(
+        &mut self,
+        turn: &ComposedTurn,
+        target_runtime_id: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        let snapshot = self
+            .submission_context()
+            .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?;
+        self.check_handoff_input(&snapshot)?;
+        Self::check_input_access(snapshot.actions.input_access)?;
+        if !Self::submission_admission(&self.session, &snapshot).can_steer {
             return Err(RuntimeError::invalid("此运行时当前不能插入消息"));
         }
-        let runtime_id = self.active_instance()?.id.clone();
+        let runtime = self.active_instance()?;
+        let runtime_id = runtime.id.clone();
+        let claude_control =
+            runtime.type_id == RuntimeKind::ClaudeCode && turn.permission_mode.is_some();
+        if target_runtime_id.is_some_and(|target| target != runtime_id) {
+            return Err(RuntimeError::invalid(
+                "当前轮次不能切换运行时，请排队发送此消息",
+            ));
+        }
+        if let Some(mode) = turn.permission_mode.as_deref() {
+            self.validate_permission_mode(runtime, mode)?;
+        }
         let selection = self.session.model_selection.clone().flatten();
         if turn.attachments.is_empty()
             && self.can_submit_native(
@@ -869,7 +926,7 @@ impl CoreRuntime {
                 pi::TurnInput {
                     text: turn.text.clone(),
                     effort: None,
-                    permission_mode: None,
+                    permission_mode: turn.permission_mode.clone(),
                     images: Vec::new(),
                 },
             );
@@ -882,22 +939,27 @@ impl CoreRuntime {
         let input = pi::TurnInput {
             text,
             effort: None,
-            permission_mode: None,
+            permission_mode: turn.permission_mode.clone(),
             images: super::attachments::turn_images(&attachments.images)?,
         };
         self.retire_native_settings_for_submission();
+        if claude_control {
+            // Wait for the permission ACK on the existing execution owner.
+            // Service submissions can still answer reads while this waits.
+            return self.start_live_operation("steer", move |state| {
+                state
+                    .live_mut()
+                    .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?
+                    .steer(&input)
+                    .map_err(|error| RuntimeError::runtime_operation("插入消息", error))
+            });
+        }
         self.session
             .active_state
             .live_mut()
             .ok_or_else(|| RuntimeError::invalid("此运行时当前不能插入消息"))?
             .steer(&input)
-            .map_err(|error| RuntimeError::context("message steer", error))
-    }
-
-    /// The running turn takes messages through the runtime's own channel.
-    fn can_steer(&self) -> bool {
-        self.native_snapshot()
-            .is_some_and(|snapshot| Self::submission_admission(&self.session, &snapshot).can_steer)
+            .map_err(|error| RuntimeError::runtime_operation("插入消息", error))
     }
 
     /// The addressed session's turn ended with `outcome`: the queue goes on
@@ -1074,7 +1136,7 @@ impl CoreRuntime {
                             velune_agent_runtime::version::ResumeStrategy::Unsupported
                         )
                 })
-            && session.work_settled()
+            && !session.work_pending()
             && snapshot
                 .messages
                 .iter()
@@ -1128,10 +1190,13 @@ impl CoreRuntime {
             queue: queue.turns.iter().map(QueuedTurn::public).collect(),
             paused: queue.paused.clone(),
             waiting: queue.waiting.clone(),
-            can_stop_sub_agents: self.session.work().is_ok_and(|work| {
-                work.iter()
-                    .any(|task| task.state != velune_agent_runtime::work::BackgroundState::Stopping)
-            }),
+            can_stop_sub_agents: !matches!(&self.session.active_state,
+                ActiveState::Native(native) if native.has_active_background_terminals())
+                && self.session.work().is_ok_and(|work| {
+                    work.iter().any(|task| {
+                        task.state != velune_agent_runtime::work::BackgroundState::Stopping
+                    })
+                }),
             can_queue: admission.offer_queue,
             can_steer: admission.can_steer,
             can_resume: self.resumable(&self.session, snapshot),
@@ -1143,7 +1208,7 @@ impl CoreRuntime {
                         runtime.enabled
                             && velune_agent_runtime::version::variant(runtime.type_id).can_compact
                     })
-                && self.session.work_settled()
+                && !self.session.work_pending()
                 && !snapshot.messages.is_empty(),
             editable: self.editable_messages(snapshot),
             can_fork: self.forkable(snapshot),
@@ -1267,10 +1332,10 @@ for line in sys.stdin:
             core.session.execution_runtime_id = Some("pi".into());
             core.session.model_selection = Some(None);
             assert!(
-                !core.session.work_settled(),
+                core.session.work_pending(),
                 "startup discovery is not settled"
             );
-            drain_until(core, |core| core.session.work_settled());
+            drain_until(core, |core| !core.session.work_pending());
             assert_eq!(
                 core.native_snapshot().unwrap().messages[0].id,
                 "source-user"
@@ -1407,6 +1472,240 @@ mod preparation_tests {
             let _ = self.application.close_stopping_work();
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn withdraw_command(expected_revision: u64) -> crate::Command {
+        crate::Command::EditSendQueue {
+            submission_id: None,
+            runtime_id: "source".into(),
+            conversation_id: "source:one".into(),
+            operation: SendQueueOperation::Withdraw {
+                id: "head".into(),
+                expected_revision,
+            },
+        }
+    }
+
+    #[test]
+    fn withdrawing_queued_turn_restores_complete_composer_on_execution_owner() {
+        use velune_application_api::{ComposerContextKey, ComposerInputOperation};
+
+        let mut fixture = Fixture::new();
+        let new_file = fixture.root.join("new.txt");
+        fs::write(&new_file, b"new attachment").unwrap();
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let application = &mut fixture.application;
+        application
+            .composer
+            .legacy_edit("source:one".into(), Some("original draft".into()), None)
+            .unwrap();
+        let existing = application
+            .composer
+            .upload("existing.txt".into(), b"existing attachment".to_vec())
+            .unwrap();
+        let owner_id = application.composer.owner_id();
+        let context = ComposerContextKey::Conversation {
+            owner_id: owner_id.clone(),
+            conversation_id: "source:one".into(),
+        };
+        let old = application
+            .composer
+            .operate(ComposerInputOperation::Read {
+                since_revision: None,
+            })
+            .unwrap();
+        let old_id = &old
+            .bindings
+            .iter()
+            .find(|item| item.context == context)
+            .unwrap()
+            .input_id;
+        let old_path = application.composer.attachment_path(&existing.id).unwrap();
+        let turn = &mut application.runtime.session.send_queue.turns[0].request;
+        let selection = ModelSelection::Native {
+            provider_id: Some("synthetic".into()),
+            model_id: "synthetic-model".into(),
+        };
+        turn.selection = Some(selection.clone());
+        turn.turn.effort = Some("high".into());
+        turn.turn.permission_mode = Some("read-only".into());
+        turn.turn.attachments = vec![
+            old_path.to_str().unwrap().into(),
+            new_file.to_str().unwrap().into(),
+        ];
+        application.runtime.session.send_queue.waiting = Some(QueueWait::ContextPreparation);
+
+        let crate::Response::EditSendQueue(result) = application
+            .execute_command(withdraw_command(1), true, &view)
+            .unwrap()
+        else {
+            panic!("withdrawal returned the wrong response");
+        };
+        let follow_up = result.snapshot.unwrap().follow_up;
+        assert_eq!(follow_up.paused, Some(QueuePause::TurnStopped));
+        assert_eq!(follow_up.queue.len(), 1);
+        assert_eq!(follow_up.queue[0].id, "tail");
+        assert!(follow_up.context_preparation.is_none());
+        assert_ne!(follow_up.waiting, Some(QueueWait::ContextPreparation));
+
+        let state = application
+            .composer
+            .operate(ComposerInputOperation::Read {
+                since_revision: None,
+            })
+            .unwrap();
+        assert_eq!(state.revision, old.revision + 1);
+        let binding = state
+            .bindings
+            .iter()
+            .find(|item| item.context == context)
+            .unwrap();
+        assert_ne!(&binding.input_id, old_id);
+        assert!(
+            state
+                .inputs
+                .iter()
+                .any(|item| &item.id == old_id && item.content.text == "original draft")
+        );
+        let restored = state
+            .inputs
+            .iter()
+            .find(|item| item.id == binding.input_id)
+            .unwrap();
+        assert_eq!(restored.content.text, "first");
+        assert_eq!(restored.content.attachments.len(), 2);
+        assert_eq!(restored.content.attachments[0], existing);
+        let imported = &restored.content.attachments[1];
+        assert_eq!(imported.name, "new.txt");
+        let crate::Response::ReadComposerAttachment(content) = application
+            .execute_command(
+                crate::Command::ReadComposerAttachment {
+                    attachment_id: imported.id.clone(),
+                },
+                true,
+                &view,
+            )
+            .unwrap()
+        else {
+            panic!("composer attachment returned the wrong response");
+        };
+        assert_eq!(content.bytes, b"new attachment");
+        let target = application.composer.target(&context).unwrap();
+        assert_eq!(
+            target.choices.runtime_owner_id.as_deref(),
+            Some(owner_id.as_str())
+        );
+        assert_eq!(target.choices.runtime_id.as_deref(), Some("target"));
+        let choice = &target.choices.choices[0].choice;
+        assert_eq!(choice.model, Some(selection));
+        assert_eq!(choice.effort.as_deref(), Some("high"));
+        assert_eq!(choice.permission_mode.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn withdrawing_stale_or_dispatching_queue_item_leaves_composer_and_queue_untouched() {
+        use velune_application_api::ComposerInputOperation;
+
+        let mut fixture = Fixture::new();
+        let application = &mut fixture.application;
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let read = ComposerInputOperation::Read {
+            since_revision: None,
+        };
+        let before = application.composer.operate(read.clone()).unwrap();
+        application
+            .runtime
+            .send_queue(
+                "source:one",
+                SendQueueOperation::Edit {
+                    id: "head".into(),
+                    text: "new revision".into(),
+                },
+            )
+            .unwrap();
+        let error = application
+            .execute_command(withdraw_command(1), false, &view)
+            .err()
+            .expect("stale withdrawal was accepted");
+        assert_eq!(error.code, "queued_message_changed");
+        assert_eq!(
+            application.runtime.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
+        application
+            .runtime
+            .sync_queued_preparation("work-1", PreparationState::Ready);
+        assert!(
+            application
+                .runtime
+                .queued_prepared_candidate("work-1")
+                .is_some()
+        );
+        assert!(
+            application
+                .execute_command(withdraw_command(2), false, &view)
+                .is_err()
+        );
+        application.runtime.pause_queued_preparation("work-1");
+        assert!(
+            application
+                .execute_command(withdraw_command(2), false, &view)
+                .is_err()
+        );
+        assert_eq!(
+            application.runtime.session.send_queue.turns[0]
+                .request
+                .turn
+                .text,
+            "new revision"
+        );
+        assert_eq!(application.composer.operate(read).unwrap(), before);
+    }
+
+    #[test]
+    fn withdrawing_queue_item_keeps_it_and_cleans_imports_if_saving_fails() {
+        use velune_application_api::ComposerInputOperation;
+
+        let mut fixture = Fixture::new();
+        let first = fixture.root.join("first.txt");
+        let second = fixture.root.join("second.txt");
+        fs::write(&first, b"first").unwrap();
+        let application = &mut fixture.application;
+        let view = crate::ClientViewId("synthetic-withdraw".into());
+        let read = ComposerInputOperation::Read {
+            since_revision: None,
+        };
+        let before = application.composer.operate(read.clone()).unwrap();
+        application.runtime.session.send_queue.turns[0]
+            .request
+            .turn
+            .attachments = vec![
+            first.to_str().unwrap().into(),
+            second.to_str().unwrap().into(),
+        ];
+        let attached = fixture.root.join("composer-attachments");
+        assert!(
+            application
+                .execute_command(withdraw_command(1), false, &view)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&attached).unwrap().count(), 0);
+
+        fs::write(&second, b"second").unwrap();
+        // Prevent creating the temporary catalog without changing the stored catalog.
+        fs::create_dir(fixture.root.join("composer-inputs.json.tmp")).unwrap();
+        assert!(
+            application
+                .execute_command(withdraw_command(1), false, &view)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(attached).unwrap().count(), 0);
+        assert_eq!(application.composer.operate(read).unwrap(), before);
+        assert_eq!(application.runtime.session.send_queue.turns[0].id, "head");
+        assert_eq!(
+            application.runtime.queued_preparation_state("work-1"),
+            Some(PreparationState::Running)
+        );
     }
 
     #[test]

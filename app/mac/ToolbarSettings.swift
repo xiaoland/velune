@@ -2,28 +2,12 @@ import SwiftUI
 
 /// The window toolbar's buttons the user can hide and reorder in the
 /// settings. From macOS 26 the system's own Customize Toolbar… does this
-/// (see `VeluneRootView.withToolbar`); before it a customizable toolbar
-/// costs scrolling speed, so Velune offers the same choices itself over a
-/// plain toolbar.
+/// (see `WorkspaceToolbar`); before it Velune offers the same choices
+/// itself over a fixed toolbar.
 enum ToolbarButton: String, CaseIterable, Identifiable {
     case reload, outline, subAgents, backgroundTasks, pin, split, problems
-    case listFilter, newConversation
 
     var id: String { rawValue }
-
-    /// The toolbar a button belongs to: the detail's, at the window's trailing
-    /// end, or the sidebar's.
-    enum Area: CaseIterable {
-        case detail, sidebar
-        var title: String { self == .detail ? "详情" : "侧栏" }
-    }
-
-    var area: Area {
-        switch self {
-        case .listFilter, .newConversation: .sidebar
-        default: .detail
-        }
-    }
 
     var title: String {
         switch self {
@@ -34,8 +18,6 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
         case .pin: "保持在最前面"
         case .split: "拆分"
         case .problems: "问题"
-        case .listFilter: "筛选与分组"
-        case .newConversation: "新建会话"
         }
     }
 
@@ -48,21 +30,21 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
         case .pin: "pin"
         case .split: "rectangle.split.2x1"
         case .problems: "exclamationmark.triangle"
-        case .listFilter: "line.3.horizontal.decrease.circle"
-        case .newConversation: "square.and.pencil"
         }
     }
 }
 
 /// Which buttons the plain toolbars show, and in what order; kept in user
-/// defaults. A button the app adds later appears at the end of its toolbar.
+/// defaults. A button the app adds later appears at the end; one it no
+/// longer has (the list's filter and new conversation, now the list's own)
+/// is left out.
 @MainActor final class ToolbarSettings: ObservableObject {
     static let shared = ToolbarSettings()
 
     private static let orderKey = "toolbarButtonOrder"
     private static let hiddenKey = "toolbarButtonsHidden"
 
-    /// Every button in the user's order; each toolbar takes its own in turn.
+    /// Every button in the user's order.
     @Published private(set) var order: [ToolbarButton]
     @Published private(set) var hidden: Set<ToolbarButton>
 
@@ -75,11 +57,8 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
 
     var isDefault: Bool { hidden.isEmpty && order == ToolbarButton.allCases }
 
-    /// All of a toolbar's buttons in order, for the settings.
-    func buttons(in area: ToolbarButton.Area) -> [ToolbarButton] { order.filter { $0.area == area } }
-
-    /// The ones it shows, in order.
-    func shown(in area: ToolbarButton.Area) -> [ToolbarButton] { buttons(in: area).filter { !hidden.contains($0) } }
+    /// The ones the toolbar shows, in order.
+    var shown: [ToolbarButton] { order.filter { !hidden.contains($0) } }
 
     func isShown(_ button: ToolbarButton) -> Bool { !hidden.contains(button) }
 
@@ -88,11 +67,8 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
         save()
     }
 
-    func move(in area: ToolbarButton.Area, from source: IndexSet, to destination: Int) {
-        var buttons = buttons(in: area)
-        buttons.move(fromOffsets: source, toOffset: destination)
-        var next = buttons.makeIterator()
-        order = order.map { $0.area == area ? next.next() ?? $0 : $0 }
+    func move(from source: IndexSet, to destination: Int) {
+        order.move(fromOffsets: source, toOffset: destination)
         save()
     }
 
@@ -108,26 +84,22 @@ enum ToolbarButton: String, CaseIterable, Identifiable {
     }
 }
 
-/// The settings' toolbar sections, for macOS before 26.
+/// The settings' toolbar section, for macOS before 26.
 struct ToolbarSettingsSection: View {
     @ObservedObject private var settings = ToolbarSettings.shared
 
     var body: some View {
-        ForEach(ToolbarButton.Area.allCases, id: \.self) { area in
-            Section("\(area.title)工具栏") {
-                List {
-                    ForEach(settings.buttons(in: area)) { button in
-                        Toggle(isOn: Binding(get: { settings.isShown(button) }, set: { settings.setShown(button, $0) })) {
-                            Label(button.title, systemImage: button.symbol)
-                        }
+        Section("工具栏") {
+            List {
+                ForEach(settings.order) { button in
+                    Toggle(isOn: Binding(get: { settings.isShown(button) }, set: { settings.setShown(button, $0) })) {
+                        Label(button.title, systemImage: button.symbol)
                     }
-                    .onMove { settings.move(in: area, from: $0, to: $1) }
                 }
-                if area == .sidebar {
-                    Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、后台任务、保持在最前面、问题）。").uiFont(.caption).foregroundStyle(.secondary)
-                    Button("恢复默认") { settings.reset() }.disabled(settings.isDefault)
-                }
+                .onMove { settings.move(from: $0, to: $1) }
             }
+            Text("勾选决定按钮是否显示，拖动调整顺序。有些按钮只在适用时才出现（关联 Agent、后台任务、保持在最前面、问题）。").uiFont(.caption).foregroundStyle(.secondary)
+            Button("恢复默认") { settings.reset() }.disabled(settings.isDefault)
         }
     }
 }

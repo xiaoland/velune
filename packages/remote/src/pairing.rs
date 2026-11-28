@@ -17,6 +17,7 @@ use std::{
 
 const EXPORTER_LABEL: &[u8] = b"EXPORTER-Velune-Pairing-v3";
 const OFFER_LIMIT: usize = 1024;
+const OFFER_URL_PREFIX: &str = "velune://pair/v3/";
 const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
 const FOLLOW_LIMIT: Duration = Duration::from_secs(600);
 
@@ -64,21 +65,29 @@ impl PairingOffer {
         }
         Ok(encoded)
     }
-    /// Compact URL form for manual entry: `velune://pair/v3/<base64url(payload)>`.
-    /// The payload is a compact binary encoding of issuer, invite_id, token, name, and locator.
-    /// Locator is encoded as: relay_url_count(u8) + relay_urls + direct_addr_count(u8) + addrs.
+    /// Compact v3 URL. Control offers keep the original layout, while
+    /// telemetry offers append their permission code after the expiry.
     pub fn encode_url(&self) -> Result<String> {
         use base64::Engine as _;
+        self.validate()?;
+        if self
+            .locator
+            .relay_urls
+            .iter()
+            .chain(&self.locator.lookup_urls)
+            .any(|url| url.contains('\0'))
+        {
+            return Err(RemoteError::InvalidInvitation);
+        }
         let mut payload = Vec::new();
         payload.extend_from_slice(self.issuer.as_bytes());
         payload.push(0);
-        payload.extend_from_slice(&self.invite_id.as_bytes());
+        payload.extend_from_slice(self.invite_id.as_bytes());
         payload.push(0);
         payload.extend_from_slice(&self.token);
         payload.push(0);
         payload.extend_from_slice(self.name.as_bytes());
         payload.push(0);
-        // Compact locator: count-prefixed strings/addrs
         payload.push(self.locator.relay_urls.len() as u8);
         for url in &self.locator.relay_urls {
             payload.extend_from_slice(url.as_bytes());
@@ -94,18 +103,25 @@ impl PairingOffer {
             payload.extend_from_slice(url.as_bytes());
             payload.push(0);
         }
-        payload.push(0); // terminator for locator section
+        payload.push(0);
         payload.extend_from_slice(&self.expires_at_unix_seconds.to_le_bytes());
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&payload);
-        Ok(format!("velune://pair/v3/{encoded}"))
+        if self.permission != PairingPermission::Control {
+            payload.push(self.permission.code());
+        }
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        if OFFER_URL_PREFIX.len() + encoded.len() > OFFER_LIMIT {
+            return Err(RemoteError::FrameTooLarge);
+        }
+        Ok(format!("{OFFER_URL_PREFIX}{encoded}"))
     }
-    /// Decode either the JSON invitation or the compact URL form.
+
+    /// Decode either the legacy JSON invitation or the compact URL.
     pub fn decode(encoded: &str) -> Result<Self> {
         let encoded = encoded.trim();
         if encoded.len() > OFFER_LIMIT {
             return Err(RemoteError::FrameTooLarge);
         }
-        if let Some(payload) = encoded.strip_prefix("velune://pair/v3/") {
+        if let Some(payload) = encoded.strip_prefix(OFFER_URL_PREFIX) {
             return Self::decode_url_payload(payload);
         }
         let offer: Self =
@@ -113,68 +129,67 @@ impl PairingOffer {
         offer.validate()?;
         Ok(offer)
     }
+
     fn decode_url_payload(payload: &str) -> Result<Self> {
         use base64::Engine as _;
+
+        fn take_bytes<const N: usize>(rest: &mut &[u8]) -> Result<[u8; N]> {
+            let (value, trailing) = rest
+                .split_first_chunk::<N>()
+                .ok_or(RemoteError::InvalidInvitation)?;
+            *rest = trailing;
+            Ok(*value)
+        }
+
+        fn take_text(rest: &mut &[u8]) -> Result<String> {
+            let end = rest
+                .iter()
+                .position(|&byte| byte == 0)
+                .ok_or(RemoteError::InvalidInvitation)?;
+            let (text, trailing) = rest.split_at(end);
+            *rest = &trailing[1..];
+            std::str::from_utf8(text)
+                .map(str::to_owned)
+                .map_err(|_| RemoteError::InvalidInvitation)
+        }
+
+        fn take_texts(rest: &mut &[u8]) -> Result<Vec<String>> {
+            let [count] = take_bytes(rest)?;
+            (0..count).map(|_| take_text(rest)).collect()
+        }
+
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(payload)
             .map_err(|_| RemoteError::InvalidInvitation)?;
-        let mut pos = 0;
-        fn take_until(bytes: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
-            let start = *pos;
-            let end = bytes[start..]
-                .iter()
-                .position(|&b| b == 0)
-                .ok_or(RemoteError::InvalidInvitation)?
-                + start;
-            *pos = end + 1;
-            Ok(bytes[start..end].to_vec())
+        let mut rest = bytes.as_slice();
+        let issuer = take_text(&mut rest)?;
+        let invite_id = take_text(&mut rest)?;
+        let token = take_bytes(&mut rest)?;
+        if take_bytes::<1>(&mut rest)? != [0] {
+            return Err(RemoteError::InvalidInvitation);
         }
-        let issuer = String::from_utf8(take_until(&bytes, &mut pos)?)
-            .map_err(|_| RemoteError::InvalidInvitation)?;
-        let invite_id = String::from_utf8(take_until(&bytes, &mut pos)?)
-            .map_err(|_| RemoteError::InvalidInvitation)?;
-        let token: [u8; 32] = take_until(&bytes, &mut pos)?
-            .try_into()
-            .map_err(|_| RemoteError::InvalidInvitation)?;
-        let name = String::from_utf8(take_until(&bytes, &mut pos)?)
-            .map_err(|_| RemoteError::InvalidInvitation)?;
-        // Compact locator
-        let relay_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
-        pos += 1;
-        let mut relay_urls = Vec::new();
-        for _ in 0..*relay_count {
-            relay_urls.push(
-                String::from_utf8(take_until(&bytes, &mut pos)?)
-                    .map_err(|_| RemoteError::InvalidInvitation)?,
-            );
+        let name = take_text(&mut rest)?;
+        let relay_urls = take_texts(&mut rest)?;
+        let direct_addresses = take_texts(&mut rest)?
+            .into_iter()
+            .map(|addr| addr.parse().map_err(|_| RemoteError::InvalidInvitation))
+            .collect::<Result<_>>()?;
+        let lookup_urls = take_texts(&mut rest)?;
+        if take_bytes::<1>(&mut rest)? != [0] {
+            return Err(RemoteError::InvalidInvitation);
         }
-        let addr_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
-        pos += 1;
-        let mut direct_addresses = Vec::new();
-        for _ in 0..*addr_count {
-            let s = String::from_utf8(take_until(&bytes, &mut pos)?)
-                .map_err(|_| RemoteError::InvalidInvitation)?;
-            direct_addresses.push(s.parse().map_err(|_| RemoteError::InvalidInvitation)?);
-        }
-        let lookup_count = bytes.get(pos).ok_or(RemoteError::InvalidInvitation)?;
-        pos += 1;
-        let mut lookup_urls = Vec::new();
-        for _ in 0..*lookup_count {
-            lookup_urls.push(
-                String::from_utf8(take_until(&bytes, &mut pos)?)
-                    .map_err(|_| RemoteError::InvalidInvitation)?,
-            );
-        }
-        pos += 1; // locator terminator
-        let expires_bytes: [u8; 8] = bytes
-            .get(pos..pos + 8)
-            .ok_or(RemoteError::InvalidInvitation)?
-            .try_into()
-            .map_err(|_| RemoteError::InvalidInvitation)?;
+        let expires_at_unix_seconds = u64::from_le_bytes(take_bytes(&mut rest)?);
+        let permission = match rest {
+            [] => PairingPermission::Control,
+            [code] if *code == PairingPermission::TelemetryProfileRead.code() => {
+                PairingPermission::TelemetryProfileRead
+            }
+            _ => return Err(RemoteError::InvalidInvitation),
+        };
         let offer = Self {
             version: PROTOCOL_VERSION,
             purpose: "velunePairing".into(),
-            permission: PairingPermission::Control,
+            permission,
             issuer,
             invite_id,
             token,
@@ -184,7 +199,7 @@ impl PairingOffer {
                 direct_addresses,
                 lookup_urls,
             },
-            expires_at_unix_seconds: u64::from_le_bytes(expires_bytes),
+            expires_at_unix_seconds,
         };
         offer.validate()?;
         Ok(offer)
@@ -604,9 +619,7 @@ impl RemoteAccessService {
             {
                 return Err(RemoteError::NoHandler);
             }
-            access.profile_ingress = true;
-        }
-        if !permission.enabled(&access) {
+        } else if !permission.enabled(&access) {
             return Err(RemoteError::Closed);
         }
         let endpoint = self.descriptor()?;
@@ -626,6 +639,10 @@ impl RemoteAccessService {
             },
         };
         offer.encode()?;
+        offer.encode_url()?;
+        if permission == PairingPermission::TelemetryProfileRead {
+            access.profile_ingress = true;
+        }
         access.pairing.invalidate(PairingPhase::Expired);
         access.pairing.candidates.clear();
         access.pairing.window = Some(Window {
@@ -796,7 +813,7 @@ impl RemoteAccessService {
     }
     async fn begin_pairing_attempt(&self, offer: &PairingOffer) -> Result<PairingStatus> {
         let _begin = self.pairing_begin.lock().await;
-        let offer = PairingOffer::decode(&offer.encode()?)?;
+        offer.validate()?;
         if offer.issuer == self.state.identity.id() {
             return Err(RemoteError::InvalidInvitation);
         }
@@ -865,8 +882,8 @@ impl RemoteAccessService {
             let _access = self.state.access()?;
             self.state.store.save_pin(DeviceContact {
                 peer_id: offer.issuer.clone(),
-                name: offer.name,
-                locator: offer.locator,
+                name: offer.name.clone(),
+                locator: offer.locator.clone(),
                 confirmation: ContactConfirmation::Pending {
                     attempt_id: challenge.attempt_id.clone(),
                 },

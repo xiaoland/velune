@@ -63,7 +63,7 @@ enum MeshRequest {
 enum MeshReply {
     Sync {
         bundle: TrustBundle,
-        local_descriptor: EndpointDescriptor,
+        local_descriptor: Box<EndpointDescriptor>,
     },
     /// Full path, including origin and destination, verified against the adjacent
     /// QUIC peer at every honest forwarding hop. This is diagnostic, not authority.
@@ -138,20 +138,20 @@ impl MeshNetwork {
         Some(entry)
     }
     fn remember(&self, target: &str, first: &str) {
-        if let Ok(mut hints) = self.hints.lock() {
-            if hints.len() < MAX_HINTS || hints.contains_key(target) {
-                hints
-                    .entry(target.into())
-                    .and_modify(|(peer, _)| *peer = first.into())
-                    .or_insert_with(|| (first.into(), Instant::now()));
-            }
+        let Ok(mut hints) = self.hints.lock() else {
+            return;
+        };
+        if let Some((peer, _)) = hints.get_mut(target) {
+            first.clone_into(peer);
+        } else if hints.len() < MAX_HINTS {
+            hints.insert(target.into(), (first.into(), Instant::now()));
         }
     }
     fn forget_hint(&self, target: &str, first: &str) {
-        if let Ok(mut hints) = self.hints.lock() {
-            if hints.get(target).is_some_and(|(peer, _)| peer == first) {
-                hints.remove(target);
-            }
+        if let Ok(mut hints) = self.hints.lock()
+            && hints.get(target).is_some_and(|(peer, _)| peer == first)
+        {
+            hints.remove(target);
         }
     }
     #[cfg(test)]
@@ -717,14 +717,14 @@ async fn serve_stream(
                     if !service.store.is_member(&peer)? {
                         return Err(RemoteError::Unauthorized);
                     }
-                    if let Some(descriptor) = local_descriptor {
-                        if service.store.is_pinned(&peer)? {
-                            service.store.update_locator(
-                                &peer,
-                                descriptor.name.clone(),
-                                locator(&descriptor),
-                            )?;
-                        }
+                    if let Some(descriptor) = local_descriptor
+                        && service.store.is_pinned(&peer)?
+                    {
+                        service.store.update_locator(
+                            &peer,
+                            descriptor.name.clone(),
+                            locator(&descriptor),
+                        )?;
                     }
                     Ok::<_, RemoteError>(())
                 })
@@ -738,7 +738,7 @@ async fn serve_stream(
                     io,
                     MeshReply::Sync {
                         bundle,
-                        local_descriptor,
+                        local_descriptor: Box::new(local_descriptor),
                     },
                     MAX_CONTROL_FRAME,
                 )

@@ -45,6 +45,7 @@ impl CollectionScope {
 struct Capture {
     credential_id: String,
     generation: u64,
+    codex_client_version: String,
     cache_key: String,
 }
 
@@ -253,11 +254,20 @@ impl ProviderAccountService {
                         AuthenticationMaterial::CodexSubscription {
                             credential_id,
                             configured: true,
-                        } => Binding::ChatGpt(Capture {
-                            credential_id: credential_id.clone(),
-                            generation: provider.authentication.generation,
-                            cache_key: cache_key(credential_id, provider.authentication.generation),
-                        }),
+                        } => {
+                            let generation = provider.authentication.generation;
+                            let codex_client_version = provider.effective_codex_client_version();
+                            Binding::ChatGpt(Capture {
+                                credential_id: credential_id.clone(),
+                                generation,
+                                codex_client_version: codex_client_version.to_owned(),
+                                cache_key: cache_key(
+                                    credential_id,
+                                    generation,
+                                    codex_client_version,
+                                ),
+                            })
+                        }
                         AuthenticationMaterial::CodexSubscription { .. } => {
                             Binding::Unauthenticated
                         }
@@ -637,12 +647,13 @@ fn credits_from_entry(entry: &Entry, refreshing: bool) -> (ComposerQuotaCredits,
     )
 }
 
-fn cache_key(credential_id: &str, generation: u64) -> String {
+fn cache_key(credential_id: &str, generation: u64, codex_client_version: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"velune-provider-account-cache-v1\0");
     digest.update(credential_id.as_bytes());
     digest.update([0]);
     digest.update(generation.to_le_bytes());
+    digest.update(codex_client_version.as_bytes());
     format!("sha256:{:x}", digest.finalize())
 }
 
@@ -1155,6 +1166,7 @@ async fn fetch_json(
         capture.credential_id.clone(),
         capture.generation,
         endpoint,
+        &capture.codex_client_version,
     )
     .await
     {
@@ -1204,6 +1216,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const TEST_CLIENT_VERSION: &str = "0.166.7";
+
     fn full_entry_key(name: &str) -> EntryKey {
         (name.into(), CollectionScope::Full)
     }
@@ -1222,6 +1236,7 @@ mod tests {
                 Binding::ChatGpt(Capture {
                     credential_id: "unused".into(),
                     generation: 1,
+                    codex_client_version: TEST_CLIENT_VERSION.into(),
                     cache_key: "scope".into(),
                 }),
             );
@@ -1288,6 +1303,7 @@ mod tests {
                 Binding::ChatGpt(Capture {
                     credential_id: "unused".into(),
                     generation: 1,
+                    codex_client_version: TEST_CLIENT_VERSION.into(),
                     cache_key: "scope".into(),
                 }),
             );
@@ -1602,6 +1618,7 @@ mod tests {
                 Binding::ChatGpt(Capture {
                     credential_id: "missing-session".into(),
                     generation: 1,
+                    codex_client_version: TEST_CLIENT_VERSION.into(),
                     cache_key: "scope".into(),
                 }),
             );
@@ -1697,6 +1714,7 @@ mod tests {
             AccountDataEndpoint::Resets,
             "synthetic-token",
             "synthetic-account",
+            TEST_CLIENT_VERSION,
         )
         .await
         .unwrap();
@@ -1706,11 +1724,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_is_opaque_and_generation_scoped() {
-        let a = cache_key("session-id", 1);
+    fn cache_key_is_opaque_and_scoped_to_credentials_and_client_version() {
+        let a = cache_key("session-id", 1, TEST_CLIENT_VERSION);
         assert!(a.starts_with("sha256:"));
         assert!(!a.contains("session-id"));
-        assert_ne!(a, cache_key("session-id", 2));
-        assert_ne!(a, cache_key("another", 1));
+        assert_ne!(a, cache_key("session-id", 2, TEST_CLIENT_VERSION));
+        assert_ne!(a, cache_key("another", 1, TEST_CLIENT_VERSION));
+        assert_ne!(a, cache_key("session-id", 1, "0.166.8"));
     }
 }

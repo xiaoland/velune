@@ -99,6 +99,10 @@ impl CoreRuntime {
             let result = (|| {
                 let injection = self.native_injection(&runtime, model_record_key)?;
                 let mut config = self.native_config(&runtime, Some(injection))?;
+                config.auto_compaction =
+                    runtime.model_auto_compaction(&crate::ModelSelection::Managed {
+                        model_record_key: model_record_key.to_owned(),
+                    })?;
                 config.projection_directory = lane;
                 config.mcp_servers = servers;
                 config.session_agents = self.turn_subagents(&runtime);
@@ -162,6 +166,10 @@ impl CoreRuntime {
             rpc_entry: Some(context.resources.join("pi_rpc.mjs")),
             models_path: Some(projection_dir.join("models.json")),
             selection_file: Some(projection_dir.join("velune-selection.json")),
+            model_compaction_reserves: pi_composition::pi_compaction_reserves(
+                &runtime,
+                Some(model_record_key),
+            )?,
             gateway_token: Some(runner.token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
@@ -173,16 +181,13 @@ impl CoreRuntime {
         config
             .validate_sdk()
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        let protocol = match gateway
-            .resolve_dispatch(model_record_key)
-            .map_err(RuntimeError::invalid)?
-            .provider()
-            .protocol
-        {
-            Protocol::ChatCompletions => "openai-completions",
-            Protocol::Responses => "openai-responses",
-            Protocol::Messages => "anthropic-messages",
-        };
+        let protocol = pi_gateway_api(
+            gateway
+                .resolve_dispatch(model_record_key)
+                .map_err(RuntimeError::invalid)?
+                .provider()
+                .protocol,
+        );
         if let Err(error) = materialize_models(&config, &gateway, tunnel.endpoint(), protocol) {
             drop(runner);
             return Err(error);
@@ -291,14 +296,15 @@ impl CoreRuntime {
         let (_, readiness) = client
             .state()
             .map_err(|error| runtime_start_error("startup", error))?;
+        let reported_path = readiness["nativeSession"]["sessionFile"]
+            .as_str()
+            .map(Path::new);
         if !config.side
-            && let (Some(expected), Some(reported)) =
-                (session, readiness["nativeSession"]["sessionFile"].as_str())
-            && Path::new(reported) != expected
+            && let (Some(expected), Some(reported)) = (session, reported_path)
+            && reported != expected
         {
             return Err(super::browsing::history_read_changed());
         }
-        drop(readiness);
         let runtime_id = self
             .session
             .execution_runtime_id
@@ -307,13 +313,24 @@ impl CoreRuntime {
         let mut projection = if let Some(source) = source.filter(|_| !config.side) {
             PiProjection::from_history(source)
         } else {
+            // The fresh SDK SessionManager already owns the new conversation.
+            // Use its reserved path even before the first message persists it.
+            let path = if config.side { session } else { reported_path };
+            let id = match path.filter(|path| !path.as_os_str().is_empty()) {
+                Some(path) => format!("{runtime_id}:{}", path.display()),
+                None if config.side => "active".into(),
+                None => {
+                    return Err(runtime_start_error(
+                        "startup",
+                        pi::Error::Sdk("Pi 未返回新会话的原生文件身份".into()),
+                    ));
+                }
+            };
             PiProjection::new(ConversationSummary {
                 native_read_state: None,
                 can_rename: false,
                 can_delete: false,
-                id: session
-                    .map(|path| format!("{runtime_id}:{}", path.display()))
-                    .unwrap_or_else(|| "active".into()),
+                id,
                 title: velune_conversation::ConversationTitle::Untitled,
                 updated_at_unix_ms: None,
                 created_at_unix_ms: None,
@@ -322,6 +339,7 @@ impl CoreRuntime {
                 parent_conversation_id: None,
             })
         };
+        drop(readiness);
         if let Some(snapshot) = projection.snapshot.as_mut() {
             snapshot.model_record_key = model_record_key.map(str::to_owned);
         }
@@ -398,6 +416,7 @@ mod gateway_execution_tests {
             endpoint: endpoint.into(),
             execution_backend: crate::config::ExecutionBackend::Http,
             request_profile: crate::config::RequestProfile::Native,
+            codex_client_version: None,
             authentication_source: crate::ProviderAuthenticationSource::ApiKey,
             quota_source: crate::config::ProviderQuotaSource::None,
             models: vec![velune_application_api::ProviderModel {
@@ -441,13 +460,7 @@ mod gateway_execution_tests {
         .unwrap()
     }
 
-    #[test]
-    fn managed_pi_terminal_settles_queue_after_cleanup() {
-        use crate::conversation::QueuePause;
-        use crate::local::execution_workers::cleanup_test_gate;
-        use std::time::Instant;
-
-        const PEER: &str = r#"#!/usr/bin/python3
+    const PI_EXECUTION_PEER: &str = r#"#!/usr/bin/python3
 import json, pathlib, sys, threading
 root = pathlib.Path(__file__).resolve().parent
 if '--validate' in sys.argv:
@@ -457,6 +470,11 @@ if '--version' in sys.argv:
     sys.exit(0)
 mode = (root / 'mode').read_text()
 session_file = root / 'session.jsonl'
+if mode == 'create':
+    if '--session' in sys.argv:
+        session_file = pathlib.Path(sys.argv[sys.argv.index('--session') + 1])
+    with (root / 'launches').open('a') as out:
+        out.write(str(session_file) + '\n')
 history_file = root / 'messages.json'
 messages = json.loads(history_file.read_text()) if history_file.exists() else []
 release = threading.Event()
@@ -492,6 +510,10 @@ for line in sys.stdin:
         data = {'commands':[]}
     elif command == 'get_messages':
         data = {'messages':messages}
+    elif command == 'new_session':
+        session_file = root / 'replacement-session.jsonl'
+        messages.clear()
+        (root / 'new-session').touch()
     elif command == 'prompt':
         text = request['message']
         if text.startswith('/velune-projection-sync '):
@@ -514,6 +536,9 @@ for line in sys.stdin:
                 out.write(text + '\n')
             number = len(wire.read_text().splitlines())
             emit({'type':'agent_start'})
+            if mode == 'create':
+                with session_file.open('a') as out:
+                    out.write(text + '\n')
             message({'id':f'user-{number}', 'role':'user', 'content':text})
             threading.Thread(target=finish, args=(number,), daemon=True).start()
             data = {'disposition':'started'}
@@ -522,54 +547,36 @@ for line in sys.stdin:
     emit({'type':'response', 'id':identity, 'command':command, 'success':True, 'data':data})
 "#;
 
-        fn until(core: &mut CoreRuntime, stage: &str, condition: impl Fn(&CoreRuntime) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(4);
-            while !condition(core) {
-                assert!(
-                    Instant::now() < deadline,
-                    "synthetic Pi did not reach {stage}"
-                );
-                core.drain_runtime().unwrap();
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-
-        for (mode, pause) in [
-            ("completed", None),
-            ("failed", Some(QueuePause::TurnFailed)),
-            ("stopped", Some(QueuePause::TurnStopped)),
-        ] {
-            let root = std::env::temp_dir().join(format!(
-                "velune-managed-pi-queue-{}",
-                crate::new_record_key()
-            ));
-            fs::create_dir(&root).unwrap();
-            let root = root.canonicalize().unwrap();
-            fs::write(root.join("mode"), mode).unwrap();
-            let cli = root.join("pi");
-            fs::write(&cli, PEER).unwrap();
-            fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
-            let node = root.join("node");
-            fs::write(
-                &node,
-                r#"#!/usr/bin/python3
+    fn pi_execution_fixture(mode: &str) -> (PathBuf, crate::Application) {
+        let root =
+            std::env::temp_dir().join(format!("velune-pi-execution-{}", crate::new_record_key()));
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(root.join("mode"), mode).unwrap();
+        let cli = root.join("pi");
+        fs::write(&cli, PI_EXECUTION_PEER).unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+        let node = root.join("node");
+        fs::write(
+            &node,
+            r#"#!/usr/bin/python3
 import json, os, sys
 if sys.argv[1] == '--input-type=module':
     print(json.dumps({'binary':sys.argv[-1]}))
 else:
     os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
 "#,
-            )
-            .unwrap();
-            fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
-            fs::write(root.join("pi_rpc.mjs"), PEER).unwrap();
-            let mut app = crate::Application::open(crate::Options {
-                home_directory: root.clone(),
-                resources_directory: root.clone(),
-            })
-            .unwrap();
-            let core = &mut app.runtime;
-            core.upsert_runtime_with_execution(
+        )
+        .unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(root.join("pi_rpc.mjs"), PI_EXECUTION_PEER).unwrap();
+        let mut app = crate::Application::open(crate::Options {
+            home_directory: root.clone(),
+            resources_directory: root.clone(),
+        })
+        .unwrap();
+        app.runtime
+            .upsert_runtime_with_execution(
                 RuntimeInstance {
                     enabled: true,
                     id: "pi".into(),
@@ -590,6 +597,135 @@ else:
                 },
             )
             .unwrap();
+        (root, app)
+    }
+
+    #[test]
+    fn pi_create_returns_the_native_identity_for_immediate_first_send() {
+        use crate::{
+            ClientViewId, Command, ComposedTurn, ModelSelection, Response, SubmissionReceipt,
+        };
+        use std::time::Instant;
+
+        for selection in [
+            ModelSelection::Native {
+                provider_id: Some("synthetic-native".into()),
+                model_id: "shared-model-name".into(),
+            },
+            ModelSelection::Managed {
+                model_record_key: "synthetic".into(),
+            },
+        ] {
+            let (root, mut app) = pi_execution_fixture("create");
+            if matches!(&selection, ModelSelection::Managed { .. }) {
+                save(
+                    &mut app.runtime,
+                    provider("synthetic", "http://127.0.0.1:9/v1"),
+                    "fake",
+                );
+            }
+            let view = ClientViewId("pi-create".into());
+            let Response::CreateConversation(created) = app
+                .execute_command(
+                    Command::CreateConversation {
+                        runtime_id: "pi".into(),
+                        cwd: Some(root.display().to_string()),
+                        project: None,
+                        selection: Some(selection.clone()),
+                    },
+                    false,
+                    &view,
+                )
+                .unwrap()
+            else {
+                panic!("expected creation response");
+            };
+            let session_file = root.join("session.jsonl");
+            let id = created.snapshot.unwrap().conversation.id;
+            assert_eq!(id, format!("pi:{}", session_file.display()));
+            assert!(
+                !session_file.exists(),
+                "the native identity precedes persistence"
+            );
+
+            // Send directly with the creation receipt, with no snapshot or poll in between.
+            let Response::SendTurn(sent) = app
+                .execute_command(
+                    Command::SendTurn {
+                        submission_id: None,
+                        source_runtime_id: "pi".into(),
+                        conversation_id: id.clone(),
+                        target_runtime_id: "pi".into(),
+                        selection: Some(selection),
+                        turn: ComposedTurn {
+                            text: "first input".into(),
+                            effort: None,
+                            permission_mode: None,
+                            attachments: Vec::new(),
+                        },
+                    },
+                    false,
+                    &view,
+                )
+                .unwrap()
+            else {
+                panic!("expected send response");
+            };
+            assert_eq!(sent.submission_receipt, Some(SubmissionReceipt::Sending));
+            assert_eq!(sent.snapshot.unwrap().conversation.id, id);
+
+            fs::write(root.join("release"), "").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !fs::metadata(&session_file).is_ok_and(|file| file.len() > 0)
+                || app.runtime.session.executing()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "first input did not settle in the created session"
+                );
+                app.runtime.drain_runtime().unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            app.close().unwrap();
+            assert_eq!(fs::read_to_string(&session_file).unwrap(), "first input\n");
+            assert_eq!(
+                fs::read_to_string(root.join("wire")).unwrap(),
+                "first input\n"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("launches")).unwrap(),
+                format!("{}\n", session_file.display())
+            );
+            assert!(!root.join("new-session").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn managed_pi_terminal_settles_queue_after_cleanup() {
+        use crate::conversation::QueuePause;
+        use crate::local::execution_workers::cleanup_test_gate;
+        use std::time::Instant;
+
+        fn until(core: &mut CoreRuntime, stage: &str, condition: impl Fn(&CoreRuntime) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !condition(core) {
+                assert!(
+                    Instant::now() < deadline,
+                    "synthetic Pi did not reach {stage}"
+                );
+                core.drain_runtime().unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        for (mode, pause) in [
+            ("completed", None),
+            ("failed", Some(QueuePause::TurnFailed)),
+            ("stopped", Some(QueuePause::TurnStopped)),
+        ] {
+            let (root, mut app) = pi_execution_fixture(mode);
+            let core = &mut app.runtime;
             save(core, provider("synthetic", "http://127.0.0.1:9/v1"), "fake");
             let selection = Some(crate::ModelSelection::Managed {
                 model_record_key: "synthetic".into(),
@@ -648,7 +784,7 @@ else:
                 },
             )
             .unwrap();
-            let (entered, release) = cleanup_test_gate::register(&cli);
+            let (entered, release) = cleanup_test_gate::register(&root.join("pi"));
             if mode == "stopped" {
                 core.cancel("pi").unwrap();
             } else {

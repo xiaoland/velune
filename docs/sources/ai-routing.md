@@ -43,3 +43,7 @@
 ## S77
 
 2026-11-04 用户否定 S73 中“速度=与模型身份分开的按轮选项”的实现方向：速度不应只支持 Codex，也不应由 agent runtime 硬编码模型属性；它是 (提供商, 模型, 账户) 的服务属性。进一步决定：不与协议耦合，managed 模型支持自定义额外请求参数，快速档声明为独立模型记录；运行时自带模型的档位由 adapter 摊平为变体模型（Codex adapter 将 service tier 枚举为变体）。行为归[输入区](../prd/composer-choices.md#轮次配置与模型速度)与 [AI 服务](../product-tdd/ai-service.md)。
+
+## S96
+
+2026-11-27 在准备下一个 Alpha 时，用户确认继续开放「个人订阅作为网关提供商」这条路径，保留通过官方 `agy acp` 接入的现有产品能力。现行行为见 [AI 提供商](../prd/ai-providers.md#提供商模板与来源)及[用户指南](../usage.md#在其他运行时使用-antigravity-订阅)。

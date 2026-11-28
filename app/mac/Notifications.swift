@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 @preconcurrency import UserNotifications
 import VeluneBindings
 
@@ -34,6 +35,7 @@ struct ConversationNotificationTarget: Equatable {
 @MainActor
 final class ConversationNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
     static let shared = ConversationNotificationRouter()
+    private nonisolated static let logger = Logger(subsystem: "local.velune", category: "notifications")
     private struct Source { weak var notifier: ConversationNotifier? }
     private var sources: [String: Source] = [:]
 
@@ -101,8 +103,16 @@ final class ConversationNotificationRouter: NSObject, UNUserNotificationCenterDe
         let center = UNUserNotificationCenter.current()
         // The center remembers the user's decision. Requests arriving while
         // authorization is pending all wait for that decision before delivery.
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            if granted { center.add(request) }
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error = error as NSError? {
+                Self.logger.error("Notification authorization failed: \(error.domain, privacy: .public) (\(error.code))")
+            }
+            guard granted else { return }
+            center.add(request) { error in
+                if let error = error as NSError? {
+                    Self.logger.error("Notification submission failed: \(error.domain, privacy: .public) (\(error.code))")
+                }
+            }
         }
     }
 
@@ -112,13 +122,14 @@ final class ConversationNotificationRouter: NSObject, UNUserNotificationCenterDe
     }
 
     fileprivate func updateBadge() {
+        guard NSApp.activationPolicy() != .prohibited else { return }
         let count = badgeCount
         let label = count > 0 ? String(count) : nil
         if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
@@ -138,13 +149,16 @@ final class ConversationNotificationRouter: NSObject, UNUserNotificationCenterDe
 @MainActor
 final class ConversationNotifier {
     fileprivate weak var application: DeviceStore?
+    private let submit: (UNNotificationRequest) -> Void
     private var pendingCounts: [String: UInt32] = [:]
     /// Conversations whose turn ended while Velune was in the background.
     private var unseenFinished: Set<String> = []
 
-    init(application: DeviceStore) {
+    init(application: DeviceStore, submit: ((UNNotificationRequest) -> Void)? = nil) {
         self.application = application
-        ConversationNotificationRouter.shared.register(self, application: application)
+        let router = ConversationNotificationRouter.shared
+        self.submit = submit ?? router.post
+        router.register(self, application: application)
     }
 
     func observe(_ activity: ConversationActivity) {
@@ -173,7 +187,8 @@ final class ConversationNotifier {
     /// and condition; a later one replaces it.
     func observe(_ alert: QuotaAlert) {
         guard let application, let provider = application.providers.first(where: { $0.id == alert.providerId }) else { return }
-        let window = alert.windowId.map(QuotaWindowObservation.title) ?? ""
+        let usesAntigravity = provider.authenticationSource == .antigravityCli
+        let window = alert.windowId.map { usesAntigravity ? QuotaWindowObservation.antigravityName($0) : QuotaWindowObservation.title($0) } ?? ""
         let body: String
         switch alert.kind {
         case .capReached:
@@ -185,11 +200,11 @@ final class ConversationNotifier {
         }
         let content = UNMutableNotificationContent()
         content.title = provider.name
-        content.subtitle = "额度提醒"
+        content.subtitle = usesAntigravity ? "执行目标额度提醒" : "额度提醒"
         content.body = body
         let device = application.peerID ?? ""
         let request = UNNotificationRequest(identifier: "quota:\(device.utf8.count):\(device):\(alert.providerId):\(alert.kind):\(alert.windowId ?? "")", content: content, trigger: nil)
-        ConversationNotificationRouter.shared.post(request)
+        submit(request)
     }
 
     fileprivate var attentionCount: Int { Set(pendingCounts.keys).union(unseenFinished).count }
@@ -209,6 +224,6 @@ final class ConversationNotifier {
         content.userInfo = target.userInfo
         // One notification per conversation: a newer state replaces the older one.
         let request = UNNotificationRequest(identifier: target.requestIdentifier, content: content, trigger: nil)
-        ConversationNotificationRouter.shared.post(request)
+        submit(request)
     }
 }

@@ -33,6 +33,43 @@ async function childExtensionRegistration(resourceLoader) {
     }
   }
 }
+// Pi's clear_queue result only lists queued user text. Observe the native
+// queues that clearQueue actually removes, within the same synchronous call.
+function attachBackgroundNotificationCancellationReceipt(session) {
+  const { agent } = session;
+  const clearQueue = session.clearQueue.bind(session);
+  session.clearQueue = () => {
+    const cancelled = new Set();
+    const collect = () => {
+      const { steeringMode, followUpMode } = agent;
+      try {
+        agent.steeringMode = agent.followUpMode = "all";
+        for (const message of agent.peekQueuedMessages()) {
+          const id = message.details?.id;
+          if (message.role === "custom" && message.customType === "background-task-notification"
+              && typeof id === "string" && id.length > 0) cancelled.add(id);
+        }
+      } finally {
+        agent.steeringMode = steeringMode;
+        agent.followUpMode = followUpMode;
+      }
+    };
+    // Pi 1.0–1.4 clears steering then follow-up. Its peek gives steering
+    // priority, so inspect again when only the follow-up queue remains.
+    const clearSteeringQueue = agent.clearSteeringQueue;
+    agent.clearSteeringQueue = function () {
+      collect();
+      clearSteeringQueue.call(this);
+      collect();
+    };
+    try {
+      const cleared = clearQueue();
+      return {...cleared, cancelledBackgroundNotificationIds:[...cancelled]};
+    } finally {
+      agent.clearSteeringQueue = clearSteeringQueue;
+    }
+  };
+}
 async function main() {
   const cli = value("--cli");
   if (!cli || !isAbsolute(cli)) fail("Pi CLI 必须是绝对路径");
@@ -52,6 +89,16 @@ async function main() {
   if (modelsPath) process.env.VELUNE_PI_MODELS_PATH = modelsPath;
   else delete process.env.VELUNE_PI_MODELS_PATH;
   const sdk = await installation.importSdk();
+  const compactionReserves = new Map(Object.entries(JSON.parse(process.env.VELUNE_PI_COMPACTION_RESERVES ?? "{}")));
+  delete process.env.VELUNE_PI_COMPACTION_RESERVES;
+  const configuredReserve = model => model ? compactionReserves.get(`${model.provider}/${model.id}`) : undefined;
+  const validateReserve = model => {
+    const reserve = configuredReserve(model);
+    const window = model?.contextWindow;
+    if (reserve !== undefined && Number.isFinite(window) && window > 0 && reserve >= window) {
+      fail(`Pi 自动压缩预留量 ${reserve} 必须小于所选模型的上下文窗口 ${window}`);
+    }
+  };
   const injectedMcp = JSON.parse(process.env.VELUNE_MCP_SERVERS ?? "{}");
   delete process.env.VELUNE_MCP_SERVERS;
   const mcpNames = Object.keys(injectedMcp);
@@ -100,6 +147,12 @@ async function main() {
     const shouldResolve = cached === undefined && hasProjectResources;
     const projectTrusted = shouldResolve ? false : (cached ?? (!hasProjectResources || trustStore.get(cwd) === true));
     const settingsManager = sdk.SettingsManager.create(cwd,agentDir,{projectTrusted});
+    if (compactionReserves.size) {
+      // Resolve through the current model on each check. Pi reloads its merged
+      // settings on trust changes and writes, so a one-time settings merge would be lost.
+      const reserveFor = settingsManager.getCompactionReserveTokens.bind(settingsManager);
+      settingsManager.getCompactionReserveTokens = model => configuredReserve(model) ?? reserveFor(model);
+    }
     const services = await sdk.createAgentSessionServices({cwd,agentDir,settingsManager,modelRuntime,
       resourceLoaderOptions:{additionalExtensionPaths:[extension],extensionFactories:[childExtensionHost,...(mcpNames.length ? [
         sdk.createMcpExtension(),
@@ -117,7 +170,17 @@ async function main() {
     const provider = value("--provider"), modelId = value("--model");
     const model = provider && modelId ? services.modelRuntime.getModel(provider,modelId) : undefined;
     if (provider && modelId && !model) fail("所选运行时模型未注册");
+    validateReserve(model);
     const result = await sdk.createAgentSessionFromServices({services,sessionManager,model,thinkingLevel:"off",sessionStartEvent});
+    attachBackgroundNotificationCancellationReceipt(result.session);
+    if (result.session.model !== model) validateReserve(result.session.model);
+    if (compactionReserves.size) {
+      const setModel = result.session.setModel.bind(result.session);
+      result.session.setModel = async (nextModel, options) => {
+        validateReserve(nextModel);
+        return setModel(nextModel, options);
+      };
+    }
     return {...result,services,diagnostics:services.diagnostics};
   };
   const host = await sdk.createAgentSessionRuntime(factory,{cwd:sessionManager.getCwd(),agentDir,sessionManager});

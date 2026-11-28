@@ -242,6 +242,7 @@ pub(crate) fn apply(
                 endpoint: endpoint.clone(),
                 execution_backend: ExecutionBackend::Http,
                 request_profile: RequestProfile::Native,
+                codex_client_version: None,
                 quota_source: ProviderQuotaSource::None,
                 authentication: ProviderAuthentication {
                     material: AuthenticationMaterial::ApiKey {
@@ -275,6 +276,7 @@ pub(crate) fn apply(
                         binary: binary.to_owned(),
                     },
                     request_profile: RequestProfile::Native,
+                    codex_client_version: None,
                     quota_source: ProviderQuotaSource::ClaudeCliUsage,
                     authentication: ProviderAuthentication {
                         material: AuthenticationMaterial::ClaudeCliLinked {

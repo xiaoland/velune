@@ -6,7 +6,7 @@ extension ConversationStore {
     var canShowBackgroundTasks: Bool {
         guard pendingConversationID == nil else { return false }
         let kind = device.runtimeInstances.first { $0.id == projectionRuntimeID }?.typeId
-        return !isUnsentConversation && (kind == .pi || kind == .claudeCode)
+        return !isUnsentConversation && (kind == .pi || kind == .claudeCode || kind == .codex166)
     }
 }
 
@@ -102,17 +102,22 @@ private struct BackgroundTaskIdentity: Hashable {
     let dismissals: BackgroundTaskDismissals
     @Published var tasks: [BackgroundTaskInfo] = []
     @Published var issue: String?
+    @Published private(set) var live: Bool?
     @Published var loading = false
+    @Published private(set) var refreshing = false
     @Published var output: BackgroundTaskOutput?
     @Published var outputIssue: String?
+    @Published private(set) var readingOutput = false
     @Published var stopping: Set<String> = []
     @Published var finishedExpanded = false
     private var key = ""
     private var generation: UInt64 = 0
     private var outputGeneration: UInt64 = 0
     private var pendingList = false
+    private var pendingManualRefresh = false
     private var pendingOutput = false
     private var outputTask: String?
+    private var outputRequestID: String?
     private weak var source: ConversationStore?
 
     init(dismissals: BackgroundTaskDismissals? = nil) {
@@ -122,8 +127,9 @@ private struct BackgroundTaskIdentity: Hashable {
     func reset(_ store: ConversationStore) {
         generation &+= 1; outputGeneration &+= 1
         source = store; key = identity(store)
-        tasks = []; issue = nil; loading = false; output = nil; outputIssue = nil; outputTask = nil
-        pendingList = false; pendingOutput = false; stopping = []
+        tasks = []; issue = nil; live = nil; loading = false; output = nil; outputIssue = nil; outputTask = nil
+        readingOutput = false; outputRequestID = nil
+        pendingList = false; pendingManualRefresh = false; refreshing = false; pendingOutput = false; stopping = []
         finishedExpanded = false
     }
     var listedTasks: [BackgroundTaskInfo] { tasks.filter { !dismissals.contains($0, in: key) } }
@@ -147,6 +153,7 @@ private struct BackgroundTaskIdentity: Hashable {
             markConnectionUnavailable(reported: value.tasks)
         }
         issue = value.issue
+        live = value.live
     }
 
     private func markConnectionUnavailable(reported: [BackgroundTaskInfo] = []) {
@@ -171,21 +178,41 @@ private struct BackgroundTaskIdentity: Hashable {
               let runtime = source.projectionRuntimeID, let conversation = source.loadedConversationID else { return nil }
         return (transport, runtime, conversation)
     }
-    func reload() {
-        guard !pendingList, let (transport, runtime, conversation) = target() else { return }
-        pendingList = true; loading = tasks.isEmpty && issue == nil
+    private func reportUnavailableConnection() {
+        markConnectionUnavailable()
+        live = false
+        issue = "暂时无法连接执行设备。连接恢复后可重试。"
+    }
+    func reload(manual: Bool = false) {
+        if pendingList {
+            if manual && !refreshing {
+                pendingManualRefresh = true
+                refreshing = true
+            }
+            return
+        }
+        guard let (transport, runtime, conversation) = target() else {
+            if manual { reportUnavailableConnection() }
+            return
+        }
+        pendingList = true; refreshing = manual; loading = live == nil && issue == nil && !manual
         let captured = key, epoch = generation
         DispatchQueue.global(qos: .utility).async {
-            let result = Result { try transport.backgroundTasks(runtimeID: runtime, conversationID: conversation) }
+            let result = Result { try transport.backgroundTasks(runtimeID: runtime, conversationID: conversation, manual: manual) }
             DispatchQueue.main.async { [weak self] in
-                guard let self, target() != nil, key == captured, generation == epoch else { return }
-                pendingList = false; loading = false
+                guard let self, key == captured, generation == epoch else { return }
+                let retryManually = pendingManualRefresh
+                pendingManualRefresh = false
+                pendingList = false; loading = false; refreshing = false
+                guard let source, identity(source) == captured else { return }
                 switch result {
                 case .success(let value): apply(value)
                 case .failure(let error):
                     markConnectionUnavailable()
+                    live = false
                     issue = error.localizedDescription
                 }
+                if retryManually { reload(manual: true) }
             }
         }
     }
@@ -206,24 +233,43 @@ private struct BackgroundTaskIdentity: Hashable {
         }
     }
     func readOutput(_ task: BackgroundTaskInfo, refresh: Bool = false) {
-        guard let (transport, runtime, conversation) = target() else { return }
-        if refresh || outputTask != task.id { outputGeneration &+= 1; output = nil; outputIssue = nil; outputTask = task.id; pendingOutput = false }
-        guard !pendingOutput else { return }
+        guard let (transport, runtime, conversation) = target() else {
+            if refresh && source != nil { reportUnavailableConnection() }
+            return
+        }
         guard task.canReadOutput else { return }
-        if let output, output.status != .checking { return }
+        if refresh || outputTask != task.id {
+            outputGeneration &+= 1
+            if output?.taskId != task.id { output = nil }
+            if outputTask != task.id { outputIssue = nil }
+            outputTask = task.id; outputRequestID = nil; readingOutput = true; pendingOutput = false
+        }
+        guard readingOutput, !pendingOutput else { return }
         pendingOutput = true
-        let captured = key, epoch = generation, outputEpoch = outputGeneration, request = output?.requestId
+        let captured = key, epoch = generation, outputEpoch = outputGeneration, request = outputRequestID
         DispatchQueue.global(qos: .utility).async {
             let result = Result { try transport.backgroundTaskOutput(runtimeID: runtime, conversationID: conversation, taskID: task.id, requestID: request) }
             DispatchQueue.main.async { [weak self] in
-                guard let self, target() != nil, key == captured, generation == epoch, outputGeneration == outputEpoch, outputTask == task.id else { return }
+                guard let self, key == captured, generation == epoch, outputGeneration == outputEpoch, outputTask == task.id else { return }
                 pendingOutput = false
+                guard let source, identity(source) == captured else { return }
                 switch result {
-                case .success(let value): output = value; outputIssue = value.issue
-                case .failure(let error): outputIssue = error.localizedDescription
+                case .success(let value):
+                    outputRequestID = value.requestId
+                    readingOutput = value.status == .checking
+                    if value.status == .ready { output = value }
+                    if !readingOutput { outputIssue = value.status == .failed ? (value.issue ?? "运行时未能返回任务输出。") : nil }
+                case .failure(let error):
+                    readingOutput = false
+                    outputIssue = error.localizedDescription
                 }
             }
         }
+    }
+    func stopReadingOutput() {
+        outputGeneration &+= 1
+        readingOutput = false
+        pendingOutput = false
     }
     func outputIssue(for taskID: String) -> String? {
         outputTask == taskID || output?.taskId == taskID ? outputIssue : nil
@@ -244,16 +290,6 @@ struct BackgroundTaskRow: View {
     }
 }
 
-struct BackgroundTasksEmptyView: View {
-    let loading: Bool
-    let issue: String?
-    var body: some View {
-        ContentUnavailableView(loading ? "正在读取后台任务…" : issue == nil ? "没有后台任务" : "无法读取后台任务", systemImage: "terminal",
-                               description: Text(issue ?? "运行时提供的后台 Shell、委派任务和工作流会列在这里。"))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// An independent tool. Opening linked agents never starts task polling.
 struct BackgroundTasksView: View {
     @ObservedObject var store: ConversationStore
@@ -266,9 +302,12 @@ struct BackgroundTasksView: View {
             if store.canShowBackgroundTasks {
                 BackgroundTasksSessionView(store: store, inPopover: inPopover, inSidebar: inSidebar, layout: layout, open: open)
                     .id((store.projectionRuntimeID ?? "") + "\n" + (store.loadedConversationID ?? ""))
+            } else if store.pendingConversationID != nil {
+                ProgressView("正在打开会话…").controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                BackgroundTasksEmptyView(loading: store.pendingConversationID != nil,
-                                         issue: store.pendingConversationID == nil ? "请选择支持后台任务的 Pi 或 Claude Code 会话。" : nil)
+                ContentUnavailableView("请选择支持后台任务的会话", systemImage: "terminal")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.frame(width: inPopover ? 360 : nil, height: inPopover ? 400 : nil)
     }
@@ -336,27 +375,57 @@ struct BackgroundTasksContent: View {
             if let detailTask {
                 BackgroundTaskDetail(initial: detailTask, model: model, back: { self.detailTask = nil }, open: open)
             } else {
-                if listed.isEmpty && model.hasClearedTasks && model.issue == nil {
-                    ContentUnavailableView("已结束的任务已清理", systemImage: "terminal")
+                HStack(spacing: 8) {
+                    Label("后台任务", systemImage: "terminal").uiFont(.callout.weight(.semibold))
+                    Spacer()
+                    if model.refreshing { ProgressView().controlSize(.small).accessibilityLabel("正在刷新后台任务") }
+                    ReadRefreshButton(label: "刷新后台任务") { model.reload(manual: true) }
+                        .disabled(model.refreshing)
+                        .accessibilityIdentifier("background-tasks-refresh")
+                }.frame(minHeight: 25).padding(.horizontal, 12).padding(.vertical, 8)
+                Divider()
+                if let issue = model.issue {
+                    ReadFailureNotice(title: model.live == true ? "后台任务操作失败" : "无法读取后台任务",
+                                      detail: issue, retryDisabled: model.refreshing,
+                                      retryLabel: model.live == true ? "刷新状态" : "重试") { model.reload(manual: true) }
+                    Divider()
+                } else if model.live == false {
+                    ReadFailureNotice(title: "暂无实时任务状态",
+                                      detail: "历史任务通知仍可在会话消息中查看。", icon: "bolt.slash")
+                    Divider()
+                }
+                if listed.isEmpty && model.hasClearedTasks {
+                    Text("已清理已结束的任务").uiFont(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if listed.isEmpty {
-                    BackgroundTasksEmptyView(loading: model.loading, issue: model.issue)
+                    if model.loading {
+                        ProgressView("正在读取后台任务…").controlSize(.small)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if model.issue == nil && model.live != false {
+                        Text("没有后台任务").uiFont(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
                 } else {
                     if inSidebar { list(active, finished).listStyle(.sidebar) }
                     else { list(active, finished).listStyle(.inset) }
                 }
-                Divider()
-                HStack {
-                    if !listed.isEmpty {
-                        Text(model.issue ?? "\(listed.count) 个后台任务")
-                            .uiFont(.callout).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                    Spacer()
-                    if model.hasClearedTasks { Button("恢复显示", action: model.restoreFinished) }
-                    Button("刷新", action: model.reload).disabled(model.loading)
-                    Button("查看任务") { detailTask = selected }
-                        .keyboardShortcut(inPopover ? .defaultAction : nil).disabled(selected == nil)
-                }.padding(10)
+                if !listed.isEmpty || model.hasClearedTasks {
+                    Divider()
+                    HStack {
+                        if !listed.isEmpty {
+                            Text("\(listed.count) 个任务").uiFont(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if model.hasClearedTasks { Button("恢复显示", action: model.restoreFinished) }
+                        if let selected {
+                            Button("查看任务") { detailTask = selected }
+                                .keyboardShortcut(inPopover ? .defaultAction : nil)
+                        }
+                    }.padding(10)
+                    .frame(minHeight: 39)
+                }
             }
         }
         .frame(width: inPopover ? 360 : nil, height: inPopover ? 400 : nil)
@@ -418,16 +487,32 @@ struct BackgroundTaskDetail: View {
     let back: () -> Void
     let open: (String, LinkedConversationOpening?) -> Void
     @State private var outputRefresh: UInt64 = 0
-    private var task: BackgroundTaskInfo { model.tasks.first { $0.id == initial.id } ?? initial }
+    private var task: BackgroundTaskInfo {
+        if let current = model.tasks.first(where: { $0.id == initial.id }) { return current }
+        var last = initial
+        if !last.status.isTerminal { last.status = .unknown }
+        last.canStop = false
+        last.canReadOutput = false
+        return last
+    }
     private var output: BackgroundTaskOutput? { model.output?.taskId == task.id ? model.output : nil }
     var body: some View {
+        let outputIssue = model.outputIssue(for: task.id)
+        let refreshesOutput = task.canReadOutput && (model.issue == nil || outputIssue != nil)
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Button("返回列表", systemImage: "chevron.backward", action: back)
-                    .buttonStyle(.plain)
+                    .labelStyle(.iconOnly).buttonStyle(.plain).help("返回列表")
                 Spacer()
+                if model.refreshing || model.readingOutput { ProgressView().controlSize(.small).accessibilityLabel("正在刷新任务") }
+                ReadRefreshButton(label: refreshesOutput ? "刷新任务输出" : "刷新任务状态") {
+                    if refreshesOutput { outputRefresh &+= 1 } else { model.reload(manual: true) }
+                }
+                .disabled(refreshesOutput ? model.readingOutput : model.refreshing)
+                .accessibilityIdentifier("background-task-detail-refresh")
                 if task.canStop {
-                    Button("停止任务") { model.stop(task) }.disabled(model.stopping.contains(task.id))
+                    Button("停止任务") { model.stop(task) }.controlSize(.small)
+                        .disabled(model.stopping.contains(task.id))
                 }
             }.frame(minHeight: 22).padding(12)
             VStack(alignment: .leading, spacing: 5) {
@@ -440,35 +525,42 @@ struct BackgroundTaskDetail: View {
                 if let child = task.conversationId { Button("打开子会话") { open(child, nil) } }
             }.padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
+            if let issue = outputIssue, refreshesOutput {
+                ReadFailureNotice(title: "无法读取输出", detail: issue, retryDisabled: model.readingOutput) { outputRefresh &+= 1 }
+                Divider()
+            } else if let issue = model.issue {
+                ReadFailureNotice(title: "任务状态暂不可用", detail: issue, retryDisabled: model.refreshing) { model.reload(manual: true) }
+                Divider()
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let issue = model.outputIssue(for: task.id) { Text(issue).foregroundStyle(.secondary) }
-                    else if let output, output.status == .ready {
+                    if let output, output.status == .ready {
                         Text(output.text.isEmpty ? "暂时没有输出。" : output.text)
                             .font(.system(.body, design: .monospaced)).multilineTextAlignment(.leading)
-                    } else if task.canReadOutput { ProgressView("正在读取输出…").controlSize(.small) }
-                    else { Text(task.status == .unknown ? "历史回执不能确认任务仍在运行，当前没有可读取的输出。" : "运行时尚未提供此任务的输出。").foregroundStyle(.secondary) }
+                    } else if outputIssue == nil {
+                        if task.canReadOutput { ProgressView("正在读取输出…").controlSize(.small) }
+                        else if model.issue == nil {
+                            Text(task.status == .unknown ? "历史回执不能确认任务仍在运行，当前没有可读取的输出。" : "运行时尚未提供此任务的输出。")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            HStack {
-                if let issue = model.issue { Text(issue).uiFont(.caption).foregroundStyle(.secondary).lineLimit(2).help(issue) }
-                else if output?.truncated == true {
-                    Text("输出已截取").uiFont(.caption).foregroundStyle(.secondary)
-                        .help("仅显示有界输出，可在原生工具中查看完整内容。")
-                }
-                Spacer()
-                Button("刷新输出") { outputRefresh &+= 1 }.disabled(!task.canReadOutput)
-            }.padding(10)
+            if output?.truncated == true {
+                Divider()
+                Text("输出已截取").uiFont(.caption).foregroundStyle(.secondary).padding(10)
+                    .help("仅显示有界输出，可在原生工具中查看完整内容。")
+            }
         }
         .task(id: [task.id, String(task.canReadOutput), String(outputRefresh)]) {
-            guard task.canReadOutput else { return }
+            guard task.canReadOutput else { model.stopReadingOutput(); return }
             model.readOutput(task, refresh: true)
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-                if model.outputIssue(for: task.id) != nil || (output != nil && output?.status != .checking) { break }
+                if !model.readingOutput { break }
                 model.readOutput(task)
             }
         }
+        .onDisappear { model.stopReadingOutput() }
     }
 }

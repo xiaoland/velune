@@ -1,41 +1,32 @@
 //! Claude source export through the production validator and native writers.
 //! Everything lives in an owned temporary directory; no runtime or model runs.
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::collections::BTreeSet;
 use velune_agent_runtime::{
     execution::ExecutionTarget,
-    history::{HistoryConfig, export_context},
+    history::{HistoryConfig, export_context, export_context_before},
     import::*,
     version::RuntimeKind,
 };
+use velune_test_support::TempRoot;
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000001";
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "velune-claude-handoff-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        Self(root)
+        Self(TempRoot::new("claude-handoff"))
     }
     fn config(&self) -> HistoryConfig {
         HistoryConfig {
             kind: RuntimeKind::ClaudeCode,
             execution: ExecutionTarget::Local,
-            os_home: Some(self.0.clone()),
-            provider: "claude-code".into(),
+            os_home: Some(self.0.to_path_buf()),
             binary: self.0.join("unused-cli"),
             node_binary: self.0.join("unused-node"),
-            resources_directory: self.0.clone(),
-            root: self.0.clone(),
-            home: self.0.clone(),
+            resources_directory: self.0.to_path_buf(),
+            root: self.0.to_path_buf(),
+            home: self.0.to_path_buf(),
         }
     }
     fn save(&self, records: &[Value]) {
@@ -44,11 +35,6 @@ impl Fixture {
             records.iter().map(|r| format!("{r}\n")).collect::<String>(),
         )
         .unwrap();
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -179,6 +165,43 @@ fn genuinely_missing_claude_result_is_rejected_at_source_export() {
     f.save(&records);
     let error = export_context(&f.config(), SESSION).unwrap_err();
     assert!(error.to_string().contains("工具结果不完整"));
+}
+
+#[test]
+fn edited_fork_prefix_preserves_tool_search_results_as_portable_content() {
+    let f = Fixture::new();
+    let mut records = completed_parallel_calls();
+    records[3]["message"]["content"][0]["content"] = json!([
+        {"type":"text","text":"matching tool"},
+        {"type":"tool_reference","tool_name":"mcp__synthetic__lookup"}
+    ]);
+    f.save(&records);
+    let ctx = export_context_before(&f.config(), SESSION, "r2").unwrap();
+    let result = ctx
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|block| match block {
+            Block::ToolResult { id, content, .. } if id == "t1" => Some(content),
+            _ => None,
+        })
+        .expect("the exact earlier tool result must survive the fork cut");
+    assert_eq!(
+        result,
+        &vec![
+            Block::Text {
+                text: "matching tool".into()
+            },
+            Block::Text {
+                text: "Tool reference: mcp__synthetic__lookup".into()
+            },
+        ]
+    );
+    assert!(
+        !ctx.messages
+            .iter()
+            .any(|message| { message.source_message_id.as_deref() == Some("r2") })
+    );
 }
 
 #[test]

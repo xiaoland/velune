@@ -1,7 +1,6 @@
 import Foundation
 
-/// Crash recovery for unfinished editing uses the same typed window snapshot
-/// as scene restoration, but does not depend on macOS committing scene storage.
+/// Stores window contents and draft recovery data under the AppKit window's UUID.
 final class WindowWorkspaceJournal: @unchecked Sendable {
     private let directory: URL?
     private let report: @Sendable (String) -> Void
@@ -52,7 +51,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
     }
     func flush() { queue.sync {} }
 
-    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil, aggregatingDevices: Bool = false, legacyTabID: UUID? = nil) -> SavedWindowLayout? {
+    func restore(id: String, recoverLatest: Bool, kind: ConversationWindowKind = .workspace, device: String? = nil, aggregatingDevices: Bool = false) -> SavedWindowLayout? {
         guard let directory else { return nil }
         flush()
         do {
@@ -62,15 +61,9 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             let snapshots = files.compactMap { url -> (id: String, date: Date, layout: SavedWindowLayout)? in
                 let fileID = url.deletingPathExtension().lastPathComponent
                 do {
-                    var layout = try SavedWindowLayout.decodeKnown(Data(contentsOf: url))
-                    if layout.schemaVersion == 0 {
-                        let bytes = try Data(contentsOf: url)
-                        let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                        try backupLegacy(bytes, id: fileID)
-                        layout.schemaVersion = 1
-                        try JSONEncoder().encode(layout).write(to: url, options: .atomic)
-                        if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
-                    }
+                    let bytes = try Data(contentsOf: url)
+                    var layout = try SavedWindowLayout.decodeKnown(bytes)
+                    try upgrade(&layout, from: bytes, at: url, id: fileID)
                     if aggregatingDevices, kind == .workspace, device == nil, layout.windowKind != .single,
                        case .remote(_)? = layout.windowDevice {
                         try backupLegacy(Data(contentsOf: url), id: fileID, suffix: "before-aggregation")
@@ -87,21 +80,36 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             // Remote transports share this Mac's state directory. A local
             // arrangement must never resolve remote IDs against another core.
             let scope = SavedWindowLayout.ExecutionDevice(device)
-            // An explicit old scene identity may still restore a pre-kind
-            // snapshot. Unqualified recovery must never borrow another kind.
+            // A window's own entry may be a snapshot from before kinds were
+            // recorded. Unqualified recovery must never borrow another kind.
             let chosen = snapshots.first { $0.id == id && ($0.layout.windowDevice == nil || $0.layout.windowDevice == scope) && ($0.layout.windowKind == nil || $0.layout.windowKind == kind) }
-                // Older handoff windows used a SceneStorage-only identity.
-                // Their archived seed still carries the exact tab UUID; use
-                // that proof within the same device/kind, never a nearby window.
-                ?? legacyTabID.flatMap { tabID in
-                    snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind
-                        && $0.layout.panes.values.contains { $0.tabs.contains(tabID) } }
-                }
                 ?? (recoverLatest ? snapshots.last { $0.layout.windowDevice == scope && $0.layout.windowKind == kind } : nil)
             // Shared content is authoritative. A window snapshot restores its cursor
             // and any explicitly pending edit; never copy text between input identities.
             return chosen?.layout
         } catch { report(error.localizedDescription); return nil }
+    }
+
+    /// The windows open when the application last quit: every open window
+    /// is written as it quits, so their recovery points are the latest
+    /// ones, within moments of each other. Closed windows' are older.
+    func lastSession(within interval: TimeInterval = 30) -> [(id: String, kind: ConversationWindowKind, device: String?)] {
+        guard let directory else { return [] }
+        flush()
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let dated = files.compactMap { url -> (url: URL, date: Date)? in
+            guard url.pathExtension == "json", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                  let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return nil }
+            return (url, date)
+        }
+        guard let latest = dated.map(\.date).max() else { return [] }
+        return dated.filter { latest.timeIntervalSince($0.date) <= interval }.sorted { $0.date < $1.date }.compactMap { file in
+            guard let layout = try? SavedWindowLayout.decodeKnown(Data(contentsOf: file.url)) else { return nil }
+            let kind = layout.windowKind ?? .workspace
+            var device: String?
+            if kind == .single, case .remote(let peer)? = layout.windowDevice { device = peer }
+            return (file.url.deletingPathExtension().lastPathComponent, kind, device)
+        }
     }
 
     private func block(_ id: String) {
@@ -121,13 +129,7 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
         do {
             let bytes = try Data(contentsOf: target)
             var layout = try SavedWindowLayout.decodeKnown(bytes)
-            if layout.schemaVersion == 0 {
-                let date = try target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-                try backupLegacy(bytes, id: id)
-                layout.schemaVersion = 1
-                try JSONEncoder().encode(layout).write(to: target, options: .atomic)
-                if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: target.path) }
-            }
+            try upgrade(&layout, from: bytes, at: target, id: id)
             lock.withLock { _ = checkedIDs.insert(id) }
             return true
         } catch {
@@ -135,6 +137,21 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
             report("无法保存恢复点 \(id).json：\(error.localizedDescription)；原文件保留，恢复该窗口的写入已禁用")
             return false
         }
+    }
+
+    /// Known older formats (the pre-beta shape, floating tools) are backed
+    /// up, then rewritten as now encoded, keeping the file's date for
+    /// latest-window selection.
+    private func upgrade(_ layout: inout SavedWindowLayout, from bytes: Data, at url: URL, id: String) throws {
+        let unversioned = layout.schemaVersion == 0
+        let floating = ToolWindowLayout.migratingFloatingTools(in: bytes) != nil
+        guard unversioned || floating else { return }
+        let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        if unversioned { try backupLegacy(bytes, id: id) }
+        if floating { try backupLegacy(bytes, id: id, suffix: "before-floating-tools") }
+        layout.schemaVersion = 1
+        try JSONEncoder().encode(layout).write(to: url, options: .atomic)
+        if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
     }
 
     private func backupLegacy(_ bytes: Data, id: String, suffix: String = "before-beta") throws {

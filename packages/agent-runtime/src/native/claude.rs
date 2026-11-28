@@ -42,8 +42,17 @@ fn claude_agents(agents: &[SessionAgent]) -> Value {
 #[derive(Default)]
 pub(super) struct State {
     pub(super) commands: super::claude_port::Commands,
+    /// Configuration of the child owning the current turn.
+    pub(super) launched_effort: Option<String>,
+    pub(super) permission_mode: Option<String>,
     /// The turn's result, whether it failed, and the last activity since.
     pub(super) result: Option<(TurnOutcome, std::time::Instant)>,
+    pub(super) foreground: Option<ForegroundCommand>,
+    pub(super) composed_prompt: Option<super::claude_composed::PendingPrompt>,
+    pub(super) composed_acceptance: Option<ClaudeComposedAcceptance>,
+    pub(super) release_when_idle: bool,
+    pub(super) background_followup_capable: bool,
+    pub(super) background_followups: BTreeMap<String, BackgroundFollowup>,
     /// A refused response can trigger a native follow-up before the result.
     /// Keep the visible failure until a real completed response recovers it.
     safety_stopped: bool,
@@ -59,6 +68,8 @@ pub(super) struct State {
     pub(super) task_reads: crate::background::Reads,
     pub(super) task_read_retention: std::collections::VecDeque<(String, DataRetention)>,
     pub(super) task_issue: Option<String>,
+    pub(super) task_refresh: Option<super::claude_background::TaskRefresh>,
+    pub(super) task_refresh_issue: Option<&'static str>,
     pub(super) task_sequence: u64,
     pub(super) task_stop_capable: bool,
     pub(super) requires_action: bool,
@@ -76,6 +87,19 @@ pub(super) struct State {
     /// carries, and the question waiting for its answer.
     pub(super) side_history: Vec<Value>,
     pub(super) side_question: Option<SideQuestion>,
+}
+
+pub(super) struct ForegroundCommand {
+    id: String,
+    result_confirmed: bool,
+    command_completed: bool,
+}
+
+#[derive(PartialEq, Eq)]
+pub(super) enum BackgroundFollowup {
+    Running,
+    AwaitingResult,
+    AwaitingIdle,
 }
 
 pub(super) struct SideQuestion {
@@ -106,6 +130,21 @@ pub(super) enum ClaudeStart {
     Side,
     /// A portable side context, with no native session to resume or save.
     SideContext { path: PathBuf },
+}
+
+pub(super) fn claude_permission_mode(mode: &str) -> Option<&str> {
+    let mode = if mode == "default" { "manual" } else { mode };
+    crate::version::CLAUDE_PERMISSION_MODES
+        .iter()
+        .any(|known| known.id == mode)
+        .then_some(mode)
+}
+
+fn steer_settings_changed(detail: impl std::fmt::Display) -> Error {
+    Error::with_code(
+        format!("Claude Code 已确认切换权限，插入消息未发送：{detail}"),
+        "steer_settings_changed",
+    )
 }
 
 impl NativeSession {
@@ -141,6 +180,9 @@ impl NativeSession {
             "--permission-prompt-tool",
             "stdio",
         ]);
+        if let Some(AutoCompactionSetting::Claude { window_tokens }) = &config.auto_compaction {
+            command.arg("--autocompact").arg(window_tokens.to_string());
+        }
         if let Some(effort) = effort {
             if !CLAUDE_EFFORT_LEVELS.contains(&effort) {
                 return Err(Error::new("Claude Code 不接受此推理强度"));
@@ -148,15 +190,16 @@ impl NativeSession {
             command.arg("--effort").arg(effort);
         }
         if let Some(mode) = permission_mode {
-            if !crate::version::CLAUDE_PERMISSION_MODES
-                .iter()
-                .any(|known| known.id == mode)
-            {
-                return Err(Error::new("Claude Code 不接受此权限模式"));
-            }
+            let mode = claude_permission_mode(mode)
+                .ok_or_else(|| Error::new("Claude Code 不接受此权限模式"))?;
             command.arg("--permission-mode").arg(mode);
         }
         if let Some((id, cwd, start)) = session {
+            if !matches!(start, ClaudeStart::Side | ClaudeStart::SideContext { .. }) {
+                // Make the native option available for an explicit later
+                // control request. The initial mode stays as selected above.
+                command.arg("--allow-dangerously-skip-permissions");
+            }
             // `--resume-session-at` and `--fork-session` apply in print mode.
             match start {
                 ClaudeStart::Resume => command.arg("--resume").arg(id),
@@ -239,6 +282,8 @@ impl NativeSession {
         Ok(command)
     }
     pub(super) fn claude_initialize(&mut self) -> Result<()> {
+        self.claude.task_refresh = None;
+        self.claude.task_refresh_issue = None;
         let response = self
             .rpc
             .claude_control(json!({"subtype":"initialize","hooks":{}}))?;
@@ -351,7 +396,7 @@ impl NativeSession {
         ))
     }
     pub(super) fn claude_create(&mut self, cwd: Option<&Path>, runtime_id: &str) -> Result<()> {
-        let id = claude_session_id()?;
+        let id = claude_uuid()?;
         let cwd = cwd
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.default_cwd.clone());
@@ -363,22 +408,36 @@ impl NativeSession {
     /// copies the session up to there under a new identity, which the
     /// first turn creates.
     pub(super) fn claude_branch(&mut self, index: usize, placement: EditPlacement) -> Result<()> {
+        let from = self
+            .native_id
+            .as_deref()
+            .ok_or_else(|| Error::new("没有原生会话身份"))?;
         let snapshot = self.snapshot.as_ref().expect("branched snapshot");
         let at = snapshot.messages[index]
             .branch_point
             .clone()
             .ok_or_else(|| Error::new("Claude Code 不能替换会话的第一条消息"))?;
+        if snapshot.messages[index + 1..]
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .any(|block| matches!(block, MessageBlock::ContextCompaction { .. }))
+        {
+            // Even a retained UUID can replay a newer compact summary that
+            // describes the message being replaced or the discarded suffix.
+            return Err(Error::with_code(
+                "所选消息之后有 Claude 上下文压缩，需要从原始历史重建",
+                "claude_replay_boundary_unavailable",
+            ));
+        }
+        self.claude_require_replay_boundary(from, &at)?;
         match placement {
             EditPlacement::InPlace => {
                 self.claude.start = ClaudeStart::ResumeAt { at };
                 self.truncate_snapshot(index);
             }
             EditPlacement::Fork => {
-                let from = self
-                    .native_id
-                    .clone()
-                    .ok_or_else(|| Error::new("没有原生会话身份"))?;
-                let id = claude_session_id()?;
+                let from = from.to_owned();
+                let id = claude_uuid()?;
                 let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
                 let runtime_id = snapshot.conversation.runtime_id.clone();
                 let history = snapshot.messages[..index].to_vec();
@@ -415,7 +474,10 @@ impl NativeSession {
             })
             .transpose()?
             .or_else(|| snapshot.messages.last().map(|message| message.id.clone()));
-        let id = claude_session_id()?;
+        if let Some(at) = &at {
+            self.claude_require_replay_boundary(&from, at)?;
+        }
+        let id = claude_uuid()?;
         let cwd = snapshot.conversation.cwd.as_deref().map(PathBuf::from);
         let runtime_id = snapshot.conversation.runtime_id.clone();
         let history = snapshot.messages[..next.unwrap_or(snapshot.messages.len())].to_vec();
@@ -427,6 +489,20 @@ impl NativeSession {
         };
         Ok(())
     }
+
+    /// `--resume-session-at` looks up the boundary after Claude loads its
+    /// current replay chain. A UUID in the transcript can have been compacted
+    /// away. Check before changing the target or truncating the live view.
+    fn claude_require_replay_boundary(&self, from: &str, at: &str) -> Result<()> {
+        if !crate::history::claude_replay_contains(&self.claude_history_config(), from, at)? {
+            return Err(Error::with_code(
+                "所选位置已移出 Claude 当前原生上下文，需要从历史重建",
+                "claude_replay_boundary_unavailable",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn claude_open(
         &mut self,
         id: &str,
@@ -564,6 +640,14 @@ impl NativeSession {
         }
     }
     pub(super) fn claude_send(&mut self, input: &crate::TurnInput) -> Result<()> {
+        self.claude_send_input(input, false)
+    }
+
+    pub(super) fn claude_send_input(
+        &mut self,
+        input: &crate::TurnInput,
+        composed: bool,
+    ) -> Result<()> {
         if self.side {
             return self.claude_side_send(input);
         }
@@ -575,13 +659,36 @@ impl NativeSession {
             .map(|image| json!({"type":"image","source":{"type":"base64","media_type":image.kind.media_type(),"data":image.base64()}}))
             .chain((!text.is_empty()).then(|| json!({"type":"text","text":text})))
             .collect::<Vec<_>>();
-        self.claude_write(&json!({"type":"user","session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}}))?;
+        // Claude persists the UUID supplied on an ordinary input. Use it on
+        // the live row so history reloads keep the same edit and fork target.
+        let id = claude_uuid()?;
+        let frame = json!({"type":"user","uuid":id,"session_id":self.native_id,"parent_tool_use_id":null,"message":{"role":"user","content":content}});
+        let pending_write = if composed {
+            let deadline = std::time::Instant::now() + rpc::CONTROL_TIMEOUT;
+            let (write, _) = self.rpc.enqueue_claude_frame_receipt(
+                &frame,
+                crate::transport::WriteClass::Ordinary,
+                deadline,
+                crate::transport::writer_policy_limit(),
+            )?;
+            if let Some(snapshot) = &mut self.snapshot {
+                snapshot.executions.begin(ExecutionKind::UserTurn, false);
+            }
+            Some((write, deadline))
+        } else {
+            self.claude_write(&frame)?;
+            None
+        };
         self.compaction_message_id = None;
         self.claude.result = None;
         self.claude.commands.result_is_terminal = false;
         self.claude.safety_stopped = false;
         self.claude.api_failed = false;
-        self.claude.tasks.clear();
+        self.claude.foreground = Some(ForegroundCommand {
+            id: id.clone(),
+            result_confirmed: false,
+            command_completed: false,
+        });
         self.claude.requires_action = false;
         self.claude.stream_id = None;
         self.turn_id = Some(format!(
@@ -590,12 +697,12 @@ impl NativeSession {
             self.snapshot.as_ref().map_or(0, |s| s.revision)
         ));
         if !content.is_empty() {
-            self.message(Message {
+            let message = Message {
                 turn_settings: None,
                 turn_usage: None,
                 branch_point: None,
                 completed: true,
-                id: format!("{}:user", self.turn_id.as_deref().unwrap_or_default()),
+                id,
                 role: MessageRole::User,
                 timestamp_unix_ms: None,
                 blocks: input
@@ -609,7 +716,14 @@ impl NativeSession {
                     })
                     .chain((!text.is_empty()).then(|| MessageBlock::Text { text: text.into() }))
                     .collect(),
-            });
+            };
+            if let Some((write, deadline)) = pending_write {
+                self.claude.composed_prompt = Some(super::claude_composed::PendingPrompt::new(
+                    message, write, deadline,
+                ));
+            } else {
+                self.message(message);
+            }
         }
         self.claude.start = ClaudeStart::Resume;
         self.running();
@@ -618,6 +732,123 @@ impl NativeSession {
     /// A user message written while a turn runs joins that turn: Claude Code
     /// takes it in at its next step instead of starting another.
     pub(super) fn claude_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
+        if !self.claude.commands.enabled {
+            self.claude_poll_steer_boundary()?;
+        }
+        let turn_id = self
+            .turn_id
+            .clone()
+            .filter(|_| self.claude_can_insert())
+            .ok_or_else(|| Error::new("Claude Code 当前轮次不能插入消息"))?;
+        let permission_mode = input
+            .permission_mode
+            .as_deref()
+            .map(|mode| {
+                claude_permission_mode(mode)
+                    .ok_or_else(|| Error::new("Claude Code 不接受此权限模式"))
+            })
+            .transpose()?
+            .filter(|mode| self.claude.permission_mode.as_deref() != Some(*mode));
+        if let Some(mode) = permission_mode {
+            if self.claude.commands.enabled {
+                return Err(Error::with_code(
+                    "Claude Code 异步命令接口目前无法随插入消息更改权限，请排队发送",
+                    "steer_settings_unsupported",
+                ));
+            }
+            self.claude_set_steer_permission(mode)?;
+            self.claude_poll_steer_boundary()
+                .map_err(steer_settings_changed)?;
+            if self.turn_id.as_deref() != Some(turn_id.as_str()) || !self.claude_can_insert() {
+                return Err(steer_settings_changed("原轮次已结束或不可插入"));
+            }
+            if self.claude.permission_mode.as_deref() != Some(mode) {
+                return Err(steer_settings_changed("运行时报告权限模式已再次变化"));
+            }
+        }
+        let result = self.claude_write_steer(input);
+        match (permission_mode, result) {
+            (Some(_), Err(error)) if matches!(error.code(), "transport" | "timeout") => {
+                Err(Error::with_code(
+                    format!(
+                        "Claude Code 已确认切换权限。插入消息交付未确认，请查看会话记录：{error}"
+                    ),
+                    error.code(),
+                ))
+            }
+            (Some(_), Err(error)) => Err(steer_settings_changed(error)),
+            (_, result) => result,
+        }
+    }
+
+    fn claude_poll_steer_boundary(&mut self) -> Result<()> {
+        self.poll()?;
+        self.rpc
+            .check_failure()
+            .inspect_err(|_| self.fail_connection())
+    }
+
+    fn claude_can_insert(&self) -> bool {
+        self.can_steer()
+            && !self.failed
+            && !self.process_ended
+            && !self.compacting
+            && !self.claude.commands.result_is_terminal
+            && self.claude.bound_session_id.is_some()
+            && self.claude.bound_session_id == self.native_id
+    }
+
+    fn claude_set_steer_permission(&mut self, mode: &str) -> Result<()> {
+        let method = "set_permission_mode";
+        let deadline = std::time::Instant::now() + rpc::CONTROL_TIMEOUT;
+        let result = rpc::observe_request(method, || {
+            let id = self.rpc.begin_claude_control(
+                &json!({"subtype":method,"mode":mode}),
+                crate::transport::WriteClass::Ordinary,
+                deadline,
+            )?;
+            loop {
+                let record = self.rpc.receive(method, deadline)?;
+                if record["type"] == "control_response" && record["response"]["request_id"] == id {
+                    let response = &record["response"];
+                    return match response["subtype"].as_str() {
+                        Some("success") => Ok(()),
+                        Some("error") => {
+                            let reason = response["error"]
+                                .as_str()
+                                .filter(|text| !text.is_empty())
+                                .map(|text| text.chars().take(512).collect::<String>())
+                                .unwrap_or_else(|| "运行时未提供原因".into());
+                            Err(Error::with_code(
+                                format!("Claude Code 拒绝切换权限，插入消息未发送：{reason}"),
+                                "steer_permission_rejected",
+                            ))
+                        }
+                        _ => Err(Error::with_code("Claude 权限控制回执无效", "transport")),
+                    };
+                }
+                self.claude_receive_record(record)?;
+            }
+        });
+        match result {
+            Ok(()) => {
+                self.claude.permission_mode = Some(mode.into());
+                Ok(())
+            }
+            Err(error) if error.code() == "steer_permission_rejected" => Err(error),
+            Err(error) => {
+                if matches!(error.code(), "transport" | "timeout") {
+                    self.fail_connection();
+                }
+                Err(Error::with_code(
+                    format!("Claude Code 权限切换未确认，插入消息未发送：{error}"),
+                    "steer_permission_unconfirmed",
+                ))
+            }
+        }
+    }
+
+    fn claude_write_steer(&mut self, input: &crate::TurnInput) -> Result<()> {
         let text = input.text.as_str();
         let content = input
             .images
@@ -637,7 +868,12 @@ impl NativeSession {
             self.claude.steer_sequence
         );
         self.message(Message {
-            turn_settings: None,
+            turn_settings: self.claude.permission_mode.clone().map(|permission_mode| {
+                crate::conversation::TurnSettings {
+                    permission_mode: Some(permission_mode),
+                    ..Default::default()
+                }
+            }),
             turn_usage: None,
             branch_point: None,
             completed: true,
@@ -785,8 +1021,25 @@ impl NativeSession {
         if self.side {
             return self.claude_side_record(&record);
         }
+        if record["type"] == "system"
+            && matches!(record["subtype"].as_str(), Some("init" | "status"))
+            && let Some(mode) = record["permissionMode"]
+                .as_str()
+                .and_then(claude_permission_mode)
+        {
+            self.claude.permission_mode = Some(mode.into());
+        }
         self.claude_background_record(&record);
+        self.claude_observe_composed_acceptance(&record);
         match record["type"].as_str() {
+            Some("command_lifecycle") if record["state"] == "completed" => {
+                if let Some(command) = self.claude.foreground.as_mut()
+                    && record["command_uuid"].as_str() == Some(command.id.as_str())
+                {
+                    command.command_completed = true;
+                    self.claude_finish_background_foreground()?;
+                }
+            }
             Some("control_cancel_request") => {
                 let expired = self
                     .interactions
@@ -940,16 +1193,11 @@ impl NativeSession {
                 }
                 Some("session_state_changed") => {
                     self.claude.requires_action = record["state"] == "requires_action";
-                    if record["state"] == "idle"
-                        && (self.turn_running() || self.claude_has_failed_turn())
-                        && let Some((outcome, _)) = self.claude.result.take()
-                    {
-                        self.claude_finish_received_outcome(outcome);
-                        self.claude_finish_received_turn(if outcome == TurnOutcome::Failed {
-                            RunState::Failed
-                        } else {
-                            RunState::Idle
-                        })?;
+                    if record["state"] == "idle" {
+                        self.claude
+                            .background_followups
+                            .retain(|_, kind| *kind != BackgroundFollowup::AwaitingIdle);
+                        self.claude_finish_received_result()?;
                     }
                 }
                 Some("task_started")
@@ -1240,6 +1488,29 @@ impl NativeSession {
                 }
             }
             Some("result") => {
+                if record["origin"]["kind"] == "task-notification" {
+                    if let Some(run) = record["origin"]["runId"].as_str()
+                        && let Some(kind) = self.claude.background_followups.get_mut(run)
+                    {
+                        *kind = BackgroundFollowup::AwaitingIdle;
+                    }
+                    return Ok(());
+                }
+                let result_uuid = record["user_message_uuid"].as_str();
+                let result_uuids = record["user_message_uuids"].as_array();
+                if let Some(command) = self.claude.foreground.as_mut()
+                    && (result_uuid.is_some() || result_uuids.is_some_and(|ids| !ids.is_empty()))
+                {
+                    if result_uuid != Some(command.id.as_str())
+                        && !result_uuids.is_some_and(|ids| {
+                            ids.iter()
+                                .any(|id| id.as_str() == Some(command.id.as_str()))
+                        })
+                    {
+                        return Ok(());
+                    }
+                    command.result_confirmed = true;
+                }
                 // Partial records are replaced by the authoritative assistant message before terminal delivery.
                 let prefix = format!(
                     "{}:stream:",
@@ -1318,8 +1589,40 @@ impl NativeSession {
                         None => *total = Some(usage),
                     });
                 }
+                self.claude_finish_background_foreground()?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn claude_finish_background_foreground(&mut self) -> Result<()> {
+        // A queued completion notification may start another native turn before
+        // idle. Only a correlated foreground result and command completion can
+        // settle the user's turn early; older CLI records still use idle.
+        if self
+            .claude
+            .foreground
+            .as_ref()
+            .is_some_and(|command| command.result_confirmed && command.command_completed)
+            && self.claude_has_ongoing_background()
+        {
+            self.claude_finish_received_result()?;
+        }
+        Ok(())
+    }
+
+    fn claude_finish_received_result(&mut self) -> Result<()> {
+        if (self.turn_running() || self.claude_has_failed_turn())
+            && let Some((outcome, _)) = self.claude.result.take()
+        {
+            self.claude.foreground = None;
+            self.claude_finish_received_outcome(outcome);
+            self.claude_finish_received_turn(if outcome == TurnOutcome::Failed {
+                RunState::Failed
+            } else {
+                RunState::Idle
+            })?;
         }
         Ok(())
     }
@@ -1342,18 +1645,7 @@ impl NativeSession {
             .as_ref()
             .map(|s| s.context_runtime_id.as_str())
             .unwrap_or_default();
-        let config = crate::history::HistoryConfig {
-            kind: crate::version::RuntimeKind::ClaudeCode,
-            execution: self.config.execution.clone(),
-            os_home: self.config.os_home.clone(),
-            provider: "claude-code".into(),
-            binary: self.config.binary.clone(),
-            node_binary: self.config.node_binary.clone().unwrap_or_default(),
-            resources_directory: self.config.resources_directory.clone(),
-            root: self.config.agent_dir.join("projects"),
-            home: self.config.agent_dir.clone(),
-        };
-        let history = crate::history::read(&config, runtime_id, id)
+        let history = crate::history::read(&self.claude_history_config(), runtime_id, id)
             .map_err(|error| Error::new(error.to_string()))?;
         if let Some(message) = history
             .messages
@@ -1372,6 +1664,19 @@ impl NativeSession {
             self.context_usage(usage.context_tokens, usage.context_window);
         }
         Ok(())
+    }
+
+    fn claude_history_config(&self) -> crate::history::HistoryConfig {
+        crate::history::HistoryConfig {
+            kind: crate::version::RuntimeKind::ClaudeCode,
+            execution: self.config.execution.clone(),
+            os_home: self.config.os_home.clone(),
+            binary: self.config.binary.clone(),
+            node_binary: self.config.node_binary.clone().unwrap_or_default(),
+            resources_directory: self.config.resources_directory.clone(),
+            root: self.config.agent_dir.join("projects"),
+            home: self.config.agent_dir.clone(),
+        }
     }
 
     fn claude_error(&mut self, blocks: Vec<MessageBlock>) {
@@ -1792,11 +2097,11 @@ pub fn rename_claude_session_at(
     result.map(|_| ())
 }
 
-/// A new random (version 4) UUID, the form Claude Code names sessions by.
-fn claude_session_id() -> Result<String> {
+/// A new random (version 4) UUID for a Claude session or input record.
+fn claude_uuid() -> Result<String> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
-        .map_err(|error| Error::new(format!("Claude 会话身份生成失败：{error}")))?;
+        .map_err(|error| Error::new(format!("Claude 身份生成失败：{error}")))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -1811,121 +2116,7 @@ fn claude_session_id() -> Result<String> {
 }
 
 #[cfg(test)]
-mod error_tests {
-    use super::*;
+mod error_tests;
 
-    #[test]
-    fn named_fork_launch_keeps_its_source_and_boundary() {
-        let config = NativeConfig {
-            execution: crate::execution::ExecutionTarget::Local,
-            os_home: None,
-            kind: NativeKind::ClaudeCode,
-            binary: "/synthetic/claude".into(),
-            node_binary: None,
-            agent_dir: "/synthetic/home".into(),
-            resources_directory: "/synthetic/resources".into(),
-            projection_directory: "/synthetic/projection".into(),
-            gateway: None,
-            mcp_servers: Vec::new(),
-            session_agents: Vec::new(),
-        };
-        let pending = PendingFork {
-            conversation_id: "claude:copy".into(),
-            from: "source".into(),
-            at: Some("boundary".into()),
-            name: Some("Work (2)".into()),
-        };
-        let start = ClaudeStart::Fork {
-            from: pending.from,
-            at: pending.at,
-            name: pending.name,
-        };
-        let command =
-            NativeSession::claude_command(&config, None, Some(("copy", None, &start)), None, None)
-                .unwrap();
-        let args: Vec<_> = command
-            .get_args()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        for pair in [
-            ["--name", "Work (2)"],
-            ["--resume", "source"],
-            ["--resume-session-at", "boundary"],
-            ["--session-id", "copy"],
-        ] {
-            assert!(args.windows(2).any(|args| args == pair));
-        }
-        assert!(args.iter().any(|arg| arg == "--fork-session"));
-        let fresh = ClaudeStart::Fresh {
-            name: Some("Work (1)".into()),
-        };
-        let command =
-            NativeSession::claude_command(&config, None, Some(("fresh", None, &fresh)), None, None)
-                .unwrap();
-        let args: Vec<_> = command
-            .get_args()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        assert!(args.windows(2).any(|args| args == ["--name", "Work (1)"]));
-        assert!(
-            args.windows(2)
-                .any(|args| args == ["--session-id", "fresh"])
-        );
-        assert!(!args.iter().any(|arg| arg == "--resume"));
-    }
-
-    #[test]
-    fn result_and_assistant_errors_preserve_native_details() {
-        let assistant =
-            claude_error_blocks(&json!({"type":"assistant","error":"authentication_failed",
-            "message":{"content":[{"type":"text","text":"synthetic credential rejected"}]}}))
-            .unwrap();
-        assert!(assistant.contains(&MessageBlock::Notice {
-            text: "synthetic credential rejected".into()
-        }));
-        assert!(assistant.contains(&MessageBlock::Notice {
-            text: "Claude Code 错误类型：authentication_failed".into()
-        }));
-        let result =
-            claude_error_blocks(&json!({"type":"result","subtype":"success","is_error":true,
-            "api_error_status":401,"result":"synthetic credential rejected"}))
-            .unwrap();
-        assert!(result.contains(&assistant[0]));
-        assert!(result.contains(&MessageBlock::Notice {
-            text: "HTTP 401".into()
-        }));
-        let loop_error = claude_error_blocks(&json!({"type":"result","subtype":"error_max_turns",
-            "errors":["maximum turns reached"]}))
-        .unwrap();
-        assert!(loop_error.contains(&MessageBlock::Notice {
-            text: "maximum turns reached".into()
-        }));
-        assert!(claude_error_blocks(&json!({"type":"result","errors":[42]})).is_err());
-    }
-    #[test]
-    fn empty_import_detection_requires_exact_native_metadata() {
-        let marker = json!({"type":"queue-operation","operation":"dequeue","veluneEmptyImport":true,"sessionId":"empty","cwd":"/synthetic"});
-        let bytes = serde_json::to_vec(&marker).unwrap();
-        assert!(super::claude_empty_import(
-            &bytes,
-            "empty",
-            Path::new("/synthetic")
-        ));
-        assert!(!super::claude_empty_import(
-            &bytes,
-            "other",
-            Path::new("/synthetic")
-        ));
-        assert!(!super::claude_empty_import(
-            b"",
-            "empty",
-            Path::new("/synthetic")
-        ));
-        let with_other = format!("{marker}\n{{\"type\":\"user\"}}\n");
-        assert!(!super::claude_empty_import(
-            with_other.as_bytes(),
-            "empty",
-            Path::new("/synthetic")
-        ));
-    }
-}
+#[cfg(all(test, unix))]
+mod question_reconciliation_tests;

@@ -12,20 +12,34 @@ struct ChangeReviewView: View {
     @State private var selection: String?
     @State private var diff: FileDiff?
     @State private var failure: String?
+    @State private var diffFailure: String?
     @State private var loading = false
+    @State private var diffLoading = false
     @State private var generation: UInt64 = 0
+    @State private var diffGeneration: UInt64 = 0
+    private var scope: [String?] { [store.loadedConversationID, store.loadedConversationWorkingDirectory] }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let failure {
+                ReadFailureNotice(title: "无法读取变更", detail: failure, retryDisabled: loading, retry: reload)
+                Divider()
+            }
             content
         }
-        .onAppear(perform: reload)
-        .onChange(of: store.loadedConversationID) { _, _ in changes = nil; selection = nil; diff = nil; reload() }
+        .onChange(of: scope, initial: true) { _, _ in
+            diffGeneration &+= 1
+            changes = nil; selection = nil; diff = nil; failure = nil; diffFailure = nil; diffLoading = false
+            reload()
+        }
         // A finished turn is the usual moment files changed.
         .onChange(of: store.isGenerating) { _, generating in if !generating { reload() } }
-        .onChange(of: selection) { _, path in loadDiff(path) }
+        .onChange(of: selection) { _, path in
+            diffFailure = nil
+            loadDiff(path)
+        }
     }
 
     private var header: some View {
@@ -37,17 +51,14 @@ struct ChangeReviewView: View {
             }
             .help(changes?.repository ?? changes?.directory ?? "")
             Spacer(minLength: 0)
-            if loading { ProgressView().controlSize(.small) }
-            Button { reload() } label: { Label("刷新变更", systemImage: "arrow.clockwise") }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).help("重新读取 git 变更").disabled(loading)
+            if loading { ProgressView().controlSize(.small).accessibilityLabel("正在读取变更") }
+            ReadRefreshButton(label: "刷新变更", action: reload).disabled(loading)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
     @ViewBuilder private var content: some View {
-        if let failure {
-            ContentUnavailableView { Label("无法读取变更", systemImage: "exclamationmark.triangle") } description: { Text(failure) } actions: { Button("重试", action: reload) }
-        } else if let changes, changes.repository == nil {
+        if let changes, changes.repository == nil {
             ContentUnavailableView("不是 git 仓库", systemImage: "folder", description: Text(changes.directory))
         } else if let changes, changes.files.isEmpty {
             ContentUnavailableView("没有未提交的变更", systemImage: "checkmark.circle", description: Text("工作区与 HEAD 一致。"))
@@ -56,8 +67,10 @@ struct ChangeReviewView: View {
                 fileList(changes).frame(minHeight: 90, idealHeight: 200)
                 diffView.frame(minHeight: 120, maxHeight: .infinity)
             }
-        } else {
+        } else if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Spacer(minLength: 0)
         }
     }
 
@@ -77,7 +90,17 @@ struct ChangeReviewView: View {
         }
     }
 
-    @ViewBuilder private var diffView: some View {
+    private var diffView: some View {
+        VStack(spacing: 0) {
+            if let diffFailure {
+                ReadFailureNotice(title: "无法读取文件差异", detail: diffFailure, retryDisabled: diffLoading) { loadDiff(selection) }
+                Divider()
+            }
+            diffContent
+        }
+    }
+
+    @ViewBuilder private var diffContent: some View {
         if let diff, diff.path == selection {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -90,8 +113,10 @@ struct ChangeReviewView: View {
             .background(Color(nsColor: .textBackgroundColor))
         } else if selection == nil {
             Text("选择文件查看差异").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
+        } else if diffLoading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Spacer(minLength: 0)
         }
     }
 
@@ -101,16 +126,16 @@ struct ChangeReviewView: View {
 
     private func reload() {
         generation &+= 1
-        let request = generation
+        let request = generation, expectedScope = scope
         loading = true
         store.readWorkingChanges { result in
-            guard request == generation else { return }
+            guard request == generation, scope == expectedScope else { return }
             loading = false
             switch result {
             case .success(let value):
                 failure = nil
                 changes = value
-                if let selected = selection, !value.files.contains(where: { $0.path == selected }) { selection = nil; diff = nil }
+                if let selected = selection, !value.files.contains(where: { $0.path == selected }) { selection = nil; loadDiff(nil) }
                 else { loadDiff(selection) }
             case .failure(let error): failure = error.localizedDescription
             }
@@ -118,12 +143,17 @@ struct ChangeReviewView: View {
     }
 
     private func loadDiff(_ path: String?) {
-        guard let path else { diff = nil; return }
+        diffGeneration &+= 1
+        let request = diffGeneration, expectedScope = scope
+        if diff?.path != path { diff = nil }
+        guard let path else { diffFailure = nil; diffLoading = false; return }
+        diffLoading = true
         store.readFileDiff(path: path) { result in
-            guard selection == path else { return }
+            guard request == diffGeneration, scope == expectedScope, selection == path else { return }
+            diffLoading = false
             switch result {
-            case .success(let value): diff = value
-            case .failure(let error): diff = FileDiff(path: path, lines: [DiffLine(kind: .notice, text: error.localizedDescription)], truncated: false)
+            case .success(let value): diff = value; diffFailure = nil
+            case .failure(let error): diffFailure = error.localizedDescription
             }
         }
     }

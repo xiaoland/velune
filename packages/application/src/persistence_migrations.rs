@@ -187,8 +187,10 @@ mod tests {
     fn application_opens_with_platform_state_left_to_its_owner() {
         let home = home();
         let config_path = home.join("generic-config.json");
-        let mut config = crate::repository::PersistedConfig::default();
-        config.conversation_browser_group_limit = 42;
+        let config = crate::repository::PersistedConfig {
+            conversation_browser_group_limit: 42,
+            ..Default::default()
+        };
         let config_bytes = serde_json::to_vec(&config).unwrap();
         fs::write(&config_path, &config_bytes).unwrap();
         let snapshots = home.join("mac-window-workspaces");
@@ -472,7 +474,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn legacy_service_tier_composer_round_trips_through_runner_and_application() {
-        use std::process::Command;
         let home = home();
         let owner = "11111111-1111-4111-8111-111111111111";
         let input = "22222222-2222-4222-8222-222222222222";
@@ -505,7 +506,7 @@ mod tests {
 
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let runner = repository.join("scripts/run-migrations.py");
-        let result = Command::new("python3")
+        let result = velune_agent_runtime::process::command("python3")
             .arg(runner)
             .arg("--home")
             .arg(&home)

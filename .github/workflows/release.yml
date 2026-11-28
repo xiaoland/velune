@@ -234,7 +234,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo xcode-select -s /Applications/Xcode_26.3.app
-          xcodebuild -version | grep -q 'Xcode 26.3'
+          xcode_version=$(xcodebuild -version)
+          printf '%s\n' "$xcode_version"
+          [[ "${xcode_version%%$'\n'*}" == 'Xcode 26.3' ]]
       - name: Set up Go
         if: matrix.platform == 'macos'
         uses: actions/setup-go@v5

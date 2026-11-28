@@ -401,9 +401,12 @@ struct ComposerEditor: NSViewRepresentable {
         return style
     }
     private static var typography: [NSAttributedString.Key: Any] { [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph] }
-    static var minimumHeight: CGFloat { lineHeight + 2 * inset }
+    static var minimumHeight: CGFloat { lineHeight + 2 * insets.height }
     static let maximumHeight: CGFloat = 240
-    private static let inset: CGFloat = 5
+    private static var insets: NSSize {
+        let scale = AppearancePreferences.rendering.read().zoomScale
+        return NSSize(width: 3 * scale, height: 5 * scale)
+    }
     fileprivate weak var coordinator: ComposerEditor.Coordinator?
     var placeholder = "" { didSet { needsDisplay = true } }
 
@@ -440,7 +443,7 @@ struct ComposerEditor: NSViewRepresentable {
         isAutomaticLinkDetectionEnabled = false
         isAutomaticDataDetectionEnabled = false
         smartInsertDeleteEnabled = false
-        textContainerInset = NSSize(width: 3, height: Self.inset)
+        textContainerInset = Self.insets
         isVerticallyResizable = true
         isHorizontallyResizable = false
         minSize = .zero
@@ -463,7 +466,7 @@ struct ComposerEditor: NSViewRepresentable {
     func fitHeight() {
         guard let layoutManager, let textContainer else { return }
         layoutManager.ensureLayout(for: textContainer)
-        let content = layoutManager.usedRect(for: textContainer).height + 2 * Self.inset
+        let content = layoutManager.usedRect(for: textContainer).height + 2 * textContainerInset.height
         coordinator?.heightChanged(min(max(ceil(content), Self.minimumHeight), Self.maximumHeight))
     }
     @objc private func appearanceChanged() {
@@ -471,6 +474,7 @@ struct ComposerEditor: NSViewRepresentable {
         let undo = undoManager
         undo?.disableUndoRegistration()
         font = Self.font; defaultParagraphStyle = Self.paragraph; typingAttributes = Self.typography
+        textContainerInset = Self.insets
         textStorage?.addAttributes(Self.typography, range: NSRange(location: 0, length: (string as NSString).length))
         undo?.enableUndoRegistration()
         fitHeight()
@@ -598,7 +602,10 @@ struct ComposerEditor: NSViewRepresentable {
     /// Committed text can arrive carrying another font; plain text has one.
     private func normalizeTypography() {
         typingAttributes = Self.typography
-        guard !hasMarkedText(), let storage = textStorage, storage.length > 0 else { return }
+        guard !hasMarkedText() else { return }
+        let insets = Self.insets
+        if textContainerInset != insets { textContainerInset = insets }
+        guard let storage = textStorage, storage.length > 0 else { return }
         let whole = NSRange(location: 0, length: storage.length)
         var uniform = true
         storage.enumerateAttributes(in: whole) { attributes, _, stop in
@@ -655,6 +662,7 @@ struct ComposerView: View {
     @ObservedObject private var appearance = AppearancePreferences.shared
     @State private var showingInputAccess = false
     @State private var showingAccessories = false
+    @State private var modelAutoCompaction: ModelAutoCompactionPresentation?
     @State private var accessoriesHeight: CGFloat = 64
     @State private var availableHeight: CGFloat = .infinity
     // Geometry belongs to this host: another pane/sheet may show the same
@@ -663,23 +671,29 @@ struct ComposerView: View {
     /// Keep the choices beside the send button while the proportionally sized
     /// editor has room; their intrinsic measurement is independent of resizing.
     @State private var oneRow = true
+    @State private var controlsHeight: CGFloat = 22
     @State private var fit = RowFit()
-    @State private var availableWidth: CGFloat = 760
     private final class RowFit {
         /// What the choices take at full length.
         var controlsWidth: CGFloat = 0
         var actionsWidth: CGFloat = 0
+        /// The room inside the padding. Not state: it changes with every
+        /// frame of a resize, and only crossing a threshold changes the view.
+        var availableWidth: CGFloat = 760
+    }
+    private struct ModelAutoCompactionPresentation: Identifiable {
+        let store: DeviceStore
+        let target: ModelAutoCompactionTarget
+        var id: ModelAutoCompactionTarget { target }
     }
     /// The send button and a little of the status line beside the choices.
     private static let sendWidth: CGFloat = 130
-    private var editorMaximumWidth: CGFloat {
-        appearance.values.composerWidth(available: availableWidth, reserved: columns ? 2 * (wingWidth + 16) : 0)
-    }
     private func refit() {
         let sideWidth = wingWidth > 0 ? 2 * (wingWidth + 16) : 0
+        let availableWidth = fit.availableWidth
         let wide = sideWidth > 0 && availableWidth >= 640 + sideWidth
         if columns != wide { columns = wide }
-        let actions = editingTarget == nil ? Self.sendWidth : max(Self.sendWidth, fit.actionsWidth + 16)
+        let actions = max(Self.sendWidth * appearance.values.uiScale, fit.actionsWidth + 16)
         let value = appearance.values.composerWidth(available: availableWidth, reserved: wide ? sideWidth : 0) >= fit.controlsWidth + actions
         if oneRow != value { oneRow = value }
     }
@@ -687,14 +701,21 @@ struct ComposerView: View {
 
     private var context: ComposerContext { ComposerContext(tab: inputTab ?? layout.conversationTab(for: store), model: model, editingTarget: editingTarget) }
     private var nextTurnRuntime: RuntimeInstance? { store.device.runtimeInstances.first { $0.id == context.nextTurnRuntimeID } }
+    private var showsPendingRuntimeName: Bool { nextTurnRuntime == nil && context.nextTurnRuntimeID != nil && store.device.runtimeInstances.isEmpty }
+    private var nextTurnRuntimeLabel: String {
+        if let name = nextTurnRuntime?.name { return name }
+        if context.nextTurnRuntimeID == nil { return "选择运行时" }
+        return store.device.runtimeInstances.isEmpty ? "正在加载…" : "未知运行时"
+    }
 
     private var hasAttachments: Bool { !model.attachments.isEmpty || !(editingTarget?.retainedAttachments.isEmpty ?? true) }
     private var hasAccessories: Bool { (editingTarget == nil && store.isUnsentConversation && store.creationFailure != nil) || (!columns && hasAttachments) }
+    private var controlsHeightIncrease: CGFloat { max(0, controlsHeight - 22) }
     private var compactAccessories: Bool {
-        fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + min(accessoriesHeight, 64)
+        fillsHeight && availableHeight <= ComposerTextView.minimumHeight + 62 + (oneRow ? 0 : 30) + controlsHeightIncrease + min(accessoriesHeight, 64)
     }
     private var minimumHeight: CGFloat {
-        ComposerTextView.minimumHeight + 54 + (oneRow ? 0 : 30) + (!columns && recipient != nil ? 21 : 0)
+        ComposerTextView.minimumHeight + 54 + (oneRow ? 0 : 30) + controlsHeightIncrease + (!columns && recipient != nil ? 21 : 0)
     }
     private var accessories: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -713,7 +734,7 @@ struct ComposerView: View {
                     }
                 }.frame(width: wingWidth, alignment: .leading).padding(.top, 3)
             }
-            editorColumn.frame(maxWidth: editorMaximumWidth)
+            editorColumn
             if columns {
                 VStack(alignment: .leading, spacing: 6) {
                     if hasAttachments {
@@ -723,7 +744,7 @@ struct ComposerView: View {
                 }.frame(width: wingWidth).frame(height: fillsHeight ? nil : max(editorHeight + 30, 64))
             }
         }
-        .frame(maxWidth: columns ? editorMaximumWidth + 2 * (wingWidth + 16) : editorMaximumWidth)
+        .modifier(ComposerWidthLimit(appearance: appearance.values, reserved: columns ? 2 * (wingWidth + 16) : 0))
         .contentShape(Rectangle())
         .contextMenu {
             if editingTarget == nil {
@@ -734,7 +755,11 @@ struct ComposerView: View {
         }
         .background(alignment: .leading) {
             nextTurnControls(compact: false).fixedSize().hidden().id(controlsKey)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.controlsWidth = $0; refit() }
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                    fit.controlsWidth = size.width
+                    controlsHeight = size.height
+                    refit()
+                }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard context.allowsAttachments else { return false }
@@ -748,7 +773,7 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 14)
         .frame(minWidth: 0, maxWidth: .infinity)
-        .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { availableWidth = $0; refit() }
+        .onGeometryChange(for: CGFloat.self) { max(0, $0.size.width - 32) } action: { fit.availableWidth = $0; refit() }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
         .onChange(of: model.attachments.count) { _, _ in refit() }
         .onChange(of: hasAttachments) { _, _ in refit() }
@@ -774,6 +799,9 @@ struct ComposerView: View {
             if editingTarget == nil { refreshActiveCompletion() }
         }
         .modifier(ContinuationPreparationPresentation(tab: context.tab, window: layout, enabled: editingTarget == nil))
+        .sheet(item: $modelAutoCompaction) { editor in
+            ModelAutoCompactionEditor(store: editor.store, target: editor.target)
+        }
     }
 
     private func refreshActiveCompletion() {
@@ -827,7 +855,17 @@ struct ComposerView: View {
             if oneRow {
                 HStack(spacing: 8) { nextTurnControls(compact: false); accessoriesButton; statusRow }
             } else {
-                HStack { ViewThatFits(in: .horizontal) { nextTurnControls(compact: false); nextTurnControls(compact: true) }; accessoriesButton }
+                HStack {
+                    ViewThatFits(in: .horizontal) {
+                        nextTurnControls(compact: false)
+                        nextTurnControls(compact: true)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            nextTurnControls(compact: true)
+                        }
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    }
+                    accessoriesButton
+                }
                 statusRow
             }
         }
@@ -855,29 +893,28 @@ struct ComposerView: View {
         let mode = shortcuts.sendMode
         guard store.isGenerating else { return mode == .returnSends ? "输入消息，Return 发送，⇧Return 换行，/ 命令" : "输入消息，⌘Return 发送，/ 命令" }
         if !store.canQueue { return "正在回答；可继续编辑，结束后发送" }
-        return store.followUp.canSteer ? "\(mode.sendKey) 排队，\(mode.steerKey) 插入本轮" : "\(mode.sendKey) 排队，本轮结束后发送"
+        return store.followUp.canSteer ? "\(mode.sendKey) 排队，\(mode.steerKey) 插入本轮（沿用模型）" : "\(mode.sendKey) 排队，本轮结束后发送"
     }
 
     /// What the choices' titles are made of.
     private var controlsKey: [String] {
         let context = self.context
-        return [nextTurnRuntime?.name ?? "", context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
+        return [showsPendingRuntimeName ? "loading" : nextTurnRuntimeLabel, context.selectedModelName ?? "", context.nextTurnEffort ?? context.currentEffort ?? "",
          (context.effectivePermissionMode ?? context.currentPermissionMode)?.label ?? "", "\(context.permissionModeOptions.isEmpty)\(context.sessionOptions.isEmpty)",
-         editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : ""]
+         editingTarget == nil && store.isUnsentConversation ? store.loadedConversationWorkingDirectory ?? "-" : "",
+         appearance.values.ui.rawValue, String(appearance.values.zoomPercent)]
     }
 
     /// The status line and send button, at the trailing end.
     private var statusRow: some View {
         let context = self.context
         return HStack(spacing: 8) {
-            Spacer(minLength: 8)
+            Spacer(minLength: 0)
             if editingTarget == nil, let issue = context.inputIssue { Text(issue).uiFont(.callout).foregroundStyle(.secondary).lineLimit(1).help(issue) }
             else if editingTarget == nil && context.chosenModelUnavailable { Text("所选模型已不可用").uiFont(.callout).foregroundStyle(.secondary).lineLimit(1) }
             else if editingTarget == nil { ComposerStatusLine(store: store, context: context).layoutPriority(-1).padding(.trailing, 4) }
-            if editingTarget != nil {
-                sendButton.fixedSize()
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.actionsWidth = $0; refit() }
-            } else { sendButton }
+            HStack(spacing: 8) { sendButton }.fixedSize()
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fit.actionsWidth = $0; refit() }
         }.frame(minHeight: 22)
     }
 
@@ -920,7 +957,7 @@ struct ComposerView: View {
         }
         if store.inputSubmissionAllowed, current.action == .queue && store.followUp.canSteer {
             Button("插入本轮", action: steer).disabled(!context.canSteer)
-                .help("将消息插入正在运行的本轮")
+                .help("插入正在运行的本轮，沿用本轮的模型和推理强度")
         }
         if store.controlHandoff == .releasing {
             Text("正在交还控制权…").uiFont(.callout).foregroundStyle(.secondary)
@@ -977,9 +1014,13 @@ struct ComposerView: View {
         }
     }
 
+    // Native Menu titles must carry the font on their label content. The menu
+    // does not inherit the window's environment font for its trigger.
+    private var executionControlFont: Font { UITypeStyle.body.font(scale: appearance.values.uiScale) }
+
     /// `compact` shortens the choices' titles to fit a narrow pane.
     private func nextTurnControls(compact: Bool) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 10 * appearance.values.zoomScale) {
             if context.allowsAttachments {
                 Button(action: context.chooseAttachments) { Image(systemName: "paperclip") }
                     .buttonStyle(.borderless)
@@ -988,7 +1029,9 @@ struct ComposerView: View {
                     .disabled(store.isShuttingDown || editingTarget?.editable == false)
             }
             agentMenu(compact: compact).disabled(editingTarget?.editable == false)
-            if !context.permissionModeOptions.isEmpty || !context.sessionOptions.isEmpty { permissionMenu(compact: compact).disabled(editingTarget?.editable == false) }
+            if !context.permissionModeOptions.isEmpty || !context.sessionOptions.isEmpty {
+                permissionMenu(compact: compact).disabled(editingTarget?.editable == false)
+            }
             if editingTarget == nil, store.isUnsentConversation { workingDirectoryMenu(compact: compact) }
         }
         // Borderless pull-downs in the system's own colours: the label is the
@@ -1002,14 +1045,14 @@ struct ComposerView: View {
     /// the reasoning level, with the settings that belong to each inside it.
     private func agentMenu(compact: Bool) -> some View {
         let context = self.context
-        let runtime = nextTurnRuntime?.name ?? context.nextTurnRuntimeID ?? "选择运行时"
+        let runtime = nextTurnRuntimeLabel
         let model = context.selectedModelName ?? "选择模型"
         // Levels show as the runtime receives them.
         let effort = context.nextTurnEffort ?? context.currentEffort
         // An unchosen level follows the conversation's, or is the runtime's own.
         let unchosen = store.loadedParentConversationID != nil ? "未记录" : context.nextTurnHasCurrent ? "沿用当前" : "运行时默认"
         let modelTitle = ([model] + (effort.map { [$0] } ?? [])).joined(separator: " · ")
-        let title = "\(runtime) · \(modelTitle)"
+        let title = showsPendingRuntimeName && context.selectedModelName != nil ? modelTitle : "\(runtime) · \(modelTitle)"
         let subject = editingTarget != nil ? "此消息" : store.loadedParentConversationID == nil ? "下一轮" : "当前会话"
         let modelHelp = context.retainedQueueModelName == nil ? "所选模型已不可用" : ComposerModelChoiceContent.retainedModelExplanation
         return Menu {
@@ -1024,6 +1067,7 @@ struct ComposerView: View {
             Menu("模型：\(model)") {
                 modelMenuContent
                 Divider()
+                modelAutoCompactionMenu
                 Button("重新读取模型", action: context.reloadModelCatalog).disabled(!context.canSwitchModel || context.modelCatalog == .loading)
                 SettingsTabLink(tab: .providers, title: "AI 提供商设置…")
             }
@@ -1037,7 +1081,7 @@ struct ComposerView: View {
         } label: {
             // Short by characters: a frame's limit does not hold where the menu takes its ideal width.
             Text(Self.pullDownTitle(compact ? Self.shortened(modelTitle, to: 16) : title))
-                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
+                .font(executionControlFont).lineLimit(1).truncationMode(.middle).frame(maxWidth: 360, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel("\(subject)：运行时 \(runtime)，模型 \(model)，推理强度 \(effort ?? unchosen)")
@@ -1076,6 +1120,80 @@ struct ComposerView: View {
         ForEach(choices, id: \.value) { choice in Text(choice.name).tag(choice.value).help(choice.description ?? choice.name) }
     }
 
+    @ViewBuilder private var modelAutoCompactionMenu: some View {
+        let targets = context.nativeModelAutoCompactionTargets
+        if let selected = targets.selected {
+            Button("自动压缩…") { openModelAutoCompaction(selected) }
+                .disabled(store.device.isLoading)
+        }
+        if !targets.retained.isEmpty {
+            Menu("已保存的原生模型压缩设置") {
+                ForEach(targets.retained) { target in
+                    Button("\(target.title)…") { openModelAutoCompaction(target) }
+                }
+            }.disabled(store.device.isLoading)
+        }
+        if let runtime = context.modelAutoCompactionRuntime, runtime.typeId == .acp,
+           let model = store.acpAutoCompactionModel(runtimeID: runtime.id, selectedModel: context.chosenModel ?? context.nextTurnModel),
+           !store.acpAutoCompactionOptions.isEmpty || store.acpAutoCompactionSetting != nil {
+            acpAutoCompactionMenu { setting in store.saveAcpAutoCompaction(setting, runtimeID: runtime.id, model: model) }
+        }
+    }
+
+    private func openModelAutoCompaction(_ target: ModelAutoCompactionTarget) {
+        guard store.device.hasModelAutoCompactionWriter, !store.device.isLoading else { return }
+        modelAutoCompaction = ModelAutoCompactionPresentation(store: store.device, target: target)
+    }
+
+    private func acpAutoCompactionChoice(_ option: AcpConfigOption, value: AcpConfigValue, title: String,
+                                         save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        let setting = AutoCompactionSetting.acp(optionId: option.id, value: value)
+        return Button { save(setting) } label: {
+            if store.acpAutoCompactionSetting == setting { Label(title, systemImage: "checkmark") }
+            else { Text(title) }
+        }
+    }
+
+    private func acpAutoCompactionMenu(save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        let (known, other) = store.acpAutoCompactionOptions.reduce(into: ([AcpConfigOption](), [AcpConfigOption]())) { result, option in
+            if isAcpAutoCompactionOption(option: option) { result.0.append(option) }
+            else { result.1.append(option) }
+        }
+        return Menu("自动压缩") {
+            Button("跟随 Agent 设置") { save(nil) }
+                .disabled(store.acpAutoCompactionSetting == nil)
+            ForEach(known) { acpAutoCompactionOptionMenu($0, save: save) }
+            if !other.isEmpty {
+                Menu("从 Agent 选项中选取") {
+                    ForEach(other) { acpAutoCompactionOptionMenu($0, save: save) }
+                }
+                .help("仅选择此 Agent 用于自动压缩的选项")
+            }
+            if case let .acp(optionID, value)? = store.acpAutoCompactionSetting,
+               !store.acpAutoCompactionOptions.contains(where: {
+                   $0.id == optionID && acpAutoCompactionAccepts(option: $0, value: value)
+               }) {
+                Text("已保存的压缩设置当前不可用")
+            }
+        }
+        .help("对当前模型的后续轮次生效")
+        .disabled(!store.canChangeSessionOptions || store.device.isLoading)
+    }
+
+    private func acpAutoCompactionOptionMenu(_ option: AcpConfigOption, save: @escaping (AutoCompactionSetting?) -> Void) -> some View {
+        Menu(option.name) {
+            switch option.value {
+            case .boolean:
+                acpAutoCompactionChoice(option, value: .boolean(true), title: "开启", save: save)
+                acpAutoCompactionChoice(option, value: .boolean(false), title: "关闭", save: save)
+            case .select:
+                ForEach(option.choices, id: \.value) { choice in
+                    acpAutoCompactionChoice(option, value: .select(choice.value), title: choice.name, save: save)
+                }
+            }
+        }.help(option.description ?? option.name)
+    }
+
     /// Choices in the Agent's order, consecutive ones of a group together.
     private static func choiceGroups(_ choices: [AcpConfigChoice]) -> [(offset: Int, name: String?, choices: [AcpConfigChoice])] {
         var groups: [(offset: Int, name: String?, choices: [AcpConfigChoice])] = []
@@ -1094,6 +1212,7 @@ struct ComposerView: View {
         let mode = context.effectivePermissionMode
         let current = context.currentPermissionMode
         let hasModes = !context.permissionModeOptions.isEmpty
+        let symbol = hasModes ? "lock.shield" : "slider.horizontal.3"
         let child = editingTarget == nil && store.loadedParentConversationID != nil
         let title = hasModes ? (mode ?? current)?.label ?? (child ? "权限未记录" : "运行时默认权限") : "会话选项"
         return Menu {
@@ -1110,8 +1229,12 @@ struct ComposerView: View {
                 }.disabled(!store.canChangeSessionOptions)
             }
         } label: {
-            if compact { Image(systemName: hasModes ? "lock.shield" : "slider.horizontal.3") }
-            else { Label(Self.pullDownTitle(title), systemImage: hasModes ? "lock.shield" : "slider.horizontal.3").lineLimit(1) }
+            if compact { Image(systemName: symbol).font(executionControlFont) }
+            else {
+                Label {
+                    Text(Self.pullDownTitle(title)).font(executionControlFont).lineLimit(1)
+                } icon: { Image(systemName: symbol).font(executionControlFont) }
+            }
         }
         .fixedSize()
         .accessibilityLabel(hasModes ? "\(child ? "当前会话" : "下一轮")权限模式：\(title)" : "会话选项")
@@ -1150,7 +1273,8 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "无工作区", to: 8) : name ?? "无工作区")).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+            Text(Self.pullDownTitle(compact ? Self.shortened(name ?? "无工作区", to: 8) : name ?? "无工作区"))
+                .font(executionControlFont).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
         }
         .fixedSize()
         .accessibilityLabel(detail ?? "无工作区")
@@ -1218,5 +1342,31 @@ struct PreservedInputMenu: View {
                 }
             }
         }
+    }
+}
+
+/// The composer's row at the width the appearance gives it for the room it
+/// is offered, its side columns (`reserved`) beside it. A layout rather
+/// than a width kept in state: a resize lays the row out again at each
+/// frame without computing the composer's view again.
+private struct ComposerWidthLimit: ViewModifier, Layout {
+    let appearance: AppearanceValues
+    let reserved: CGFloat
+
+    func body(content: Content) -> some View { self { content } }
+
+    private func limit(_ room: CGFloat?) -> CGFloat? {
+        room.map { min($0, appearance.composerWidth(available: $0, reserved: reserved) + reserved) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let row = subviews.first else { return .zero }
+        let size = row.sizeThatFits(ProposedViewSize(width: limit(proposal.width), height: proposal.height))
+        return CGSize(width: limit(proposal.width).map { min(size.width, $0) } ?? size.width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }

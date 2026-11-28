@@ -122,10 +122,9 @@ extension RenderedMessage {
 /// Everything that determines one row's geometry. Immutable values only, so a
 /// background pass can lay rows out without touching main-actor state.
 enum TranscriptRowContent: @unchecked Sendable {
-    /// `status` is a caption under a message the runtime has not confirmed yet;
-    /// `copies` puts a copy button under it, `edits` an edit button and `forks`
-    /// a fork button beside it.
-    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, status: String?, copies: Bool, edits: Bool, forks: Bool)
+    /// `copies` puts a copy button under the message, `edits` an edit button
+    /// and `forks` a fork button beside it.
+    case message(DeliveredMessage, revision: UInt64, expanded: Set<String>, sending: Bool = false, copies: Bool, edits: Bool, forks: Bool)
     /// `expanded` is nil for a turn with no work under its header.
     case work(label: String, expanded: Bool?, settings: TurnSettingsSummary?)
     /// Copying work has no message creation time of its own.
@@ -162,23 +161,24 @@ struct TranscriptRowLayout: @unchecked Sendable {
     var elements: [Element]
     var height: CGFloat
 
-    static var rowInset: CGFloat { 24 * AppearancePreferences.rendering.read().density.spacing }
+    private static var zoom: CGFloat { AppearancePreferences.rendering.read().zoomScale }
+    static var rowInset: CGFloat { 24 * AppearancePreferences.rendering.read().spacingScale }
     static let columnMaxWidth: CGFloat = 760
     static var headerHeight: CGFloat { max(18, ceil(NSLayoutManager().defaultLineHeight(for: TranscriptTypography.callout))) }
-    static var blockSpacing: CGFloat { 9 * AppearancePreferences.rendering.read().density.spacing }
-    static var bubblePadding: CGFloat { 12 * AppearancePreferences.rendering.read().density.spacing }
+    static var blockSpacing: CGFloat { 9 * AppearancePreferences.rendering.read().spacingScale }
+    static var bubblePadding: CGFloat { 12 * AppearancePreferences.rendering.read().spacingScale }
     static let bubbleMaxWidth: CGFloat = 600
-    static let codePadding: CGFloat = 12
-    static let codeLabelHeight: CGFloat = 18
-    static let codeLabelGap: CGFloat = 6
-    static let attachmentHeight: CGFloat = 48
-    static let attachmentThumbnail: CGFloat = 40
+    static var codePadding: CGFloat { 12 * zoom }
+    static var codeLabelHeight: CGFloat { 18 * zoom }
+    static var codeLabelGap: CGFloat { 6 * zoom }
+    static var attachmentHeight: CGFloat { 48 * zoom }
+    static var attachmentThumbnail: CGFloat { 40 * zoom }
     static let attachmentNameMaxWidth: CGFloat = 180
-    static let attachmentSpacing: CGFloat = 6
-    static let actionGap: CGFloat = 4
-    static let actionSize: CGFloat = 22
+    static var attachmentSpacing: CGFloat { 6 * zoom }
+    static var actionGap: CGFloat { 4 * zoom }
+    static var actionSize: CGFloat { 22 * zoom }
     /// The icon sits this far inside its button; the button reaches past the text so the icon lines up with it.
-    static let actionInset: CGFloat = 5
+    static var actionInset: CGFloat { 5 * zoom }
 
     /// Attachments flow in rows of chips, against the trailing edge for the
     /// user's own messages.
@@ -233,7 +233,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .workActions(let text):
             y = 0
             messageActions(text: text, timestamp: nil, trailing: false, column: column, y: &y, elements: &elements, measurer: measurer)
-        case .message(_, _, let expanded, let status, let copies, let edits, let forks):
+        case .message(_, _, let expanded, let sending, let copies, let edits, let forks):
             guard let rendered else { preconditionFailure("A message row is laid out from its rendered revision") }
             if rendered.clientSide {
                 // Images lead files regardless of which part of the native record carried them.
@@ -272,11 +272,12 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 elements += texts
                 y += bubbleHeight
                 }
-                if let status {
-                    let caption = TranscriptTypography.plain(status, font: TranscriptTypography.caption, color: .secondaryLabelColor)
+                if sending {
+                    let caption = TranscriptTypography.plain("发送中", font: TranscriptTypography.caption, color: .secondaryLabelColor)
                     let size = measurer.size(of: caption, width: column.width)
+                    let width = ceil(size.width) + 1
                     y += 4
-                    elements.append(.text(caption, frame: NSRect(x: column.x + column.width - ceil(size.width) - 1, y: y, width: ceil(size.width) + 1, height: size.height), inBubble: false))
+                    elements.append(.text(caption, frame: NSRect(x: column.x + column.width - width, y: y, width: width, height: size.height), inBubble: false))
                     y += size.height
                 }
                 if copies { messageActions(text: rendered.copiedText, timestamp: rendered.timestamp, edits: edits, forks: forks, trailing: true, column: column, y: &y, elements: &elements, measurer: measurer) }
@@ -352,8 +353,10 @@ struct TranscriptRowLayout: @unchecked Sendable {
         case .work, .activity: return rowInset + headerHeight
         case .workActions: return actionGap + actionSize
         case .end: return rowInset
-        case .message(let message, _, let expanded, _, let copies, _, _):
-            let charactersPerLine = max(column.width / 7.5, 8)
+        case .message(let message, _, let expanded, let sending, let copies, _, _):
+            let fontScale = AppearancePreferences.rendering.read().messageScale
+            let charactersPerLine = max(column.width / (7.5 * fontScale), 8)
+            let lineHeight = 19 * fontScale
             var height: CGFloat = 0
             for (index, block) in message.blocks.enumerated() {
                 if index > 0 { height += blockSpacing }
@@ -363,7 +366,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                     var newlines = 0
                     for byte in text.utf8 where byte == 10 { newlines += 1 }
                     let wrapped = ceil(CGFloat(text.utf16.count) / charactersPerLine)
-                    height += CGFloat(max(newlines + 1, Int(wrapped))) * 19
+                    height += CGFloat(max(newlines + 1, Int(wrapped))) * lineHeight
                 case .reasoning, .tool, .runtimeFailure:
                     height += headerHeight
                     if !expanded.isEmpty { height += 60 }
@@ -377,7 +380,7 @@ struct TranscriptRowLayout: @unchecked Sendable {
                 }
             }
             let copied = copies && message.role != .system && !message.text.isEmpty
-            return rowInset + max(height, 19) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied ? actionGap + actionSize : 0)
+            return rowInset + max(height, lineHeight) + (message.role == .user || message.role == .client ? bubblePadding * 2 : 0) + (copied || sending ? actionGap + actionSize : 0)
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import VeluneBindings
 
@@ -12,24 +13,22 @@ struct AggregatedRowID: Hashable {
     }
 }
 
-/// A window's conversation list, in the sidebar or in a floating panel with
-/// its own search field. The list aggregates every device the window shows:
+/// A window's conversation list, the same wherever it is: its search field,
+/// filter and new conversation are its own, never the window toolbar's. The list aggregates every device the window shows:
 /// each section belongs to one device, and opening a row targets that
 /// device. A conversation selected alone opens in the window's focused pane;
 /// several are a selection to manage.
 struct ConversationListView: View {
-    enum Placement { case sidebar, panel }
-    @ObservedObject var window: ConversationWindowModel
+    /// Not observed as a whole: the list follows its own state of the window
+    /// (`WindowListState`), so moving tools or focus does not rebuild every row.
+    let window: ConversationWindowModel
+    @StateObject private var windowList: WindowListState
     /// The list's workspace on this Mac (problems, local loading state).
     @ObservedObject var store: ConversationStore
     /// The focused pane's workspace.
     @ObservedObject var focused: ConversationStore
     /// The aggregated list: devices, merged groups, the merged view's choices.
     @ObservedObject private var aggregated: AggregatedListModel
-    let placement: Placement
-    /// Sharing its area with other tools, the search is a button over a popover.
-    var compact = false
-    @FocusState private var searchFocused: Bool
     @State private var searchFocusRequest = 0
     @Environment(\.controlActiveState) private var activeState
     /// The window's, so the title bar's filter menu and the list share it.
@@ -71,51 +70,34 @@ struct ConversationListView: View {
     }
     @State private var selection: Set<AggregatedRowID> = []
 
-    init(window: ConversationWindowModel, store: ConversationStore, focused: ConversationStore, placement: Placement, compact: Bool = false) {
+    init(window: ConversationWindowModel, store: ConversationStore, focused: ConversationStore) {
         self.window = window
         self.store = store
         self.focused = focused
         self.aggregated = window.aggregated
-        self.placement = placement
-        self.compact = compact
+        _windowList = StateObject(wrappedValue: WindowListState(window))
     }
 
     var body: some View {
-        Group {
-            switch placement {
-            case .sidebar:
-                list
-                    .searchable(text: $window.listSearch, placement: .sidebar, prompt: "搜索会话")
-                    .searchFocused($searchFocused)
-                    .navigationTitle("会话")
-            case .panel:
-                VStack(spacing: 0) {
-                    // A block has its search, filter and new conversation in its title bar.
-                    if !compact {
-                        HStack(spacing: 8) {
-                            SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: searchFocusRequest)
-                            ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).fixedSize()
-                            NewConversationButton(window: window).buttonStyle(.borderless)
-                        }
-                        .labelStyle(.iconOnly)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        Divider()
-                    }
-                    list
-                }
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                SearchField(text: Binding(get: { window.listSearch }, set: { window.listSearch = $0 }), prompt: "搜索会话", focusRequest: searchFocusRequest)
+                    .frame(maxWidth: .infinity)
+                ConversationFilterMenu(window: window, store: store).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-filter") })
+                NewConversationButton(window: window).buttonStyle(.borderless)
+                    .background(PaneAnchor { anchor in anchor()?.identifier = NSUserInterfaceItemIdentifier("conversation-list-new") })
             }
+            .labelStyle(.iconOnly)
+            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 4)
+            list
         }
         .background(PaneAnchor { [window] in window.registerFindArea(.list, anchor: $0) })
         .onAppear { window.listKeyHandler = listKey; synchronizeFocusedSelection() }
         .onDisappear { cancelPendingOpen() }
         .onChange(of: focused.selectedConversationID) { _, _ in synchronizeFocusedSelection() }
         .onChange(of: ObjectIdentifier(focused)) { _, _ in synchronizeFocusedSelection() }
-        .onChange(of: window.listSearchRequest) { _, _ in
-            switch placement {
-            case .sidebar: searchFocused = true
-            case .panel: if !compact { searchFocusRequest += 1 }
-            }
-        }
+        .onChange(of: window.listSearchRequest) { _, _ in searchFocusRequest += 1 }
         .task(id: window.listSearch) {
             // Searching reads every listed conversation; wait for typing to pause.
             if !window.listSearch.isEmpty { try? await Task.sleep(for: .milliseconds(250)) }
@@ -157,7 +139,9 @@ struct ConversationListView: View {
     }
 
     private var list: some View {
-        List(selection: Binding(get: { selection }, set: selectList)) {
+        let failures = aggregated.searchFailures
+        let pending = pendingDevices.filter { device in !failures.contains { $0.device.id == device.id } }
+        return List(selection: Binding(get: { selection }, set: selectList)) {
             if store.device.showsArchived {
                 HStack {
                     Label("已归档的会话", systemImage: "archivebox").foregroundStyle(.secondary)
@@ -165,22 +149,48 @@ struct ConversationListView: View {
                     Button("返回") { store.device.setShowsArchived(false) }.buttonStyle(.link)
                 }.selectionDisabled(true)
             }
-            if sections.isEmpty && pendingDevices.isEmpty && !store.isLoading && !focused.isLoading {
-                if searchActive || (browser.hasFilters && !filteredDevice.store.conversations.isEmpty) {
+            ForEach(failures) { failure in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Label(aggregated.showsMultipleDevices ? "无法搜索\(failure.device.name)" : "无法搜索会话",
+                              systemImage: "exclamationmark.circle").lineLimit(1)
+                        Spacer(minLength: 0)
+                        if failure.retrying { ProgressView().controlSize(.mini).accessibilityLabel("正在重试搜索") }
+                        Button("重试") { aggregated.retrySearch(on: failure.device) }
+                            .buttonStyle(.borderless).disabled(failure.retrying)
+                            .accessibilityLabel("重试搜索\(failure.device.name)")
+                    }
+                    Text(failure.detail).lineLimit(2).help(failure.detail)
+                }.uiFont(.caption).foregroundStyle(.secondary).selectionDisabled(true)
+            }
+            if !searchActive {
+                ForEach(aggregated.visibleDevices) { device in
+                    if let error = device.store.conversationListReadError {
+                        ReadFailureNotice(title: aggregated.showsMultipleDevices ? "无法更新\(device.name)的会话" : "无法更新会话列表", detail: error) {
+                            device.store.refreshConversations()
+                        }.selectionDisabled(true)
+                    }
+                }
+            }
+            if sections.isEmpty && pending.isEmpty && !store.isLoading && !focused.isLoading {
+                if searchActive && aggregated.searchLoading && failures.isEmpty {
+                    ProgressView("正在搜索会话…").controlSize(.small).selectionDisabled(true)
+                } else if (searchActive && failures.isEmpty) || (!searchActive && browser.hasFilters && !filteredDevice.store.conversations.isEmpty) {
                     Text("没有匹配的会话").foregroundStyle(.secondary).selectionDisabled(true)
                     if browser.hasFilters { Button("清除筛选") { browser.runtimeID = nil; browser.project = .all }.selectionDisabled(true) }
-                } else if store.device.showsArchived {
+                } else if !searchActive && store.device.showsArchived {
                     Text("没有已归档的会话").foregroundStyle(.secondary).selectionDisabled(true)
                 }
             }
             if aggregated.showsMultipleDevices || aggregated.filter != .all {
-                ForEach(pendingDevices) { device in
+                ForEach(pending) { device in
                     DeviceStatusRow(name: device.name, status: DeviceHub.shared?.statusText(for: device.peerID ?? "") ?? "未连接") {
                         aggregated.retry(device)
                     }
                     .selectionDisabled(true)
                 }
             }
+            let orderable = orderableGroups
             ForEach(sections) { section in
                 // Flat rows keep group lifetime out of NSOutlineView's
                 // disclosure tracking map when an archive removes the last child.
@@ -195,7 +205,7 @@ struct ConversationListView: View {
                     }
                     .buttonStyle(.borderless)
                     .accessibilityLabel((expansion(section).wrappedValue ? "收起" : "展开") + sectionTitle(section))
-                    sectionHeader(section)
+                    sectionHeader(section, orderable: orderable)
                 }
                 .uiFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 .selectionDisabled(true)
@@ -230,6 +240,7 @@ struct ConversationListView: View {
                             ConversationPaginationButton(loaded: section.group.loaded, total: section.group.total,
                                 isLoading: section.device.store.loadingConversationGroups.contains(section.key),
                                 sourceName: section.crossProjectID == nil ? nil : section.device.name,
+                                error: section.device.store.conversationGroupReadErrors[section.key],
                                 load: { section.device.store.loadMoreConversations(in: section.key) })
                                 .selectionDisabled(true)
                                 .groupDrop(groupDropDelegate(section, .more), line: groupLines(section, .more))
@@ -356,7 +367,7 @@ struct ConversationListView: View {
         section.displayTitle(multipleDevices: aggregated.showsMultipleDevices)
     }
 
-    @ViewBuilder private func sectionHeader(_ section: AggregatedListModel.Section) -> some View {
+    @ViewBuilder private func sectionHeader(_ section: AggregatedListModel.Section, orderable: [String]) -> some View {
         if let id = section.crossProjectID, let project = aggregated.crossProjects.projects.first(where: { $0.id == id }) {
             Text(project.name).lineLimit(1).help(project.name)
                 .contextMenu {
@@ -368,10 +379,11 @@ struct ConversationListView: View {
                         }
                     }
                 }
-        } else { sourceSectionHeader(section) }
+        } else { sourceSectionHeader(section, orderable: orderable) }
     }
 
-    private func sourceSectionHeader(_ section: AggregatedListModel.Section) -> some View {
+    /// `orderable`: the groups that may be put in order, as the list shows them.
+    private func sourceSectionHeader(_ section: AggregatedListModel.Section, orderable: [String]) -> some View {
         let title = sectionTitle(section)
         let path: String? = if case .project(let path?) = section.key { path } else { nil }
         let projects = section.device.store.conversationProjects
@@ -383,7 +395,7 @@ struct ConversationListView: View {
             Spacer(minLength: 0)
         }
         .help(path.map { key in
-            guard let project = projects.first(where: { $0.path == key }) else { return key }
+            guard let project else { return key }
             let folders = project.primaryFolder.map { [$0] + project.folders } ?? []
             return folders.isEmpty ? title : folders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "\n")
         } ?? title)
@@ -403,7 +415,7 @@ struct ConversationListView: View {
         }
         // Dragged over another group, its header or its rows, a group takes its place.
         .onDrag {
-            guard canOrder(section) else { draggedGroup = nil; return NSItemProvider() }
+            guard canOrder(section, among: orderable) else { draggedGroup = nil; return NSItemProvider() }
             draggedGroup = section.id
             watchGroupDrag(section.id)
             return ConversationLink.groupItemProvider()
@@ -421,13 +433,13 @@ struct ConversationListView: View {
                 Button("编辑项目…") {
                     projectTarget = ProjectEditorTarget(path: path, store: window.listStore(for: device))
                 }
-                if section.group.name != nil && projects.first(where: { $0.path == path })?.nativeRuntimeId == nil {
+                if section.group.name != nil && project?.nativeRuntimeId == nil {
                     Button("恢复文件夹名称") {
-                        let folders = projects.first { $0.path == path }?.folders ?? []
+                        let folders = project?.folders ?? []
                         device.setProject(path: path, primaryFolder: path, name: nil, folders: folders)
                     }
                 }
-                if let folder = projects.first(where: { $0.path == path })?.primaryFolder {
+                if let folder = project?.primaryFolder {
                     Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)]) }
                         .disabled(device.peerID != nil || device.location(of: section.conversations.first?.runtimeID) != .local)
                 }
@@ -440,8 +452,8 @@ struct ConversationListView: View {
                     else { browser.setCollapsed(section.key, !collapsedNow) }
                 }
             }
-            if canOrder(section) {
-                let shown = orderableGroups
+            if canOrder(section, among: orderable) {
+                let shown = orderable
                 let index = shown.firstIndex(of: section.id) ?? 0
                 Divider()
                 Button("上移") { moveGroup(section, before: shown[index - 1]) }.disabled(index == 0)
@@ -547,8 +559,8 @@ struct ConversationListView: View {
         sections.filter { ConversationBrowser.orderable($0.key) }.map(\.id)
     }
     /// Groups are put in order outside a search, among at least two.
-    private func canOrder(_ section: AggregatedListModel.Section) -> Bool {
-        !searchActive && ConversationBrowser.orderable(section.key) && orderableGroups.count > 1
+    private func canOrder(_ section: AggregatedListModel.Section, among orderable: [String]) -> Bool {
+        !searchActive && ConversationBrowser.orderable(section.key) && orderable.count > 1
     }
 
     private func facadeStore(for section: AggregatedListModel.Section) -> ConversationStore {
@@ -576,7 +588,7 @@ struct ConversationListView: View {
                     Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0)
                 }
             }.frame(width: 12).accessibilityHidden(true)
-            Text(conversation.title).lineLimit(1).fontWeight(unread ? .semibold : nil).help(conversation.title)
+            Text(conversation.title).uiFont(.body.weight(unread ? .semibold : .regular)).lineLimit(1).help(conversation.title)
             if let request = device.conversationManagement.first(where: { $0.conversations.contains(conversation.id) }) {
                 Spacer(minLength: 0)
                 Image(systemName: request.running ? "arrow.triangle.2.circlepath" : "clock")
@@ -592,8 +604,14 @@ struct ConversationListView: View {
                 ProgressView().controlSize(.mini).help(label).accessibilityLabel(label)
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : "")
+        // A list cell does not take the combined children's label: it is the title, and the state its value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityLabel(conversation.title)
+        .accessibilityValue([unread ? (conversation.failed ? "未读，上一轮失败" : "未读") : nil,
+                             waiting ? "等待你处理" : nil,
+                             running ? (ownTurn ? "正在运行" : "子 Agent 正在运行") : nil]
+            .compactMap { $0 }.joined(separator: "，"))
     }
 
     /// Selections spanning devices manage each device's conversations with
@@ -856,7 +874,6 @@ struct ConversationFilterMenu: View {
         .sheet(isPresented: $crossProjectsPresented) { CrossDeviceProjectsEditor(catalog: aggregated.crossProjects, devices: aggregated.devices) }
         .accessibilityLabel("显示")
         .accessibilityIdentifier("conversation-list-filter")
-        .background(ConversationToolbarPartition.itemAnchor("conversation-list-filter"))
         .disabled(device.store.conversationBrowserPreferences == nil)
     }
 
@@ -872,67 +889,24 @@ struct NewConversationButton: View {
         Button { window.createConversation() } label: { Label("新建会话", systemImage: "square.and.pencil") }
             .help(KeyboardShortcutSettings.shared.help("新建会话", .newConversation)).disabled(window.application.enabledRuntimeInstances.isEmpty)
             .accessibilityIdentifier("conversation-new-conversation")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-new-conversation"))
     }
 }
 
-/// Search over a popover, for the list's title bar. Marked while a search filters the list.
-struct ConversationSearchButton: View {
-    @ObservedObject var window: ConversationWindowModel
+/// What the conversation list reads of its window: search, browsing
+/// choices, the rename and delete requests. It changes as they do, not
+/// as the window's tools, panes or focus do.
+@MainActor final class WindowListState: ObservableObject {
+    private var subscription: AnyCancellable?
 
-    var body: some View {
-        Button { window.listSearchPopover.toggle() } label: { Image(systemName: window.listSearch.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") }
-            .buttonStyle(.borderless).help("搜索会话").accessibilityLabel("搜索会话")
-            .popover(isPresented: $window.listSearchPopover, arrowEdge: .bottom) {
-                SearchField(text: $window.listSearch, prompt: "搜索会话", focusRequest: 1).frame(width: 240).padding(10)
-            }
-    }
-}
-
-/// What the list adds to its title bar when it is a block among other tools:
-/// search and filter, and, where the window's toolbar is not beside it, a new conversation.
-struct ConversationListHeaderActions: View {
-    @ObservedObject var window: ConversationWindowModel
-    let side: DockSide?
-
-    var body: some View {
-        ConversationSearchButton(window: window)
-        ConversationFilterMenu(window: window, store: window.list).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
-        if side != .left { NewConversationButton(window: window).buttonStyle(.borderless).labelStyle(.iconOnly) }
-    }
-}
-
-/// The sidebar column owns its toolbar contributions. Keeping the owner here
-/// preserves the historical split between titlebar actions and list content as
-/// the list changes between a sole sidebar and a titled block in that column.
-struct ConversationListSidebarToolbar: ViewModifier {
-    @ObservedObject var window: ConversationWindowModel
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-
-    private var ownsList: Bool { window.tools.tools(in: .left).contains(.list) }
-
-    @ViewBuilder func body(content: Content) -> some View {
-        // Keep the column and its toolbar host identical as tools are hidden,
-        // shared or restored. Only the item collection changes ownership.
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) {
-                if ownsList {
-                    if !window.listIsBlock { ToolbarItem(id: "list-filter") { ConversationFilterMenu(window: window, store: window.list) } }
-                    ToolbarItem(id: "new-conversation") { NewConversationButton(window: window) }
-                }
-            }
-        } else {
-            content.toolbar {
-                ToolbarItemGroup {
-                    ForEach(ownsList ? toolbarSettings.shown(in: .sidebar) : []) { button in
-                        switch button {
-                        case .listFilter: if !window.listIsBlock { ConversationFilterMenu(window: window, store: window.list) }
-                        case .newConversation: NewConversationButton(window: window)
-                        default: EmptyView()
-                        }
-                    }
-                }
-            }
-        }
+    init(_ window: ConversationWindowModel) {
+        let changes: [AnyPublisher<Void, Never>] = [
+            window.$listSearch.map { _ in () }.eraseToAnyPublisher(),
+            window.$listBrowser.map { _ in () }.eraseToAnyPublisher(),
+            window.$listSearchRequest.map { _ in () }.eraseToAnyPublisher(),
+            window.$renameTarget.map { _ in () }.eraseToAnyPublisher(),
+            window.$deleteTargets.map { _ in () }.eraseToAnyPublisher(),
+        ]
+        // `@Published` sends before the change, as `objectWillChange` does.
+        subscription = Publishers.MergeMany(changes).dropFirst(changes.count).sink { [weak self] in self?.objectWillChange.send() }
     }
 }

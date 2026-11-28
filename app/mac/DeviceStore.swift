@@ -36,7 +36,9 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var conversations: [Conversation] = []
     /// The list's groups in display order, as the core windows them.
     @Published private(set) var conversationGroups: [ConversationGroup] = []
+    @Published private(set) var conversationListReadError: String?
     @Published private(set) var loadingConversationGroups: Set<ConversationGroupKey> = []
+    @Published private(set) var conversationGroupReadErrors: [ConversationGroupKey: String] = [:]
     @Published private(set) var conversationProjects: [ConversationProject] = []
     @Published private(set) var workingDirectoryProjects: [String: [WorkingDirectoryProject]] = [:]
     @Published private(set) var showsArchived = false
@@ -146,7 +148,21 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var stoppingConversationIDs: Set<String> = []
     /// Conversations running elsewhere that the list did not contain when last read again.
     private var unlistedElsewhereIDs: Set<String> = []
-    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) { didSet { if oldValue != gateway { configurationRevision &+= 1; invalidateProviderReports() } } }
+    @Published private(set) var gateway = GatewaySummary(id: "default", name: "默认网关", providers: [], routes: []) {
+        didSet {
+            guard oldValue != gateway else { return }
+            for previous in oldValue.providers {
+                let current = providers.first { $0.id == previous.id }
+                if previous.authenticationSource == .antigravityCli || current?.authenticationSource == .antigravityCli,
+                   oldValue.id != gateway.id || current?.executionBackend != previous.executionBackend {
+                    providerQuotas[previous.id] = nil
+                    quotaReadsPending[previous.id] = nil
+                }
+            }
+            configurationRevision &+= 1
+            invalidateProviderReports()
+        }
+    }
     @Published private(set) var runtimeInstances: [RuntimeInstance] = [] {
         didSet {
             if oldValue != runtimeInstances {
@@ -177,7 +193,7 @@ final class DeviceStore: ObservableObject {
     @Published var showsAuthentication = false
     /// The core's quota observations by provider ID, as last read.
     @Published private(set) var providerQuotas: [String: QuotaObservation] = [:]
-    private var quotaReadsPending: Set<String> = []
+    private var quotaReadsPending: [String: (token: UUID, refreshing: Bool)] = [:]
     /// What a new provider starts from; a static catalog in the core.
     private(set) lazy var providerTemplates: [ProviderTemplate] = (try? VeluneBindings.providerTemplates()) ?? []
     @Published private(set) var isLoading = false
@@ -236,7 +252,7 @@ final class DeviceStore: ObservableObject {
     @Published private(set) var analyticsReport: AnalyticsReport?
     @Published private(set) var analyticsLoadedQuery: AnalyticsQuery?
     @Published private(set) var analyticsIsLoading = false
-    @Published private(set) var analyticsReadFailed = false
+    @Published private(set) var analyticsReadError: String?
     @Published private(set) var analyticsUpdatedAt: Date?
     private var analyticsGeneration: UInt64 = 0
 
@@ -249,6 +265,21 @@ final class DeviceStore: ObservableObject {
     }
     private var subscriptions: Set<AnyCancellable> = []
     private lazy var conversationObservation = ConversationObservation(device: self)
+    let nativeUserMessageWakes = PassthroughSubject<String?, Never>()
+    private var nativeUserMessageTask: Task<Void, Never>?
+
+    private func followNativeUserMessages() {
+        guard nativeUserMessageTask == nil, let events = transport?.nativeUserMessageEvents() else { return }
+        nativeUserMessageTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled, let wake = await events.next() {
+                guard let self, !Task.isCancelled else { return }
+                nativeUserMessageWakes.send(wake.conversationId)
+            }
+            self?.nativeUserMessageTask = nil
+        }
+    }
+
+    deinit { nativeUserMessageTask?.cancel() }
     func refreshConversationObservation() {
         guard started, !isPreview, !isShuttingDown else { return }
         conversationObservation.refresh()
@@ -284,7 +315,7 @@ final class DeviceStore: ObservableObject {
     /// The tab whose window was key most recently; notifications open
     /// conversations there.
     weak var focusedConversation: ConversationStore?
-    /// The scene action survives the last conversation window closing.
+    /// Installed by the application so notifications can open a window after the last one closes.
     var openConversationWindow: ((WindowSeed) -> Void)?
     /// Sample conversations shown instead of a core's.
     private(set) var previewSnapshots: [String: ConversationSnapshot] = [:]
@@ -329,7 +360,7 @@ final class DeviceStore: ObservableObject {
         guard !isPreview, !isShuttingDown, let transport else { return }
         if !started {
             started = true
-            if NSApp.activationPolicy() != .prohibited { notifier = ConversationNotifier(application: self) }
+            startNotifierIfAvailable()
             loadComposerChoices(transport)
             composerInputs.poll(force: true)
             schedulePolling()
@@ -393,6 +424,7 @@ final class DeviceStore: ObservableObject {
                     switch result {
                     case .success(let value): self.applyList(value); outcome = .success(())
                     case .failure(let error):
+                        self.conversationListReadError = error.localizedDescription
                         self.recordProblem(error, source: "刷新配置", activityKey: "configuration-list")
                         outcome = .failure(error)
                     }
@@ -406,10 +438,12 @@ final class DeviceStore: ObservableObject {
 
     func refreshConversations() {
         guard !isPreview, !isLoading, !isShuttingDown else { return }
-        refreshConfiguration()
+        refreshConfiguration(forgetOpenFailure: true)
     }
 
     func applyList(_ data: ConfigurationSnapshot) {
+        followNativeUserMessages()
+        conversationListReadError = nil
         clearActivityProblem("configuration-list")
         for conversation in data.conversations.map(BindingMapping.listed) where rememberedConversations[conversation.id] != nil {
             rememberedConversations[conversation.id] = conversation
@@ -500,9 +534,13 @@ final class DeviceStore: ObservableObject {
         }
     }
     func loadMoreConversations(in group: ConversationGroupKey) {
-        guard let transport, !isPreview, !isShuttingDown,
-              loadingConversationGroups.insert(group).inserted else { return }
+        guard !isPreview, !isShuttingDown else { return }
+        guard let transport else { conversationGroupReadErrors[group] = "暂时无法连接设备。"; return }
+        guard loadingConversationGroups.insert(group).inserted else { return }
         let preferences = conversationBrowserPreferences
+        let loaded = conversationGroups.first { $0.key == group }?.loaded ?? 0
+        let runtimeID: String?
+        if case .runtime(let id) = group { runtimeID = id } else { runtimeID = preferences?.runtimeId }
         browse({
             // A merged list can show this group while its source view still
             // has it folded. An explicit page request must read that group.
@@ -511,8 +549,18 @@ final class DeviceStore: ObservableObject {
                 _ = try transport.setConversationBrowserPreferences(expanded)
             }
             return try transport.loadMoreConversations(group: group)
-        }, source: "加载会话", finished: { [weak self] _ in
-            self?.loadingConversationGroups.remove(group)
+        }, source: "加载会话", finished: { [weak self] result in
+            guard let self else { return }
+            self.loadingConversationGroups.remove(group)
+            switch result {
+            case .success(let data):
+                // Partial history reads return the usable snapshot and failures together.
+                let updated = data.conversationGroups.first { $0.key == group }?.loaded ?? 0
+                self.conversationGroupReadErrors[group] = updated <= loaded
+                    ? data.historyFailures.first { runtimeID == nil || $0.runtimeId == runtimeID }?.detail
+                    : nil
+            case .failure(let error): self.conversationGroupReadErrors[group] = error.localizedDescription
+            }
         })
     }
     func setShowsArchived(_ archived: Bool) {
@@ -631,17 +679,25 @@ final class DeviceStore: ObservableObject {
 
     // MARK: - Activity
 
+    private func startNotifierIfAvailable() {
+        if notifier == nil, NSApp.activationPolicy() != .prohibited {
+            notifier = ConversationNotifier(application: self)
+        }
+    }
+
     /// The device follows login and which conversations execute; each tab
     /// follows the conversation it shows.
     private func schedulePolling() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.refreshConversationObservation()
                 self.pollAuthentication(); self.pollActiveConversations(); self.pollQuotaAlerts(); self.composerInputs.poll()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
     /// The user is looking at this conversation now.
     func isShowingConversation(_ id: String) -> Bool { isShowingConversation(id, keyWindow: NSApp.keyWindow, active: NSApp.isActive) }
@@ -660,8 +716,6 @@ final class DeviceStore: ObservableObject {
             window.window?.makeKeyAndOrderFront(nil)
             window.focusNotificationTarget(id)
         } else if let open = openConversationWindow ?? DeviceHub.shared?.openWorkspaceWindow {
-            // Opening intent owns the full target, independently of whichever
-            // window last installed the scene action.
             let seed = WindowSeed(conversationID: id, device: peerID)
             WindowPresentation.notificationTargets.insert(seed.id)
             open(seed)
@@ -693,56 +747,56 @@ final class DeviceStore: ObservableObject {
     }
     private func pollActiveConversations() {
         guard started, !isPreview, !isShuttingDown, !activePollPending, activePollBackoff.ready, let transport else { return }
+        startNotifierIfAvailable()
         activePollPending = true
         let since = activityCursor
-        performOnQueue { [weak self] in
+        // Keep live activity independent of list, settings and management reads.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try transport.conversationActivity(since: since) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.activePollPending = false
+                guard !self.isShuttingDown else { return }
                 switch result {
                 case .success(let activity):
                     self.activePollBackoff.succeeded()
                     self.clearActivityProblem("active-conversations")
-                    self.activityCursor = activity.cursor
-                    let active = activity.active
-                    let inputBusy = Set(active.filter { $0.blocksIdleSubmission }.map(\.conversationId))
-                    if self.idleSubmissionBusyIDs != inputBusy { self.idleSubmissionBusyIDs = inputBusy }
-                    let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
-                    if self.runningConversationIDs != running { self.runningConversationIDs = running }
-                    let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
-                    if self.elsewhereConversationIDs != elsewhere { self.elsewhereConversationIDs = elsewhere }
-                    let parents = Set(active.compactMap { item in
-                        [.running, .stopping, .elsewhere].contains(item.runState) ? item.parentConversationId : nil
-                    })
-                    if self.subAgentParentIDs != parents { self.subAgentParentIDs = parents }
-                    let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
-                    if self.waitingConversationIDs != waiting { self.waitingConversationIDs = waiting }
-                    self.executionRuntimeIDs = Dictionary(active.filter { $0.runState == .running && $0.parentConversationId == nil }
-                        .map { ($0.conversationId, $0.contextRuntimeId) }, uniquingKeysWith: { first, _ in first })
-                    self.subAgentRuntimeIDs = Dictionary(active.filter { $0.runState == .running }
-                        .compactMap { item in item.parentConversationId.map { ($0, item.contextRuntimeId) } }, uniquingKeysWith: { first, _ in first })
-                    let resumable = Dictionary(activity.resumable.map { ($0.conversationId, $0.runtimeId) }, uniquingKeysWith: { first, _ in first })
-                    if self.resumableConversations != resumable { self.resumableConversations = resumable }
-                    // A conversation started outside Velune, or by an agent through
-                    // Velune, appears once the list is read again; a sub-agent is
-                    // listed under its parent instead.
-                    let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
-                    let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !self.conversations.contains { $0.id == id } }
-                    // So does one started and finished between two polls (a quick
-                    // turn sent from a paired device).
-                    let finishedUnlisted = activity.finished.contains { turn in
-                        !subAgents.contains(turn.conversationId) && !self.conversations.contains { $0.id == turn.conversationId }
-                    }
-                    if finishedUnlisted || !unlisted.isSubset(of: self.unlistedElsewhereIDs) { self.refreshConversations() }
-                    self.unlistedElsewhereIDs = unlisted
-                    self.notifier?.observe(activity)
+                    self.applyConversationActivity(activity)
                 case .failure(let failure):
                     self.activePollBackoff.failed()
                     self.recordProblem(failure, source: "读取运行状态", activityKey: "active-conversations")
                 }
             }
         }
+    }
+    func applyConversationActivity(_ activity: ConversationActivity) {
+        activityCursor = activity.cursor
+        let active = activity.active
+        let inputBusy = Set(active.filter { $0.blocksIdleSubmission }.map(\.conversationId))
+        if idleSubmissionBusyIDs != inputBusy { idleSubmissionBusyIDs = inputBusy }
+        let running = Set(active.filter { $0.runState == .running || $0.runState == .stopping }.map(\.conversationId))
+        if runningConversationIDs != running { runningConversationIDs = running }
+        let elsewhere = Set(active.filter { $0.runState == .elsewhere }.map(\.conversationId))
+        if elsewhereConversationIDs != elsewhere { elsewhereConversationIDs = elsewhere }
+        let parents = Set(active.compactMap { item in
+            [.running, .stopping, .elsewhere].contains(item.runState) ? item.parentConversationId : nil
+        })
+        if subAgentParentIDs != parents { subAgentParentIDs = parents }
+        let waiting = Set(active.filter { $0.pendingInteractions > 0 }.map(\.conversationId))
+        if waitingConversationIDs != waiting { waitingConversationIDs = waiting }
+        executionRuntimeIDs = Dictionary(active.filter { $0.runState == .running && $0.parentConversationId == nil }
+            .map { ($0.conversationId, $0.contextRuntimeId) }, uniquingKeysWith: { first, _ in first })
+        subAgentRuntimeIDs = Dictionary(active.filter { $0.runState == .running }
+            .compactMap { item in item.parentConversationId.map { ($0, item.contextRuntimeId) } }, uniquingKeysWith: { first, _ in first })
+        let resumable = Dictionary(activity.resumable.map { ($0.conversationId, $0.runtimeId) }, uniquingKeysWith: { first, _ in first })
+        if resumableConversations != resumable { resumableConversations = resumable }
+        // Completion can change the listed session's unread state and sort position.
+        // Unlisted native sub-agents are shown under their parent.
+        let subAgents = Set(active.filter { $0.parentConversationId != nil }.map(\.conversationId))
+        let unlisted = elsewhere.union(running).subtracting(subAgents).filter { id in !conversations.contains { $0.id == id } }
+        if !isPreview, !activity.finished.isEmpty || !unlisted.isSubset(of: unlistedElsewhereIDs) { refreshConfiguration() }
+        unlistedElsewhereIDs = unlisted
+        notifier?.observe(activity)
     }
     /// Stop the turns of those of `ids` that run in Velune, as their
     /// composers' stop does, without opening them; sub-agents stop with
@@ -786,12 +840,12 @@ final class DeviceStore: ObservableObject {
     func shutdown(stoppingWork: Bool = false, completion: @escaping (Bool) -> Void) {
         guard !isShuttingDown else { completion(false); return }
         guard !isPreview, let transport else { completion(true); return }
-        windowWorkspaceJournal.flush()
         isShuttingDown = true
         timer?.invalidate(); timer = nil
         // Reads queued in any window give way; the changes queued before this still land.
         composerInputs.flush { [weak self] in
             guard let self else { completion(false); return }
+            // Include recovery points queued by the draft flush in the same drain.
             self.windowWorkspaceJournal.flush()
             transport.beginClosing()
             self.performOnQueue { [weak self] in
@@ -806,6 +860,7 @@ final class DeviceStore: ObservableObject {
                             switch result {
                             case .success:
                                 self.started = false
+                                self.nativeUserMessageTask?.cancel()
                                 self.problemQueue.async { DispatchQueue.main.async { completion(true) } }
                             case .failure(let failure):
                                 self.recordProblem(failure)
@@ -824,9 +879,12 @@ final class DeviceStore: ObservableObject {
     func loadAnalytics(_ query: AnalyticsQuery) {
         analyticsGeneration &+= 1
         let requestGeneration = analyticsGeneration
-        analyticsReadFailed = false
+        analyticsReadError = nil
         guard !isPreview else { analyticsIsLoading = false; return }
-        guard !isShuttingDown, let transport else { analyticsIsLoading = false; analyticsReadFailed = true; recordProblem("本地核心不可用", source: "读取分析记录"); return }
+        guard !isShuttingDown, let transport else {
+            analyticsIsLoading = false; analyticsReadError = "本地核心不可用"
+            recordProblem("本地核心不可用", source: "读取分析记录"); return
+        }
         analyticsIsLoading = true
         performOnQueue { [weak self] in
             let result = Result { try transport.analyticsQuery(query) }
@@ -838,7 +896,9 @@ final class DeviceStore: ObservableObject {
                     self.analyticsReport = report; self.analyticsLoadedQuery = query; self.analyticsUpdatedAt = Date()
                     if let warning = report.storageWarning { self.recordProblem(TransportError.rejected(warning), source: "保存分析记录", activityKey: "analytics:storage") }
                     else { self.clearActivityProblem("analytics:storage") }
-                case .failure(let failure): self.analyticsReadFailed = true; self.recordProblem(failure)
+                case .failure(let failure):
+                    let problem = AppProblem.failure(failure, source: "读取分析记录")
+                    self.analyticsReadError = problem.detail; self.recordProblem(failure, source: "读取分析记录")
                 }
             }
         }
@@ -855,21 +915,26 @@ final class DeviceStore: ObservableObject {
             self?.applyGatewayUpdate(data); onSaved?()
         }
     }
-    /// Reads the providers' quota without holding up other work. Reading
-    /// samples a provider whose observation has expired; `refresh` asks for a
-    /// sample now. Either returns at once, so callers read again while
-    /// `refreshing` holds.
+    /// Reads cached quota, which can sample expired automatic sources.
+    /// `refresh` explicitly requests a sample. Callers read again while it is running.
     func readProviderQuotas(_ providerIDs: [String], refresh: Bool = false) {
-        let ids = providerIDs.filter { !quotaReadsPending.contains($0) }
+        let ids = providerIDs.filter { id in
+            guard let pending = quotaReadsPending[id] else { return true }
+            return refresh && !pending.refreshing
+        }
         guard !ids.isEmpty, !isPreview, !isShuttingDown, let transport else { return }
-        quotaReadsPending.formUnion(ids)
+        let token = UUID()
+        for id in ids { quotaReadsPending[id] = (token, refresh) }
         let gatewayID = gateway.id
         performOnQueue { [weak self] in
             let results = ids.map { id in (id, Result { try transport.providerQuota(gatewayID: gatewayID, providerID: id, refresh: refresh) }) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.quotaReadsPending.subtract(ids)
                 for (id, result) in results {
+                    // Target changes invalidate the pending request as well as its cached value.
+                    guard self.quotaReadsPending[id]?.token == token else { continue }
+                    self.quotaReadsPending[id] = nil
+                    guard self.gateway.id == gatewayID else { continue }
                     switch result {
                     case .success(let quota): self.providerQuotas[id] = quota; self.clearActivityProblem("quota:\(id)")
                     case .failure(let failure):
@@ -1032,7 +1097,11 @@ final class DeviceStore: ObservableObject {
         guard !isPreview else { recordProblem("预览不会检查登录"); return }
         guard let transport else { recordProblem("本地核心未配置"); return }
         enqueue({ _ = try transport.authenticationInspect(gatewayID: self.gateway.id, providerID: providerID); return try transport.list() }) { [weak self] in
-            self?.applyList($0); self?.readProviderQuotas([providerID], refresh: true)
+            guard let self else { return }
+            self.applyList($0)
+            if let provider = self.providers.first(where: { $0.id == providerID }), provider.authenticationSource != .antigravityCli {
+                self.readProviderQuotas([providerID], refresh: true)
+            }
         }
     }
     /// Signs the provider's source out, e.g. Claude Code CLI's own login.
@@ -1128,6 +1197,23 @@ final class DeviceStore: ObservableObject {
             refreshAfterConfigurationChange()
             if data.runtimeInstances.contains(where: { $0.id == instance.id }) { onSaved?() }
             else { recordProblem("核心未返回保存后的运行时实例") }
+        }
+    }
+    func saveRuntimeModelAutoCompaction(runtimeID: String, model: ModelSelection, setting: AutoCompactionSetting?,
+                                        onFailure: ((Error) -> Void)? = nil, onSaved: @escaping () -> Void) {
+        guard let transport, !isShuttingDown, !isLoading else {
+            let error = TransportError.rejected("暂时无法保存自动压缩设置，请稍后重试。")
+            if let onFailure { onFailure(error) } else { recordProblem(error) }
+            return
+        }
+        enqueue({
+            try transport.setRuntimeModelAutoCompaction(runtimeID: runtimeID, model: model, setting: setting)
+        }, onFailure: onFailure) { [weak self] data in
+            guard let self else { return }
+            runtimeInstances = data.runtimeInstances
+            runtimeTypes = data.runtimeTypes
+            if data.executionInvalidated { refreshAfterConfigurationChange() }
+            onSaved()
         }
     }
     /// The saved location and HOME (and where that HOME is), plus the launch
@@ -1280,101 +1366,19 @@ final class DeviceStore: ObservableObject {
     }
     func keepPreviewSnapshot(_ value: ConversationSnapshot) { previewSnapshots[value.conversation.id] = value }
 
-    /// A background-only activity record must not override core submission admission.
-    static func checkBackgroundSubmissionAdmission() {
-        let home = FileManager.default.temporaryDirectory.appendingPathComponent("velune-background-admission-\(UUID())", isDirectory: true)
-        let transport = Transport(stateDirectory: home, telemetry: .failure(TransportError.unavailable), remote: {
-            throw TransportError.rejected("synthetic background admission has no runtime")
-        })
-        let device = DeviceStore(transport: transport)
-        device.seedPreview()
-        // Keep production queue admission while supplying an in-memory input
-        // authority. No runtime or composer transport is started by this check.
-        device.composerInputs = ComposerInputClient(device: device, transport: nil)
-        var idle = device.previewSnapshots["sample-0"]!
-        idle.runState = .idle
-        idle.actions.canSend = true
-        idle.actions.canCancel = false
-        idle.followUp = .init()
-        device.keepPreviewSnapshot(idle)
-        let window = ConversationWindowModel(application: device, kind: .workspace)
-        let store = window.focused.store
-        var sequence: UInt64 = 0
-        func adopt(_ value: ConversationSnapshot) {
-            sequence += 1
-            let conversation = value.conversation
-            store.adopt(SnapshotResult(snapshot: DeliveredSnapshot(
-                cursor: .init(generation: 1, sequence: sequence), base: nil,
-                messageIds: [], messages: [], revision: sequence,
-                conversation: .init(id: conversation.id, title: .native(conversation.title),
-                    updatedAtUnixMs: nil, createdAtUnixMs: nil, runtimeId: conversation.runtimeID,
-                    cwd: nil, canRename: false, canDelete: false, parentConversationId: nil, nativeReadState: nil),
-                contextRuntimeId: value.contextRuntimeID, resourceId: nil, modelRecordKey: nil,
-                runState: value.runState, transcriptTurns: [], usage: .init(),
-                transcriptItems: [], transcriptOutline: [], transcriptMessageIdentities: [],
-                messageIdentityConfirmations: [], pendingInteractions: [], actions: value.actions,
-                followUp: value.followUp, subAgents: [], collaborators: [])))
-            store.prepareSyntheticComposerTargetForAdmissionCheck()
-            let context = window.composerContext(for: window.focused)
-            precondition(context.inputIssue == nil,
-                         "提交准入检查必须先具备完整有效的输入和执行目标：\(context.inputIssue ?? "")")
-        }
-        adopt(idle)
-        var model = window.composer(for: window.focused)
-        model.restore("背景任务运行时的新输入", attachments: [])
-        device.runningConversationIDs = [idle.conversation.id]
-        precondition(store.isRunning(idle.conversation), "后台活动仍应显示在会话列表")
-        precondition(!store.isGenerating && store.canSend && !store.canQueue,
-                     "后台活动不等于 LLM 正在回答，空闲核心快照应允许直接发送")
-        let send = window.focused.submission(using: model)
-        precondition(send.action == .send && send.canSubmitDraft, "有正文时必须提供可用的发送按钮")
-        device.idleSubmissionBusyIDs = [idle.conversation.id]
-        precondition(!store.canSend && !window.focused.submission(using: model).canSubmitDraft,
-                     "新轮次活动先到时必须撤销旧空闲快照的发送资格")
-        device.idleSubmissionBusyIDs = []
-        device.elsewhereConversationIDs = [idle.conversation.id]
-        precondition(!store.canSend, "外部活动先到时必须撤销旧空闲快照的发送资格")
-        device.elsewhereConversationIDs = []
-        precondition(store.canSend, "仅后台活动仍应允许直接发送")
-
-        var running = idle
-        running.conversation = device.previewSnapshots["sample-1"]!.conversation
-        running.contextRuntimeID = running.conversation.runtimeID
-        running.runState = .running
-        running.actions.canSend = false
-        running.actions.canCancel = true
-        running.followUp.canQueue = true
-        device.keepPreviewSnapshot(running)
-        adopt(running)
-        model = window.composer(for: window.focused)
-        model.restore("正在回答时的新输入", attachments: [])
-        let queued = window.focused.submission(using: model)
-        precondition(!store.canSend && store.canQueue && queued.action == .queue && queued.canSubmitDraft,
-                     "真正的 LLM 运行仍应排队")
-
-        var external = idle
-        external.conversation = device.previewSnapshots["sample-2"]!.conversation
-        external.contextRuntimeID = external.conversation.runtimeID
-        external.runState = .elsewhere
-        external.actions.canSend = false
-        external.actions.inputAccess = .externalController
-        device.keepPreviewSnapshot(external)
-        adopt(external)
-        model = window.composer(for: window.focused)
-        model.restore("外部运行时的新输入", attachments: [])
-        precondition(!store.canSend && !store.canQueue && !window.focused.submission(using: model).canSubmitDraft,
-                     "核心判定外部运行仍必须禁止提交")
-        store.close()
-        try? FileManager.default.removeItem(at: home)
-        FileHandle.standardError.write(Data("PASS background admission: background body sends, early turn/external activity blocks stale idle, actual turn queues, external snapshot blocks\n".utf8))
-    }
-
     private func seedPreview() {
         conversationBrowserPreferences = ConversationBrowser().preferences
-        gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: ProviderDraft(id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions, endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native, authenticationSource: .apiKey, quotaSource: .none, models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)], quotaLimits: []))], routes: [])
+        let provider = ProviderDraft(
+            id: "sample-provider", name: "示例 AI 服务", protocol: .chatCompletions,
+            endpoint: "https://example.invalid/v1", executionBackend: .http, requestProfile: .native,
+            authenticationSource: .apiKey, quotaSource: .none,
+            models: [ProviderModel(recordKey: "sample-model", providerModelId: "external-example", nickname: "通用模型", contextWindow: 8192, maxOutputTokens: 4096)],
+            quotaLimits: [], codexClientVersion: nil
+        )
+        gateway = GatewaySummary(id: "default", name: "默认网关", providers: [ProviderSummary(previewOf: provider)], routes: [])
         hasGateway = true
-        protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true)]
-        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, canSideChat: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages], supportedProviderProtocols: [.chatCompletions, .responses, .messages], name: "示例运行时", fields: [], permissionModes: [])]
+        protocols = [ProtocolDescriptor(id: .chatCompletions, name: "OpenAI Chat Completions v1", supported: true), ProtocolDescriptor(id: .responses, name: "OpenAI Responses v1", supported: true), ProtocolDescriptor(id: .messages, name: "Anthropic Messages v1", supported: true), ProtocolDescriptor(id: .gemini, name: "Gemini GenerateContent", supported: true)]
+        runtimeTypes = [RuntimeTypeDescriptor(id: .pi, familyId: "sample", compatibleVersions: "", canRenameConversations: true, canDeleteConversations: true, canSideChat: true, launchOptions: false, agentInfo: false, sessionOptions: false, nativeAccountQuota: false, remoteResources: false, supportedProtocols: [.chatCompletions, .responses, .messages, .gemini], supportedProviderProtocols: [.chatCompletions, .responses, .messages, .gemini], name: "示例运行时", fields: [], permissionModes: [])]
         runtimeInstances = [RuntimeInstance(id: "sample-instance", name: "示例运行时", typeId: .pi, gatewayId: gateway.id, settings: [:]), RuntimeInstance(id: "sample-review", name: "另一个运行时", typeId: .pi, gatewayId: gateway.id, settings: [:])]
         selectedRuntimeInstanceID = runtimeInstances[0].id
         let topics = ["让设置页更安静", "整理一段代码", "下一步的项目计划"]
@@ -1439,3 +1443,18 @@ struct PollBackoff {
     }
     mutating func succeeded() { failures = 0; notBefore = .distantPast }
 }
+
+#if VELUNE_DEV_CHECKS
+extension DeviceStore {
+    func prepareBackgroundAdmissionFixture() {
+        seedPreview()
+        composerInputs = ComposerInputClient(device: self, transport: nil)
+    }
+
+    func setBackgroundAdmissionActivity(running: Set<String>, busy: Set<String> = [], elsewhere: Set<String> = []) {
+        if runningConversationIDs != running { runningConversationIDs = running }
+        if idleSubmissionBusyIDs != busy { idleSubmissionBusyIDs = busy }
+        if elsewhereConversationIDs != elsewhere { elsewhereConversationIDs = elsewhere }
+    }
+}
+#endif

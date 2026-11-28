@@ -16,6 +16,8 @@
 
 Rust 的同一许可锁覆盖连接接纳和 TLS 下的 socket I/O。Swift 关闭专属 gRPC channel；Java 的 exporter 发送准入与 shutdown 共享排序锁；.NET 取消并释放专属 HttpClient。撤销后不迁移旧批次，已经发送的数据允许晚到。正常退出有界 flush，移动端不增加后台保活。构造中途失败也必须清理已注册的监听器、reader 和 exporter。
 
+Mac 为原生遥测的三类数据共用最多 2 秒的退出补发预算。随后发起 gRPC 断开，SDK 清理无需给退出返回回执。预算耗尽时最后一批遥测可能丢失，业务保存和本地诊断落盘仍由各自的关闭入口完成。
+
 ## 关联、事件与指标
 
 原生与 Rust 共用 `service.name=velune.{platform}`、版本、进程随机 `service.instance.id`、平台、environment 与可选开发 run ID。service 表示客户端种类，instance 区分进程，scope 表示埋点来源，span 表示一次操作；业务模块不另拆 service。Rust trace/metric scope 是 `velune.client.rust`，日志 bridge 是 `velune_telemetry`，原生 scope 是 `velune.client.native`。不使用账户、设备名或公钥作为资源身份。

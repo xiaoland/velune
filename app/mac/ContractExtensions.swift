@@ -54,7 +54,7 @@ extension ModelTemplate: Identifiable {
 }
 
 extension ApiProtocol: CaseIterable, Identifiable {
-    public static var allCases: [ApiProtocol] { [.chatCompletions, .responses, .messages] }
+    public static var allCases: [ApiProtocol] { [.chatCompletions, .responses, .messages, .gemini] }
     public var id: Self { self }
 }
 
@@ -138,7 +138,7 @@ extension DeliveredBlock {
 }
 
 extension DeliveredMessage {
-    /// A message the Mac shows before the core delivers it: a pending send or a preview.
+    /// A synthetic message for previews and checks.
     init(id: String, role: MessageRole, timestampUnixMs: Int64? = nil, blocks: [DeliveredBlock]) {
         self.init(stamp: 0, completed: true, id: id, role: role, timestampUnixMs: timestampUnixMs, blocks: blocks)
     }
@@ -153,7 +153,7 @@ extension ProviderSummary: Identifiable {
         self.init(id: draft.id, name: draft.name, protocol: draft.protocol, endpoint: draft.endpoint, executionBackend: draft.executionBackend,
                   requestProfile: draft.requestProfile, authenticationSource: draft.authenticationSource, quotaSource: draft.quotaSource,
                   authentication: .unconfigured, quotaAuthentication: QuotaAuthenticationDescription(configured: false, bindingConfirmed: false),
-                  quotaLimits: draft.quotaLimits, models: draft.models)
+                  quotaLimits: draft.quotaLimits, models: draft.models, codexClientVersion: draft.codexClientVersion)
     }
 }
 
@@ -195,12 +195,24 @@ extension QuotaWindowObservation {
     var period: TimeInterval? { windowMs.map { Double($0) / 1000 } }
     var observedAt: Date? { observedAtMs?.unixMsDate }
     func applies(to providerModelID: String) -> Bool { modelIds?.contains(providerModelID) ?? true }
+    var appliesToAnyModel: Bool { modelIds?.isEmpty != true }
+    var hasModelMapping: Bool { modelIds?.isEmpty == false }
+    /// Each Antigravity group can expire or reset independently.
+    func isCurrent(at time: Date) -> Bool {
+        guard let observedAt, let expiresAt = expiresAtMs?.unixMsDate else { return false }
+        return (0...100).contains(usedPercent) && observedAt <= time && expiresAt > time
+            && (resetsAt.map { $0 > time } ?? true)
+    }
     /// The window as a row names it: a period's window, or the limit itself.
     static func title(_ id: String) -> String {
-        id == "openrouter:keyLimit" ? "Key 花费上限" : "\(name(id))窗口"
+        if id == "openrouter:keyLimit" { return "Key 花费上限" }
+        let group = antigravityName(id)
+        return group == id ? "\(name(id))窗口" : group
     }
     /// A readable name for a window ID; Codex names its windows `window:<seconds>`.
     static func name(_ id: String) -> String {
+        let group = antigravityName(id)
+        if group != id { return group }
         switch id {
         case "ark:session": return "5 小时"
         case "ark:weekly": return "周"
@@ -215,6 +227,16 @@ extension QuotaWindowObservation {
         if seconds % 86_400 == 0 { return "\(seconds / 86_400) 天" }
         if seconds % 3_600 == 0 { return "\(seconds / 3_600) 小时" }
         return "\(max(1, seconds / 60)) 分钟"
+    }
+    static func antigravityName(_ id: String) -> String {
+        switch id {
+        case "gemini-5h": "Gemini · 5 小时"
+        case "gemini-weekly": "Gemini · 每周"
+        case "3p-5h": "第三方模型 · 5 小时"
+        case "3p-weekly": "第三方模型 · 每周"
+        case "gemini-argon-wtu-weekly": "Gemini Argon WTU · 每周"
+        default: id
+        }
     }
 }
 
@@ -281,7 +303,7 @@ extension InputAccess {
         case .externalController: "可继续编辑草稿，控制权释放后可发送"
         case .controlUnavailable: "可继续编辑草稿，确认会话控制权后可发送"
         case .externalExecution: "等待外部执行结束后继续"
-        case .readOnly: "此会话只可阅读"
+        case .readOnly: "可编辑草稿，暂不能发送"
         }
     }
     var message: String? {
@@ -291,7 +313,7 @@ extension InputAccess {
         case .externalController: "另一个客户端正在控制此会话。草稿可继续编辑，控制权释放后可发送。"
         case .controlUnavailable: "暂时无法确认会话控制权，正在重试。请检查运行时连接。"
         case .externalExecution: "此会话正在其他客户端执行，请等待执行结束。"
-        case .readOnly: "此会话当前只可阅读。"
+        case .readOnly: "此会话当前不能提交消息。草稿可继续编辑。"
         }
     }
 }

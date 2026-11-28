@@ -7,7 +7,7 @@ import VeluneBindings
 
 struct ScheduledTasksMenuItem: View {
     @Environment(\.openWindow) private var openWindow
-    var body: some View { Button("定时任务…") { openWindow(id: "scheduled-tasks") } }
+    var body: some View { Button("定时任务") { openWindow(id: "scheduled-tasks") } }
 }
 
 // MARK: - Per-device model
@@ -19,9 +19,18 @@ struct ScheduledTasksMenuItem: View {
     @Published var refreshing = false
     @Published var error: String?
     @Published var refreshError: String?
+    private var queuedRefresh = false
     init(store: DeviceStore) { self.store = store }
-    func refresh() {
-        guard !busy, !refreshing, let transport = store.transport else { return }
+    func refresh(manual: Bool = false) {
+        if busy || refreshing {
+            if manual { queuedRefresh = true }
+            return
+        }
+        guard !store.isPreview else { return }
+        guard let transport = store.transport else {
+            refreshError = "暂时无法连接设备。"
+            return
+        }
         refreshing = true
         store.performOnQueue { [weak self] in
             let result = Result { try transport.scheduledTasks(.list) }
@@ -32,6 +41,7 @@ struct ScheduledTasksMenuItem: View {
                 case .success(let state): self.state = state; self.refreshError = nil
                 case .failure(let error): self.refreshError = AppProblem.failure(error, source: "定时任务").detail
                 }
+                self.runQueuedRefresh()
             }
         }
     }
@@ -49,8 +59,14 @@ struct ScheduledTasksMenuItem: View {
                     self.error = nil; completed?(state)
                 case .failure(let error): self.error = AppProblem.failure(error, source: "定时任务").detail
                 }
+                self.runQueuedRefresh()
             }
         }
+    }
+    private func runQueuedRefresh() {
+        guard queuedRefresh, !busy, !refreshing else { return }
+        queuedRefresh = false
+        refresh(manual: true)
     }
 }
 
@@ -112,15 +128,17 @@ struct ScheduledTasksContent: View {
     }
     var body: some View {
         HSplitView {
-            sidebar
-            detail
+            VStack(spacing: 0) {
+                if let error = model.refreshError {
+                    ReadFailureNotice(title: "无法读取定时任务", detail: error) { model.refresh(manual: true) }
+                    Divider()
+                }
+                sidebar.disabled(model.busy)
+            }.frame(minWidth: 210, idealWidth: 240, maxWidth: 300)
+            detail.disabled(model.busy)
         }
-        .disabled(model.busy)
         .onAppear {
-            store.openConversationWindow = { [openWindow] seed in
-                WindowPresentation.windowed.insert(seed.id)
-                openWindow(id: ConversationWindowKind.workspace.sceneID, value: seed)
-            }
+            store.openConversationWindow = { seed in WorkspaceWindows.shared.open(.workspace, seed: seed) }
         }
         .task { store.start(); while !Task.isCancelled { model.refresh(); try? await Task.sleep(for: .seconds(5)) } }
         .toolbar {
@@ -132,11 +150,9 @@ struct ScheduledTasksContent: View {
                     .help("从 ChatGPT / Codex 导入")
             }
             ToolbarItem {
-                if model.refreshing {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button("刷新", systemImage: "arrow.clockwise") { model.refresh() }
-                        .help("刷新任务与运行记录")
+                HStack(spacing: 6) {
+                    if model.refreshing { ProgressView().controlSize(.small).accessibilityLabel("正在刷新定时任务") }
+                    ReadRefreshButton(label: "刷新任务与运行记录") { model.refresh(manual: true) }
                 }
             }
         }
@@ -194,19 +210,18 @@ struct ScheduledTasksContent: View {
             }
         }
         .listStyle(.sidebar)
-        .frame(minWidth: 210, idealWidth: 240, maxWidth: 300)
     }
 
     // MARK: Detail container
 
     private var detail: some View {
         VStack(spacing: 0) {
-            if let error = model.error ?? model.refreshError {
+            if let error = model.error {
                 HStack(alignment: .top, spacing: 10) {
                     Label(error, systemImage: "exclamationmark.circle")
                         .foregroundStyle(.red).textSelection(.enabled).font(.callout)
                     Spacer()
-                    Button { model.error = nil; model.refreshError = nil } label: {
+                    Button { model.error = nil } label: {
                         Image(systemName: "xmark")
                     }.buttonStyle(.borderless)
                 }

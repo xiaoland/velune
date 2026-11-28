@@ -40,6 +40,7 @@
 - <a id="ark-coding-plan-接入决定2026-10-20"></a>[ARK Coding Plan 接入决定（2026-10-20）](sources/ai-routing.md#ark-coding-plan-接入决定2026-10-20)
 - <a id="s55"></a>[S55 · 重置节奏、额度与提醒](sources/ai-routing.md#s55)
 - <a id="s77"></a>[S77 · 速度改为模型变体](sources/ai-routing.md#s77)
+- <a id="s96"></a>[S96 · 保留 Antigravity 个人订阅网关](sources/ai-routing.md#s96)
 
 ## 运行时、资源库与 Agent 协作
 
@@ -92,6 +93,10 @@
 - <a id="s74"></a>[S74 · 新建会话新增 Tab](sources/workspace-keyboard.md#s74)
 - <a id="s75"></a>[S75 · 列表／Tab 关系与恢复](sources/workspace-keyboard.md#s75)
 - <a id="s76"></a>[S76 · 重新打开关闭的 Tab](sources/workspace-keyboard.md#s76)
+- <a id="s92"></a>[S92 · Mac 工作区原生外壳](sources/workspace-keyboard.md#s92)
+- <a id="s93"></a>[S93 · 边栏与停靠区收敛](sources/workspace-keyboard.md#s93)
+- <a id="s94"></a>[S94 · 在新窗口中新建会话](sources/workspace-keyboard.md#s94)
+- <a id="s95"></a>[S95 · 真实数据副本验收与体验收敛](sources/workspace-keyboard.md#s95)
 
 ## 远程控制与平台选择
 
@@ -113,6 +118,7 @@
 - <a id="s81"></a>[S81 · 目标准备用例与未手选项继承](sources/development.md#s81)
 - <a id="s82"></a>[S82 · 开发构建复用与空间治理](sources/development.md#s82)
 - <a id="s84"></a>[S84 · 首个公开 Beta 与发布治理](sources/development.md#s84)
+- <a id="s97"></a>[S97 · 分层测试与可重放验收取代临时验证](sources/development.md#s97)
 
 ## 综合使用反馈与修复要求
 

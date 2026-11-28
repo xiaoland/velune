@@ -4,7 +4,7 @@ use axum::{
     Router,
     body::Body,
     extract::State,
-    http::{Request, Response},
+    http::{HeaderMap, Request, Response},
 };
 use serde_json::{Value, json};
 use std::{
@@ -14,8 +14,8 @@ use std::{
 use velune_gateway::{
     AnalyticsOutcome, AnalyticsRecord, AnalyticsSink, CredentialMaterial, CredentialRecovery,
     CredentialResolutionError, CredentialResolver, CredentialTarget, ExecutionBackend,
-    GatewayConfig, HttpAuthorization, ModelRoute, ProviderDefinition, ProviderModel, QuotaLimit,
-    QuotaSnapshot, QuotaSource, QuotaWindow, RequestCapabilities, RequestProfile,
+    GatewayConfig, HttpAuthorization, ModelRoute, Protocol, ProviderDefinition, ProviderModel,
+    QuotaLimit, QuotaSnapshot, QuotaSource, QuotaWindow, RequestCapabilities, RequestProfile,
     ResolvedCredential, RoutingStrategy, Runner, SchedulingState,
 };
 
@@ -27,10 +27,13 @@ struct Reply {
 }
 impl Reply {
     fn json(status: u16, body: Value) -> Self {
+        Self::json_bytes(status, &body.to_string())
+    }
+    fn json_bytes(status: u16, body: &str) -> Self {
         Self {
             status,
             headers: vec![("content-type", "application/json".into())],
-            body: body.to_string(),
+            body: body.into(),
         }
     }
     fn stream(body: &str) -> Self {
@@ -52,6 +55,7 @@ struct Upstream {
     replies: Arc<Mutex<BTreeMap<String, Reply>>>,
     hits: Arc<Mutex<Vec<String>>>,
     requests: Arc<Mutex<Vec<Value>>>,
+    request_headers: Arc<Mutex<Vec<HeaderMap>>>,
 }
 impl Upstream {
     async fn start() -> (Self, String) {
@@ -73,7 +77,16 @@ impl Upstream {
     async fn handle(State(upstream): State<Self>, request: Request<Body>) -> Response<Body> {
         let path = request.uri().path().to_owned();
         let provider = path.split('/').nth(1).unwrap_or_default().to_owned();
-        upstream.hits.lock().unwrap().push(path);
+        upstream
+            .hits
+            .lock()
+            .unwrap()
+            .push(request.uri().to_string());
+        upstream
+            .request_headers
+            .lock()
+            .unwrap()
+            .push(request.headers().clone());
         let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -97,18 +110,214 @@ impl CredentialResolver for Keys {
     fn resolve(
         &self,
         _reference: String,
-        _target: CredentialTarget,
+        target: CredentialTarget,
     ) -> velune_ai::OperationFuture<Result<ResolvedCredential, CredentialResolutionError>> {
-        Box::pin(async {
+        Box::pin(async move {
             Ok(ResolvedCredential {
                 material: CredentialMaterial::Http {
-                    authorization: HttpAuthorization::Bearer("synthetic-key".into()),
+                    authorization: if target.protocol == Protocol::Gemini {
+                        HttpAuthorization::ApiKey("synthetic-gemini-key".into())
+                    } else {
+                        HttpAuthorization::Bearer("synthetic-key".into())
+                    },
                     account_id: None,
                 },
                 recovery: CredentialRecovery::None,
                 request_capabilities: RequestCapabilities::default(),
             })
         })
+    }
+}
+
+#[derive(Default)]
+struct Collect {
+    records: Mutex<Vec<AnalyticsRecord>>,
+}
+
+impl AnalyticsSink for Collect {
+    fn record(&self, record: AnalyticsRecord) {
+        self.records.lock().unwrap().push(record);
+    }
+}
+
+const GEMINI_TEXT: &str = include_str!("fixtures/gemini/google-text.json");
+const GEMINI_TEXT_CHUNKS: &str = include_str!("fixtures/gemini/google-text.chunks.txt");
+const GEMINI_TOOL: &str = include_str!("fixtures/gemini/google-tool-call-gemini3.json");
+const GEMINI_TOOL_CHUNKS: &str =
+    include_str!("fixtures/gemini/google-tool-call-gemini3.chunks.txt");
+const GEMINI_QUOTA: &str = include_str!("fixtures/gemini/google-429-retry-info.json");
+
+fn gemini_gateway(upstream: &str, analytics: Option<Arc<dyn AnalyticsSink>>) -> Runner {
+    let mut config = gateway_config(Api::Chat, upstream);
+    let primary = &mut config.providers[0];
+    primary.protocol = Protocol::Gemini;
+    primary.endpoint = format!("{upstream}/a/v1beta");
+    primary.models[0].provider_model_id = "gemini-3-pro-preview".into();
+    Runner::start_with_analytics(
+        config,
+        Arc::new(Keys),
+        BTreeMap::new(),
+        analytics,
+        SchedulingState::default(),
+    )
+    .unwrap()
+}
+
+fn gemini_call(runner: &Runner, suffix: &str) -> reqwest::RequestBuilder {
+    let gateway = runner.endpoint().strip_suffix("/v1").unwrap();
+    reqwest::Client::new().post(format!("{gateway}/v1beta/models/{suffix}"))
+}
+
+fn replay_sse(chunks: &str) -> String {
+    chunks
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| format!("data: {line}\n\n"))
+        .collect()
+}
+
+#[tokio::test]
+async fn gemini_native_routes_url_alias_and_preserves_signed_history_and_stream() {
+    let (upstream, address) = Upstream::start().await;
+    upstream.reply("a", Reply::json_bytes(200, GEMINI_TOOL));
+    let analytics = Arc::new(Collect::default());
+    let runner = gemini_gateway(&address, Some(analytics.clone()));
+    let tool_turn = json!({
+        "contents": [{"role": "user", "parts": [{"text": "What's the weather in San Francisco?"}]}],
+        "tools": [{"functionDeclarations": [{"name":"weather","parameters":{"type":"OBJECT","properties":{"location":{"type":"STRING"}}}}]}],
+    });
+    let response = gemini_call(&runner, "velune%2Fmodel%2Fa-model:generateContent")
+        .header("x-goog-api-key", runner.token())
+        .json(&tool_turn)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), GEMINI_TOOL);
+
+    let recorded: Value = serde_json::from_str(GEMINI_TOOL).unwrap();
+    let resumed = json!({
+        "contents": [
+            tool_turn["contents"][0],
+            recorded["candidates"][0]["content"],
+            {"role":"user","parts":[{"functionResponse":{"name":"weather","response":{"temperature":22}}}]},
+        ],
+        "tools": tool_turn["tools"],
+        "cachedContent": "cachedContents/synthetic",
+    });
+    let stream = replay_sse(GEMINI_TEXT_CHUNKS);
+    upstream.reply("a", Reply::stream(&stream));
+    let response = gemini_call(
+        &runner,
+        "velune/model/a-model:streamGenerateContent?alt=sse",
+    )
+    .bearer_auth(runner.token())
+    .header("x-goog-api-key", "must-not-be-forwarded")
+    .json(&resumed)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(response.text().await.unwrap(), stream);
+
+    for field in [
+        "cachedContent",
+        "cached_content",
+        "continuationToken",
+        "continuation_token",
+    ] {
+        let mut stateful = tool_turn.clone();
+        stateful[field] = json!("synthetic-upstream-state");
+        for model in ["route", "b-model"] {
+            let denied = gemini_call(&runner, &format!("velune/model/{model}:generateContent"))
+                .header("x-goog-api-key", runner.token())
+                .json(&stateful)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                denied.status(),
+                400,
+                "{field} must stay with one Gemini target"
+            );
+        }
+    }
+    let unauthorized = gemini_call(&runner, "velune/model/a-model:generateContent")
+        .header("x-api-key", runner.token())
+        .json(&tool_turn)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+
+    assert_eq!(
+        upstream.hits(),
+        [
+            "/a/v1beta/models/gemini-3-pro-preview:generateContent",
+            "/a/v1beta/models/gemini-3-pro-preview:streamGenerateContent?alt=sse",
+        ],
+    );
+    assert_eq!(*upstream.requests.lock().unwrap(), [tool_turn, resumed]);
+    for headers in upstream.request_headers.lock().unwrap().iter() {
+        assert_eq!(headers["x-goog-api-key"], "synthetic-gemini-key");
+        assert!(!headers.contains_key("authorization"));
+    }
+    let records = analytics.records.lock().unwrap();
+    assert_eq!(records[0].protocol, Protocol::Gemini);
+    assert_eq!(records[0].outcome, AnalyticsOutcome::Completed);
+    assert_eq!(records[0].usage.input, Some(29));
+    assert_eq!(records[0].usage.output, Some(1816));
+    assert_eq!(records[0].usage.reasoning_output, Some(1801));
+}
+
+#[tokio::test]
+async fn gemini_upstream_converts_responses_requests_and_replays_recorded_outputs() {
+    let (upstream, address) = Upstream::start().await;
+    upstream.reply("a", Reply::json_bytes(200, GEMINI_TEXT));
+    let runner = gemini_gateway(&address, None);
+    let responses_call = |stream| {
+        reqwest::Client::new()
+            .post(format!("{}/responses", runner.endpoint()))
+            .bearer_auth(runner.token())
+            .json(&json!({
+                "model": "velune/model/a-model",
+                "input": [{"role":"user","content":"What's the weather in San Francisco?"}],
+                "tools": [{"type":"function","name":"weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}],
+                "max_output_tokens": 4096,
+                "stream": stream,
+            }))
+    };
+    let response = responses_call(false).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let answer = response.json::<Value>().await.unwrap();
+    assert_eq!(answer["status"], "completed");
+    assert!(answer.to_string().contains("strawberry"));
+
+    upstream.reply("a", Reply::stream(&replay_sse(GEMINI_TOOL_CHUNKS)));
+    let response = responses_call(true).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let answer = response.text().await.unwrap();
+    assert!(answer.contains("response.completed"), "{answer}");
+    assert!(answer.contains("function_call"), "{answer}");
+    assert!(answer.contains("San Francisco"), "{answer}");
+
+    upstream.reply("a", Reply::json_bytes(429, GEMINI_QUOTA));
+    let response = responses_call(false).send().await.unwrap();
+    assert_eq!(response.status(), 429);
+    assert_eq!(response.text().await.unwrap(), GEMINI_QUOTA);
+
+    let requests = upstream.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for body in requests.iter() {
+        assert!(body.get("model").is_none());
+        assert!(body.get("stream").is_none());
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 4096);
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "weather"
+        );
     }
 }
 
@@ -179,6 +388,7 @@ fn provider(id: &str, protocol: Api, upstream: &str) -> ProviderDefinition {
             request_parameters: BTreeMap::new(),
         }],
         quota_limits: Vec::new(),
+        codex_client_version: None,
     }
 }
 
@@ -574,19 +784,9 @@ async fn automatic_quota_observations_do_not_block_upstream_requests() {
 
 #[tokio::test]
 async fn admission_rejections_are_recorded_in_analytics() {
-    struct Collect {
-        records: Mutex<Vec<AnalyticsRecord>>,
-    }
-    impl AnalyticsSink for Collect {
-        fn record(&self, record: AnalyticsRecord) {
-            self.records.lock().unwrap().push(record);
-        }
-    }
     let protocol = Api::Chat;
     let (_upstream, address) = Upstream::start().await;
-    let analytics = Arc::new(Collect {
-        records: Mutex::new(Vec::new()),
-    });
+    let analytics = Arc::new(Collect::default());
     let runner = Runner::start_with_analytics(
         gateway_config(protocol, &address),
         Arc::new(Keys),
@@ -719,9 +919,46 @@ async fn retryable_failures_move_to_the_next_member() {
 }
 
 #[tokio::test]
+async fn forbidden_member_fails_over_and_preserves_the_final_refusal() {
+    for protocol in Api::ALL {
+        let (upstream, address) = Upstream::start().await;
+        let runner = gateway(protocol, &address);
+        let first_error = json!({"error": {"message": "first member refused"}});
+        let final_error = json!({"error": {"message": "last member refused"}});
+        upstream.reply("a", Reply::json(403, first_error.clone()));
+        upstream.reply("b", Reply::stream(protocol.events()));
+
+        let answer = send(&runner, protocol, "velune/model/route", true).await;
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, protocol.events());
+
+        let direct = send(&runner, protocol, "velune/model/a-model", false).await;
+        assert_eq!(direct.status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&direct.body).unwrap(),
+            first_error
+        );
+        assert!(!direct.headers.contains_key("retry-after"));
+
+        upstream.reply("b", Reply::json(403, final_error.clone()));
+        let exhausted = send(&runner, protocol, "velune/model/route", false).await;
+        assert_eq!(exhausted.status, 403);
+        assert_eq!(
+            serde_json::from_str::<Value>(&exhausted.body).unwrap(),
+            final_error
+        );
+        assert!(!exhausted.headers.contains_key("retry-after"));
+        assert_eq!(
+            upstream.hits(),
+            ["a", "b", "a", "a", "b"].map(|id| format!("/{id}/v1{}", protocol.path()))
+        );
+    }
+}
+
+#[tokio::test]
 async fn refused_requests_stop_with_the_upstream_answer() {
     for protocol in Api::ALL {
-        for status in [400, 401, 403, 404] {
+        for status in [400, 401, 404] {
             let (upstream, address) = Upstream::start().await;
             let runner = gateway(protocol, &address);
             let body = json!({"error": {"message": "refused"}});
@@ -845,7 +1082,8 @@ async fn mixed_protocol_routes_translate_each_selected_candidate() {
     for ingress in Api::ALL {
         for (index, first) in Api::ALL.into_iter().enumerate() {
             let second = Api::ALL[(index + 1) % Api::ALL.len()];
-            for failover in [false, true] {
+            for status in [200, 403, 429] {
+                let failover = status != 200;
                 let (upstream, address) = Upstream::start().await;
                 let mut config = gateway_config(first, &address);
                 config.providers[1] = provider("b", second, &address);
@@ -871,7 +1109,7 @@ async fn mixed_protocol_routes_translate_each_selected_candidate() {
                 upstream.reply(
                     "a",
                     if failover {
-                        Reply::json(429, json!({"error":{"message":"retry"}}))
+                        Reply::json(status, json!({"error":{"message":"retry"}}))
                     } else {
                         Reply::json(200, success(first))
                     },

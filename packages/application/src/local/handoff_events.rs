@@ -229,8 +229,8 @@ mod tests {
             HandoffCompactionState::Cancelling,
             HandoffCompactionState::Ready,
             HandoffCompactionState::Failed {
-                code: "summary_sample_timeout".into(),
-                detail: "Codex 在 30 秒内未生成摘要。".into(),
+                code: "summary_requires_text_only_response".into(),
+                detail: "原生压缩未生成新的纯文本摘要".into(),
             },
             HandoffCompactionState::Cancelled,
         ] {
@@ -247,8 +247,10 @@ mod tests {
                 matches!(&message.blocks[0], MessageBlock::ContextCompaction {text} if !text.contains("上下文已压缩"))
             );
             if matches!(state, HandoffCompactionState::Failed { .. }) {
-                assert!(matches!(&message.blocks[0], MessageBlock::ContextCompaction { text }
-                    if text == "接续压缩失败，尚未发送消息\n\nCodex 在 30 秒内未生成摘要。\n\n错误代码 summary_sample_timeout\n诊断编号 work-1"));
+                assert!(
+                    matches!(&message.blocks[0], MessageBlock::ContextCompaction { text }
+                    if text == "接续压缩失败，尚未发送消息\n\n原生压缩未生成新的纯文本摘要\n\n错误代码 summary_requires_text_only_response\n诊断编号 work-1")
+                );
             }
         }
         assert_eq!(identities.len(), 1);

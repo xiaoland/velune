@@ -20,6 +20,7 @@ sealed partial class RuntimesPage : UserControl
     // Offers the library's resources to a runtime just added.
     readonly InfoBar offer = new() { Severity = InfoBarSeverity.Informational, IsClosable = true };
     RuntimeInstance[] instances = [];
+    int reads;
     bool listed;
     RuntimeTypeDescriptor[] kinds = [];
     bool busy;
@@ -50,7 +51,8 @@ sealed partial class RuntimesPage : UserControl
             }
         };
         Content = Ui.ListPage("Agent 运行时", new StackPanel { Spacing = 8, Children = { failure, offer } }, list, [add, import, remove], [edit]);
-        Reload();
+        ShowActions();
+        Loaded += (_, _) => Reload();
     }
 
     RuntimeInstance? Chosen() => list.SelectedIndex is var index and >= 0 && index < instances.Length ? instances[index] : null;
@@ -65,9 +67,11 @@ sealed partial class RuntimesPage : UserControl
 
     async void Reload()
     {
+        var read = ++reads;
         try
         {
             var snapshot = await Task.Run(core.Local.List);
+            if (read != reads || !IsLoaded) return;
             kinds = snapshot.RuntimeTypes;
             SetInstances(snapshot.RuntimeInstances);
         }
@@ -362,14 +366,22 @@ sealed partial class RuntimesPage : UserControl
             var runtime = existing == null
                 ? new RuntimeInstance(Guid.NewGuid().ToString(), shownName.Length > 0 ? shownName : kind.Name, kind.Id, DefaultGateway, settings, enabled.IsOn)
                 : existing with { Enabled = enabled.IsOn, Name = shownName.Length > 0 ? shownName : kind.Name, TypeId = kind.Id, Settings = settings };
-            runtime = VeluneBindingsMethods.RuntimeWithNewConversationChoice(runtime, started);
-            e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application =>
+            try
             {
-                return launched != null
+                runtime = VeluneBindingsMethods.RuntimeWithNewConversationChoice(runtime, started);
+                e.Cancel = !await Write("保存运行时「" + runtime.Name + "」", application => launched != null
                     ? application.UpsertAcpRuntime(runtime, execution, launched)
-                    : application.UpsertRuntimeWithExecution(runtime, execution);
-            }, formError);
-            deferral.Complete();
+                    : application.UpsertRuntimeWithExecution(runtime, execution), formError);
+            }
+            catch (Exception problem)
+            {
+                Ui.Show(formError, Core.Describe(problem));
+                e.Cancel = true;
+            }
+            finally
+            {
+                deferral.Complete();
+            }
         };
         await window.ShowDialog(dialog);
     }
@@ -418,7 +430,7 @@ sealed partial class RuntimesPage : UserControl
         var status = Ui.Text("正在发现运行时…");
         var found = new StackPanel { Spacing = 8 };
         var panel = new StackPanel { Spacing = 12, MinWidth = 480 };
-        panel.Children.Add(Ui.Muted("在 PATH、npm／pnpm 全局目录，以及 Codex、Claude 桌面应用与编辑器扩展的安装位置中查找 Pi、Codex 与 Claude Code，只读取公开版本，不导入登录信息。"));
+        panel.Children.Add(Ui.Muted("在 PATH 和常见安装位置查找已安装的运行时，包括 Antigravity。这里只读取公开版本。"));
         panel.Children.Add(status);
         panel.Children.Add(found);
         var dialog = new ContentDialog
@@ -471,7 +483,8 @@ sealed partial class RuntimesPage : UserControl
         {
             action = Ui.Muted("已配置");
         }
-        else if (!candidate.Supported && Addable().Any(kind => kind.Id == candidate.Runtime.TypeId))
+        else if (!candidate.Supported && candidate.Runtime.TypeId != RuntimeKind.Acp
+            && Addable().Any(kind => kind.Id == candidate.Runtime.TypeId))
         {
             // A known version that discovery could not complete, such as a
             // runtime directory that does not exist yet: finish it by hand.

@@ -33,6 +33,10 @@ type session struct {
 	inputKnown, outputKnown, cacheKnown, reasoningKnown bool
 	cacheCreationKnown                                  bool
 	claudeUsage                                         map[string]any
+	geminiUsage                                         map[string]any
+	geminiCandidates                                    map[int64]bool
+	geminiSignatureOmitted                              bool
+	cachedTokens, reasoningTokens                       json.Number
 }
 
 type command struct {
@@ -126,6 +130,12 @@ func decode(format types.RelayFormat, data []byte, request, stream bool) (any, e
 		} else {
 			value = &dto.ClaudeResponse{}
 		}
+	case types.RelayFormatGemini:
+		if request {
+			value = &dto.GeminiChatRequest{}
+		} else {
+			value = &dto.GeminiChatResponse{}
+		}
 	default:
 		return nil, errors.New("protocol")
 	}
@@ -150,11 +160,91 @@ func child(value map[string]any, key string) map[string]any {
 	result, _ := value[key].(map[string]any)
 	return result
 }
+func hasGeminiSignature(content any) bool {
+	object, _ := content.(map[string]any)
+	parts, _ := object["parts"].([]any)
+	for _, raw := range parts {
+		part, _ := raw.(map[string]any)
+		if signature, ok := part["thoughtSignature"].(string); ok && signature != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *session) observeGemini(value map[string]any, streaming bool) error {
+	if reason, ok := child(value, "promptFeedback")["blockReason"].(string); ok && reason != "" && reason != "BLOCK_REASON_UNSPECIFIED" {
+		return errors.New("upstream_error")
+	}
+	candidates, _ := value["candidates"].([]any)
+	if !streaming && len(candidates) == 0 {
+		return errors.New("candidates")
+	}
+	for _, raw := range candidates {
+		candidate, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("candidate")
+		}
+		// Protobuf JSON may omit the first candidate's index.
+		var index int64
+		if rawIndex, exists := candidate["index"]; exists {
+			number, ok := rawIndex.(json.Number)
+			if !ok {
+				return errors.New("candidate_index")
+			}
+			parsed, err := number.Int64()
+			if err != nil || parsed < 0 {
+				return errors.New("candidate_index")
+			}
+			index = parsed
+		}
+		reason, _ := candidate["finishReason"].(string)
+		finished := reason != "" && reason != "FINISH_REASON_UNSPECIFIED" && reason != "CONTINUATION"
+		if !streaming && !finished {
+			return errors.New("finish_reason")
+		}
+		s.geminiCandidates[index] = s.geminiCandidates[index] || finished
+		s.geminiSignatureOmitted = s.geminiSignatureOmitted || hasGeminiSignature(candidate["content"])
+	}
+	usage := child(value, "usageMetadata")
+	if usage == nil {
+		return nil
+	}
+	s.usageSeen = true
+	if streaming {
+		// Gemini can send only the changed counters in a trailing usage frame.
+		// A prior total may predate the changed counts, so it is not replayed.
+		for key, previous := range s.geminiUsage {
+			if _, present := usage[key]; !present && key != "totalTokenCount" {
+				usage[key] = previous
+			}
+		}
+	}
+	s.geminiUsage = usage
+	s.inputKnown = s.inputKnown || usage["promptTokenCount"] != nil
+	s.outputKnown = s.outputKnown || usage["candidatesTokenCount"] != nil ||
+		(usage["promptTokenCount"] != nil && usage["totalTokenCount"] != nil)
+	s.cacheKnown = s.cacheKnown || usage["cachedContentTokenCount"] != nil
+	s.reasoningKnown = s.reasoningKnown || usage["thoughtsTokenCount"] != nil
+	return nil
+}
+
+func (s *session) geminiFinished() bool {
+	for _, finished := range s.geminiCandidates {
+		if !finished {
+			return false
+		}
+	}
+	return len(s.geminiCandidates) > 0
+}
+
 func (s *session) observe(value map[string]any, stream bool) error {
 	if value["error"] != nil || value["type"] == "error" || value["type"] == "response.failed" || value["type"] == "response.error" {
 		return errors.New("upstream_error")
 	}
 	switch s.to {
+	case types.RelayFormatGemini:
+		return s.observeGemini(value, stream)
 	case types.RelayFormatOpenAI:
 		choices, _ := value["choices"].([]any)
 		if !stream && len(choices) == 0 {
@@ -215,6 +305,16 @@ func (s *session) observe(value map[string]any, stream bool) error {
 		s.cacheKnown = s.cacheKnown || child(usage, cache)["cached_tokens"] != nil || usage["cache_read_input_tokens"] != nil
 		s.reasoningKnown = s.reasoningKnown || child(usage, reasoning)["reasoning_tokens"] != nil
 		s.cacheCreationKnown = s.cacheCreationKnown || usage["cache_creation_input_tokens"] != nil || usage["claude_cache_creation_5_m_tokens"] != nil || usage["claude_cache_creation_1_h_tokens"] != nil
+		if s.from == types.RelayFormatGemini {
+			if count, ok := child(usage, cache)["cached_tokens"].(json.Number); ok {
+				s.cachedTokens = count
+			} else if count, ok := usage["cache_read_input_tokens"].(json.Number); ok {
+				s.cachedTokens = count
+			}
+			if count, ok := child(usage, reasoning)["reasoning_tokens"].(json.Number); ok {
+				s.reasoningTokens = count
+			}
+		}
 	}
 	return nil
 }
@@ -229,6 +329,10 @@ func (s *session) output(value any) (any, error) {
 	body, err := object(data)
 	if err != nil {
 		return nil, err
+	}
+	if s.from == types.RelayFormatGemini {
+		s.geminiOutputUsage(body)
+		return body, nil
 	}
 	// DTO zero values are not evidence that upstream reported those counts.
 	for _, owner := range []map[string]any{body, child(body, "response"), child(body, "message")} {
@@ -276,6 +380,8 @@ func (s *session) output(value any) (any, error) {
 		}
 		if !s.inputKnown || !s.outputKnown {
 			delete(usage, "total_tokens")
+		} else if s.to == types.RelayFormatGemini && s.geminiUsage != nil && s.geminiUsage["totalTokenCount"] == nil {
+			delete(usage, "total_tokens")
 		}
 		if !s.cacheKnown {
 			delete(usage, cache)
@@ -298,13 +404,59 @@ func (s *session) events(results []relayconvert.ResponseResult) (reply, error) {
 		}
 		out.Events = append(out.Events, value)
 	}
-	out.Notes = notes(s.stream.Diagnostics())
-	if !s.inputKnown || !s.outputKnown {
-		out.Notes = append(out.Notes, note{"usage_unreported", "usage"})
-	}
+	out.Notes = s.responseNotes(s.stream.Diagnostics())
 	return out, nil
 }
-func run(handle C.uintptr_t, cmd command) (reply, error) {
+
+func (s *session) responseNotes(diagnostics []types.ConversionDiagnostic) []note {
+	result := notes(diagnostics)
+	if !s.inputKnown || !s.outputKnown {
+		result = append(result, note{"usage_unreported", "usage"})
+	}
+	if s.geminiSignatureOmitted {
+		result = append(result, note{"thought_signature_omitted", "thoughtSignature"})
+	}
+	return result
+}
+
+func (s *session) geminiOutputUsage(body map[string]any) {
+	usage := child(body, "usageMetadata")
+	if !s.usageSeen || len(usage) == 0 {
+		delete(body, "usageMetadata")
+		return
+	}
+	// The Go DTO always emits its zero values, including fields for Google
+	// server-side tools. Only the original provider's counts can be reported.
+	for _, key := range []string{"billing_usage", "toolUsePromptTokenCount", "toolUsePromptTokensDetails", "promptTokensDetails", "candidatesTokensDetails", "cachedContentTokenCount", "thoughtsTokenCount"} {
+		delete(usage, key)
+	}
+	if !s.inputKnown {
+		delete(usage, "promptTokenCount")
+	}
+	if !s.outputKnown {
+		delete(usage, "candidatesTokenCount")
+	}
+	if !s.inputKnown || !s.outputKnown {
+		delete(usage, "totalTokenCount")
+	}
+	if s.cachedTokens != "" {
+		usage["cachedContentTokenCount"] = s.cachedTokens
+	}
+	// OpenAI's output total includes reasoning. Gemini lists it separately
+	// from candidate tokens, so adding it without adjusting would count twice.
+	if output, ok := usage["candidatesTokenCount"].(json.Number); ok && s.reasoningTokens != "" {
+		total, totalErr := output.Int64()
+		thoughts, thoughtsErr := s.reasoningTokens.Int64()
+		if totalErr == nil && thoughtsErr == nil && thoughts >= 0 && total >= thoughts {
+			usage["candidatesTokenCount"] = total - thoughts
+			usage["thoughtsTokenCount"] = s.reasoningTokens
+		}
+	}
+	if len(usage) == 0 {
+		delete(body, "usageMetadata")
+	}
+}
+func run(handle uintptr, cmd command) (reply, error) {
 	ctx := context.Background()
 	if cmd.Op == "prepare" {
 		body, err := object(cmd.Body)
@@ -329,12 +481,24 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 				}
 			}
 		}
+		if cmd.From == types.RelayFormatGemini {
+			contents, _ := body["contents"].([]any)
+			for _, content := range append(contents, body["systemInstruction"]) {
+				if hasGeminiSignature(content) {
+					compatibilityNotes = append(compatibilityNotes, note{"thought_signature_omitted", "thoughtSignature"})
+					break
+				}
+			}
+		}
 		cmd.Body, err = json.Marshal(body)
 		if err != nil {
 			return reply{}, err
 		}
 		model, _ := body["model"].(string)
 		s := &session{from: cmd.From, to: cmd.To, meta: &convmeta.Values{OriginModelName: model, UpstreamModelName: model, ChannelMetaAttached: true, Options: &convmeta.Options{}}}
+		if s.to == types.RelayFormatGemini {
+			s.geminiCandidates = make(map[int64]bool)
+		}
 		if cmd.Limit > 0 {
 			s.meta.Options.Claude.DefaultMaxTokens = func(string) int { return int(cmd.Limit) }
 		}
@@ -367,11 +531,7 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 			return reply{}, err
 		}
 		output, err := s.output(result.Value)
-		diagnostics := notes(result.Diagnostics)
-		if !s.inputKnown || !s.outputKnown {
-			diagnostics = append(diagnostics, note{"usage_unreported", "usage"})
-		}
-		return reply{Body: output, Notes: diagnostics}, err
+		return reply{Body: output, Notes: s.responseNotes(result.Diagnostics)}, err
 	case "stream":
 		var err error
 		s.stream, err = relayconvert.NewResponseStreamState(s.to, s.from, relayconvert.ResponseStreamOptions{Model: cmd.Model, IncludeUsage: true, EmitSequenceNumber: true})
@@ -397,7 +557,7 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 		if cmd.Event == "error" {
 			return reply{}, errors.New("upstream_error")
 		}
-		if value["type"] == nil && cmd.Event != "" && s.to != types.RelayFormatOpenAI {
+		if value["type"] == nil && cmd.Event != "" && (s.to == types.RelayFormatClaude || s.to == types.RelayFormatOpenAIResponses) {
 			value["type"] = cmd.Event
 		}
 		if err := s.observe(value, true); err != nil {
@@ -445,7 +605,8 @@ func run(handle C.uintptr_t, cmd command) (reply, error) {
 		if s.finalized {
 			return reply{}, nil
 		}
-		if !s.terminal && !(s.to == types.RelayFormatOpenAI && s.finishSeen) {
+		if !s.terminal && !(s.to == types.RelayFormatOpenAI && s.finishSeen) &&
+			!(s.to == types.RelayFormatGemini && s.geminiFinished()) {
 			return reply{}, errors.New("truncated")
 		}
 		results, err := relayconvert.FinalizeStreamResponse(ctx, s.meta, s.stream)
@@ -471,7 +632,7 @@ func velune_relaykit_call(handle C.uintptr_t, data *C.char, size C.size_t) (outp
 	if uint64(size) > uint64(^uint32(0)>>1) || json.Unmarshal(C.GoBytes(unsafe.Pointer(data), C.int(size)), &cmd) != nil {
 		return C.CString(`{"error":"bridge_input"}`)
 	}
-	result, err := run(handle, cmd)
+	result, err := run(uintptr(handle), cmd)
 	if err != nil {
 		// Never export upstream errors: they can interpolate request bodies.
 		code := "relaykit_conversion"

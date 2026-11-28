@@ -114,9 +114,10 @@ impl fmt::Debug for HttpEndpoint {
 #[derive(Debug, Clone)]
 pub struct HttpTarget {
     protocol: Protocol,
-    /// Messages appends `/v1/messages`; OpenAI base URLs commonly already end in `/v1`.
+    /// Gemini and OpenAI base paths include their version; Messages appends `/v1/messages`.
     endpoint: HttpEndpoint,
     request_profile: RequestProfile,
+    codex_client_version: Option<String>,
 }
 
 /// Request behavior selected independently of the authentication source.
@@ -148,7 +149,15 @@ pub enum CredentialMaterial {
         account_id: Option<String>,
     },
     /// A local CLI's own login; `None` is the user's default login.
-    LocalSession { config_dir: Option<String> },
+    LocalSession {
+        config_dir: Option<String>,
+        /// Persisted account identity and credential generation, for local cache isolation.
+        cache_scope: Option<String>,
+    },
+    /// An execution target using its own official Antigravity CLI login.
+    AntigravityCli {
+        launch: std::sync::Arc<dyn crate::antigravity::Launch>,
+    },
 }
 /// A stable opaque identity for refresh recovery, not a vendor or a token.
 #[derive(Clone, PartialEq, Eq)]
@@ -181,12 +190,15 @@ impl HttpTarget {
         protocol: Protocol,
         endpoint: HttpEndpoint,
         request_profile: RequestProfile,
+        codex_client_version: Option<&str>,
     ) -> Result<Self, InvalidContract> {
         request_profile.check_destination(protocol, &endpoint)?;
+        request_profile.check_codex_client_version(codex_client_version)?;
         Ok(Self {
             protocol,
             endpoint,
             request_profile,
+            codex_client_version: codex_client_version.map(str::to_owned),
         })
     }
     pub fn protocol(&self) -> Protocol {
@@ -198,9 +210,42 @@ impl HttpTarget {
     pub fn request_profile(&self) -> RequestProfile {
         self.request_profile
     }
+    pub fn codex_client_version(&self) -> Option<&str> {
+        self.codex_client_version.as_deref()
+    }
+}
+
+/// Codex expects the stable three-part version core in its HTTP headers.
+pub fn valid_codex_client_version(version: &str) -> bool {
+    fn valid_part(part: &str) -> bool {
+        (part == "0" || !part.starts_with('0'))
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && part.parse::<u64>().is_ok()
+    }
+    let mut parts = version.split('.');
+    let (Some(major), Some(minor), Some(patch), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    valid_part(major) && valid_part(minor) && valid_part(patch)
 }
 
 impl RequestProfile {
+    /// A Codex target must carry its effective version. Other profiles have none.
+    pub fn check_codex_client_version(self, version: Option<&str>) -> Result<(), InvalidContract> {
+        match (self, version) {
+            (Self::CodexResponses, Some(value)) if valid_codex_client_version(value) => Ok(()),
+            (Self::CodexResponses, _) => Err(InvalidContract(
+                "Codex client version must be major.minor.patch",
+            )),
+            (_, None) => Ok(()),
+            (_, Some(_)) => Err(InvalidContract(
+                "Codex client version requires the Codex Responses profile",
+            )),
+        }
+    }
+
     /// A profile bound to one service accepts only that service's official
     /// destination for the protocol; its credentials go nowhere else.
     pub fn check_destination(
@@ -208,6 +253,11 @@ impl RequestProfile {
         protocol: Protocol,
         endpoint: &HttpEndpoint,
     ) -> Result<(), InvalidContract> {
+        if protocol == Protocol::Gemini && self != Self::Native {
+            return Err(InvalidContract(
+                "Gemini requires the native request profile",
+            ));
+        }
         let (hosts, path, error): (&[&str], _, _) = match self {
             Self::Native => return Ok(()),
             Self::CodexResponses if protocol != Protocol::Responses => {

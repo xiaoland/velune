@@ -4,7 +4,11 @@
 
 ## 待用户决定
 
-- **项目许可**：仓库没有项目许可。协议转换链接的 New API RelayKit 为 AGPLv3，且其 NOTICE 要求署名与界面链接（见 [ai-provider README](../../packages/ai-provider/README.md)）；Android 界面参考的开源客户端也有各自许可。若以开源方式发布需先选择许可，与依赖相容的常见选择为 Apache-2.0、MIT 或双许可；选择宽松许可时须单独评估 RelayKit 的 AGPL 义务。选定前不宣称 Velune 是开源软件。（原 `new-api-reuse`、`android-ux`）
+- **跨执行宿主的输入保存端**：同一执行端的窗口与配对控制端已共享输入目录；不同完整执行宿主要共用输入，须先选定一台保存端（此前建议当前 Mac，未答复），产品设置接线尚未完成。（原 `composer-state-ownership`、`workspace-delivery-and-network`）
+- **工作区布局的人工恢复**：2026-11-05 重装卡在退出后，为恢复两组七个 Tab 准备了一次性工具，从未执行；用户之后报告重装成功。布局若已恢复，删除工具及本项。工具为主检出 `target/verification/architecture-review-20261105/reinstall-hang/restore-workspace.py`，须在应用退出后运行，源 snapshot `EF954EDE-D0DF-4E16-84D3-ECA8A55D229E`。（原 `architecture-review`）
+- **切换标签时列表定位会话**：类似 VS Code 的 Auto Reveal，未实施，是否需要待用户决定。（原 `new-conversation-tab`）
+- **Windows 首次发行**：用户选择保持现有依赖与许可并暂缓。固定的 WinUI 2.3.9 依赖 InteractiveExperiences 2.1.9 的 FrameworkUdk／Windowing 组件，公开源码无法闭合，这一组合在 AGPL 下的义务未定；Bifrost 隔离候选已验证但未采用。安装器与付费签名另行处理。（原 `first-public-beta`）
+
 - **配置跨端同步**：2026-10-19 用户决定另开任务实施，当前只保留扩展性（远控请求按操作分类型，可增量新增同步请求）。候选方案：完整端之间按提供商同步网关、提供商、模型与资源模板，带“逻辑时钟＋设备 ID”修订号与墓碑；设备绑定的认证、运行时实例、资源应用记录、界面偏好与会话整理不同步；同步复用远控授权、走 remote 协议的新增请求。待决：同步范围是否正确、界面偏好是否同步；API key 与资源模板中的秘密是否随同步传输（建议是）；凡已配对完整端自动同步，还是逐台开启（建议逐台开启并要求对方有控制授权）；冲突采用“后写者胜并保留被覆盖版本”还是逐次询问。实施时注意 `application::new_record_key` 由纳秒时间加进程内序号生成，跨设备应改为带设备限定或随机的键。（原 `remote-control-mvp`）
 - **自部署中继后续验收**：个人中继已由 homelab 在广州部署，四端连接设置已接入，公网配对／业务往返通过。UDP 7842 的 QAD 公网探测仍未到服务器，需要云侧 owner 核对阿里云入站限制；当前没有云控制面凭据。直连与解析规则已发布，SFM 由用户正常刷新；刷新后的真实业务延迟及 Wi-Fi／蜂窝切网尚未验证，不能把部署通过当延迟改善证据。运维参数归 `homelab/docs/velune-relay.md`。（原 `remote-control-mvp`）
 - **iPad 自定义中继设置验收**：独立包已在真机签名安装并启动；完整设置交互仍待手动验证，免费开发签名三应用名额使额外 UI runner 无法安装。Android 真机和 Windows 完整设置流程已通过，Mac 已验证模式保存／重开与无效输入保留。
@@ -13,6 +17,8 @@
 - **Pi 子 Agent 来源**：Pi 1.0.2 没有内置子 Agent，随包示例扩展不支持技能；用户提到的“官方 subagents 插件支持技能”与之不符，待用户确认来源。（原 `resource-subagent-fields`）
 
 ## 未授权的候选
+
+- live RPC 的通信边界：`native/rpc.rs` 同步写 stdin，响应期限在写完后才开始，对端不读 stdin 可阻塞 application owner；等待响应时无关通知进入无界 `queued`；观察 worker 由各执行位置共享，没有按机器隔舱。修正须把请求写入、响应等待与通知消费分开，不能截断或丢弃审批、后台工作与身份确认。SSH master 复用与进程表缓存待耗时证据支持后再做，复用键须含执行位置与 HOME。（原 `adapter-performance-issues`）
 
 - Claude Code 子 Agent 不在会话列表时，标题回退为工具名“Agent”。（原 `project-folders`）
 - 新建会话没有“在项目中新建”入口；主文件夹目前只用于工作目录建议。（原 `project-folders`）
@@ -29,6 +35,13 @@
 
 ## 未验证的能力
 
+- **Claude 订阅桥接**：`2569ce539` 已实现冷启动恢复。用真实 Claude Code 2.1.327 和模拟上游核对了普通续聊与 MCP 工具回合的请求前缀。真实订阅的缓存命中率和五小时额度收益待验证。见 [AI Provider](../../packages/ai-provider/README.md)。（原 `claude-entrypoint`）
+- **Mac 冷启动与空闲性能**：`6ad546193` 合入 Codex 活动会话索引证明持久化，合成回归验证了跨启动复用及外部变更后的修复。`82d5c8bb2` 合入空闲轮询的热点修正，已核对快照、模型命名和编辑准入。真实数据规模下的重启耗时与空闲 CPU 降幅仍待用集成构建量测。
+- **macOS 网络缓冲区耗尽**：2026-11-04 两次重启前内核大量 `mbuf_class_under_pressure`，ENOBUFS 根因未确认，不能归因于 Velune 或 sing-box（嫌疑见 sing-box #4607）。复发时保留系统扩展 PID、mbuf 计数与统一日志，用 `scripts/diagnose-network-macos.py` 采样。（原 `workspace-delivery-and-network`、`architecture-review`）
+- **dogfood 性能问题**：原报告的 Checking、来源不匹配与 503 是否已修复，须在采用修复的构建中以相同操作再次观察，按操作编号对齐发送、原生历史读取与慢命令耗时。（原 `adapter-performance-issues`）
+- **会话 fork**：Claude 尚未首发的分支依赖进程内状态，不保证跨重启恢复；名称后缀只避开已知会话，不保证全局唯一；Mac 以外的平台未做按钮交互验收。（原 `conversation-fork`）
+- **Codex 交接的历史继承**：不继承完整 `replacement_history` 与旧 compact，未解析的 rollback 显式拒绝。（原 `native-handoff-translation`）
+- **定时任务界面**：Mac 上 locked／idle／running 状态尚缺同尺寸截图对照。（原 `session-control-and-scheduling`）
 - **Windows 界面**：中文输入法、双击与右键等真实指针操作、长转录的虚拟化与流式更新性能、Windows 11 Mica、标志在任务栏与标题栏的观感需真机验收；用户从 RDP 会话启动的三次崩溃没有 `crash.log`，原因未查明。键盘操作的命令面板、速查表与审批卡片尚未在浅色与深色下各打开一次核对。（原 `windows-winui`、`full-keyboard`）
 - **远控网络**：WAN→LAN→WAN 漫游、真实 NAT／UDP 故障回落、蜂窝默认且 Wi-Fi LAN 保留、长时后台、IPv6-only mDNS 与公共设施 SLA 没有证据。非空 mDNS 范围仍保留上游 wildcard 接收／发送回落，不是严格的网卡流量白名单。（原 `android-minimal`）
 - **xURL**：应用 URI 查询只支持标题 q 与 limit；官方 `-d` 使用独立原生认证与执行，不继承 Velune 审批、模型路由或取消。真实账户、外部 SSH 运行时及公证未验收。（原 `xurl-support`）

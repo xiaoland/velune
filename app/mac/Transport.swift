@@ -32,8 +32,9 @@ enum TransportError: LocalizedError {
         case .submissionCancelled: return "发送已取消。"
         case .rejected(let message): return message
         case .diagnostic(_, let detail, let code, let phase, let operationID):
+            // What went wrong first: a notice of a few lines shows it, not the diagnostic number.
             let id = operationID.isEmpty ? "" : "诊断编号：\(operationID)，"
-            return "操作失败（\(id)阶段：\(phase)，代码：\(code)）：\(detail)"
+            return "\(detail)（\(id)阶段：\(phase)，代码：\(code)）"
         }
     }
 
@@ -73,7 +74,7 @@ final class Transport: @unchecked Sendable {
     let configurationChanged = PassthroughSubject<Void, Never>()
     /// This Mac's Velune home; a remote device's transport keeps its interface state here too.
     let stateDirectory: URL
-    private let remoteAttachments: Bool
+    let isRemote: Bool
     /// Opens the application this transport talks to: this Mac's core, or a paired device.
     private let open: () throws -> VeluneApplication
     let telemetryResult: Result<ClientTelemetry, Error>
@@ -101,7 +102,7 @@ final class Transport: @unchecked Sendable {
 
     init(stateDirectory: URL, resourcesDirectory: URL) {
         self.stateDirectory = stateDirectory
-        remoteAttachments = false
+        isRemote = false
         let result = Result { try ClientTelemetry(home: stateDirectory, platform: "macos", localLogs: true,
             developmentProfile: ProcessInfo.processInfo.environment["VELUNE_TELEMETRY_PROFILE"], runID: ProcessInfo.processInfo.environment["VELUNE_RUN_ID"]) }
         telemetryResult = result
@@ -115,7 +116,7 @@ final class Transport: @unchecked Sendable {
     /// A paired device's application; the same named methods reach its core.
     init(stateDirectory: URL, telemetry: Result<ClientTelemetry, Error>, composerAuthority: Transport? = nil, remote: @escaping () throws -> VeluneApplication) {
         self.stateDirectory = stateDirectory
-        remoteAttachments = true
+        isRemote = true
         telemetryResult = telemetry; ownsTelemetry = false
         open = {
             let application = try remote()
@@ -129,7 +130,7 @@ final class Transport: @unchecked Sendable {
     /// Closing it releases only this presentation view and never the runtime.
     private init(source: Transport, viewID: String) {
         stateDirectory = source.stateDirectory
-        remoteAttachments = source.remoteAttachments
+        isRemote = source.isRemote
         telemetryResult = source.telemetryResult
         ownsTelemetry = false
         open = {
@@ -186,8 +187,8 @@ final class Transport: @unchecked Sendable {
         try withApplication("setProject", .writes, .configurationWrite) { application in
             // A fresh remote proxy carries the revision of this read. The
             // shared browsing proxy may predate intervening conversation work.
-            let editor = remoteAttachments ? try open() : application
-            defer { if remoteAttachments { try? editor.shutdown() } }
+            let editor = isRemote ? try open() : application
+            defer { if isRemote { try? editor.shutdown() } }
             let current = try editor.list()
             if let basis, current.conversationProjects.first(where: { $0.path == path }) != basis {
                 throw TransportError.rejected("项目已在其他窗口或设备中修改。请保留当前输入，重新打开项目后核对再存储。")
@@ -266,6 +267,11 @@ final class Transport: @unchecked Sendable {
     func runtimeExecution(id: String) throws -> (RuntimeExecution, String?) { try withApplication("runtimeExecution", .reads, .configurationRead) { (try $0.runtimeExecution(runtimeId: id), try $0.runtimeHomeDirectory(runtimeId: id)) } }
     /// Saves an instance whose type takes launch options, with its arguments and environment.
     func upsertRuntime(_ runtime: VeluneBindings.RuntimeInstance, execution: RuntimeExecution, launch: AcpLaunch) throws -> RuntimeUpdate { try withApplication("upsertRuntime", .changesConfiguration, .configurationWrite) { try $0.upsertAcpRuntime(runtime: runtime, execution: execution, launch: launch) } }
+    func setRuntimeModelAutoCompaction(runtimeID: String, model: ModelSelection, setting: AutoCompactionSetting?) throws -> RuntimeUpdate {
+        try withApplication("setRuntimeModelAutoCompaction", .changesConfiguration, .configurationWrite) {
+            try $0.setRuntimeModelAutoCompaction(runtimeId: runtimeID, model: model, setting: setting)
+        }
+    }
     func runtimeLaunch(id: String) throws -> AcpLaunch { try withApplication("runtimeLaunch", .writes, .configurationRead) { try $0.acpLaunch(runtimeId: id) } }
     /// Starts the Agent to read what it reports about itself unless a session of it is live.
     func agentInfo(runtimeID: String) throws -> AcpRuntimeInfo { try withApplication("agentInfo", .reads, .configurationRead) { try $0.acpRuntimeInfo(runtimeId: runtimeID) } }
@@ -360,6 +366,12 @@ final class Transport: @unchecked Sendable {
         observationStateLock.withLock { observationsDirty = desiredObservations != desired }
         return true
     }
+    /// Register only against an already opened local owner.
+    func nativeUserMessageEvents() -> VeluneNativeUserMessageEvents? {
+        guard !isRemote else { return nil }
+        return lock.withLock { application?.nativeUserMessageEvents() }
+    }
+
     func snapshot(runtimeID: String, conversationID: String) throws -> SnapshotResult {
         try withApplication("snapshot", .reads, .conversationRead) {
             synchronizeObservations($0)
@@ -395,8 +407,10 @@ final class Transport: @unchecked Sendable {
                              selection: ModelSelection?, turn: ComposedTurn, model: ModelSelection?, effort: String?, submissionId: String? = nil) throws -> QueuedHandoffSummaryStart {
         try withApplication("queueHandoffSummary", .preparesContinuation, .send) { application in
             let delivered = try deliver(turn, using: application)
-            return try application.queueHandoffSummary(sourceRuntimeId: sourceRuntimeID, conversationId: conversationID,
-                targetRuntimeId: targetRuntimeID, selection: selection, turn: delivered, summaryModel: model, effort: effort, submissionId: submissionId)
+            let request = BindingQueuedHandoffSummary(sourceRuntimeId: sourceRuntimeID,
+                conversationId: conversationID, targetRuntimeId: targetRuntimeID, selection: selection,
+                turn: delivered, summaryModel: model, effort: effort)
+            return try application.queueHandoffSummary(request: request, submissionId: submissionId)
         }
     }
     func retryQueuedHandoffSummary(sourceRuntimeID: String, conversationID: String, queuedMessageID: String,
@@ -442,7 +456,13 @@ final class Transport: @unchecked Sendable {
     /// The runtime's own models first, then the managed models; every entry
     /// carries the levels the runtime accepts for it.
     func runtimeModels(runtimeID: String) throws -> [RuntimeModel] { try withApplication("runtimeModels", .reads, .configurationRead) { try $0.runtimeModels(runtimeId: runtimeID) } }
-    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn) throws -> SnapshotResult { try withApplication("steerTurn", .writes, .send) { try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: try deliver(turn, using: $0)) } }
+    func steerTurn(runtimeID: String, conversationID: String, turn: ComposedTurn,
+                   targetRuntimeID: String?) throws -> SnapshotResult {
+        try withApplication("steerTurn", .writes, .send) {
+            try $0.steerTurn(runtimeId: runtimeID, conversationId: conversationID, turn: try deliver(turn, using: $0),
+                             targetRuntimeId: targetRuntimeID)
+        }
+    }
     func compactConversation(runtimeID: String, conversationID: String, selection: ModelSelection?) throws -> SnapshotResult {
         try withApplication("compactConversation", .writes, .compact) { try $0.compactConversation(runtimeId: runtimeID, conversationId: conversationID, selection: selection) }
     }
@@ -450,7 +470,7 @@ final class Transport: @unchecked Sendable {
         try withApplication("resumeTurn", .writes, .send) { try $0.resumeTurn(runtimeId: runtimeID, conversationId: conversationID, selection: selection, effort: effort, permissionMode: permissionMode) }
     }
     private func deliver(_ turn: ComposedTurn, using application: VeluneApplication) throws -> ComposedTurn {
-        guard remoteAttachments else { return turn }
+        guard isRemote else { return turn }
         var delivered = turn
         delivered.attachments = try turn.attachments.map { path in
             guard path.hasPrefix("/") else { return path }
@@ -476,7 +496,14 @@ final class Transport: @unchecked Sendable {
     func deleteUserMessage(runtimeID: String, conversationID: String, messageID: String, truncate: Bool, expectedRevision: String) throws -> SnapshotResult {
         try withApplication("deleteUserMessage", .writes, .conversationWrite) { try $0.deleteUserMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, truncate: truncate, expectedRevision: expectedRevision) }
     }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult { try withApplication("editMessage", .writes, .conversationWrite) { try $0.editMessageWithRuntime(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, placement: placement, targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: $0), expectedRevision: expectedRevision) } }
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult {
+        try withApplication("editMessage", .writes, .conversationWrite) { application in
+            let message = BindingMessageReference(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID)
+            return try application.editMessageWithRuntime(message: message, placement: placement,
+                targetRuntimeId: targetRuntimeID, selection: selection, turn: try deliver(turn, using: application),
+                expectedRevision: expectedRevision)
+        }
+    }
     func forkConversation(runtimeID: String, conversationID: String, messageID: String) throws -> SnapshotResult { try withApplication("forkConversation", .writes, .conversationWrite) { try $0.forkConversation(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID) } }
     func cancel(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("cancel", .writes, .cancel) { try $0.cancel(runtimeId: runtimeID, conversationId: conversationID) } }
     func openSideChat(runtimeID: String, conversationID: String, selection: ModelSelection?, effort: String?, permissionMode: String?) throws -> SnapshotResult {
@@ -494,7 +521,11 @@ final class Transport: @unchecked Sendable {
         }
     }
     func closeSideChat(sideChatID: String) throws { try withApplication("closeSideChat", .writes, .cancel) { try $0.closeSideChat(sideChatId: sideChatID) } }
-    func backgroundTasks(runtimeID: String, conversationID: String) throws -> BackgroundTaskList { try withApplication("backgroundTasks", .reads, .conversationRead) { try $0.backgroundTasks(runtimeId: runtimeID, conversationId: conversationID) } }
+    func backgroundTasks(runtimeID: String, conversationID: String, manual: Bool = false) throws -> BackgroundTaskList {
+        try withApplication("backgroundTasks", .reads, .conversationRead) {
+            try $0.backgroundTasks(runtimeId: runtimeID, conversationId: conversationID, manual: manual)
+        }
+    }
     func backgroundTaskOutput(runtimeID: String, conversationID: String, taskID: String, requestID: String?) throws -> BackgroundTaskOutput { try withApplication("backgroundTaskOutput", .reads, .conversationRead) { try $0.backgroundTaskOutput(runtimeId: runtimeID, conversationId: conversationID, taskId: taskID, requestId: requestID) } }
     func stopBackgroundTask(runtimeID: String, conversationID: String, taskID: String) throws -> BackgroundTaskList { try withApplication("stopBackgroundTask", .writes, .cancel) { try $0.stopBackgroundTask(runtimeId: runtimeID, conversationId: conversationID, taskId: taskID) } }
     func stopSubAgents(runtimeID: String, conversationID: String) throws -> SnapshotResult { try withApplication("stopSubAgents", .writes, .cancel) { try $0.stopSubAgents(runtimeId: runtimeID, conversationId: conversationID) } }

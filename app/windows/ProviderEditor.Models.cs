@@ -77,6 +77,8 @@ sealed partial class ProviderEditor
         readonly TextBox output = Count("最大输出（token）");
         readonly TextBox levels = new() { Header = "支持的推理强度", PlaceholderText = "例如 low, medium, high；留空表示不声明" };
         readonly TextBox parameters = new() { Header = "额外请求参数", PlaceholderText = "逗号分隔的 key=value，如 service_tier=priority" };
+        readonly Button compaction = new() { Content = "自动压缩…" };
+        readonly TextBlock compactionHint = Ui.Muted("保存模型后可配置自动压缩。");
 
         public ModelRow(ProviderEditor editor, ProviderModel? model)
         {
@@ -99,7 +101,7 @@ sealed partial class ProviderEditor
             var fields = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             fields.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            for (var i = 0; i < 4; i++)
+            for (var i = 0; i < 3; i++)
             {
                 fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             }
@@ -109,8 +111,12 @@ sealed partial class ProviderEditor
             Place(fields, output, 1, 1);
             Place(fields, levels, 2, 0);
             Grid.SetColumnSpan(levels, 2);
-            Place(fields, parameters, 3, 0);
-            Grid.SetColumnSpan(parameters, 2);
+            if (!editor.UsesAntigravity)
+            {
+                fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Place(fields, parameters, 3, 0);
+                Grid.SetColumnSpan(parameters, 2);
+            }
 
             var asTemplate = new Button { Content = "存为模板…" };
             asTemplate.Click += (_, _) =>
@@ -121,10 +127,13 @@ sealed partial class ProviderEditor
             var remove = new Button { Content = "删除模型" };
             remove.Click += (_, _) => editor.RemoveModel(this);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+            compaction.Click += (_, _) => EditCompaction();
+            actions.Children.Add(compaction);
             actions.Children.Add(asTemplate);
             actions.Children.Add(remove);
             var content = new StackPanel { Spacing = 12 };
             content.Children.Add(fields);
+            content.Children.Add(compactionHint);
             content.Children.Add(actions);
             Element.Content = content;
 
@@ -134,6 +143,7 @@ sealed partial class ProviderEditor
             context.TextChanged += (_, _) => Edited();
             output.TextChanged += (_, _) => Edited();
             ShowHeader();
+            ShowCompactionAvailability();
         }
 
         static TextBox Count(string header) => new() { Header = header, PlaceholderText = "未知，如 272K、1M" };
@@ -180,6 +190,25 @@ sealed partial class ProviderEditor
 
         static uint? Optional(TextBox box) => TokenCount.Parse(box.Text);
 
+        void ShowCompactionAvailability()
+        {
+            compaction.IsEnabled = recordKey.Length > 0;
+            compactionHint.Visibility = compaction.IsEnabled ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        async void EditCompaction()
+        {
+            if (!Element.IsLoaded || recordKey.Length == 0 || editor.page.Busy) return;
+            compaction.IsEnabled = false;
+            try
+            {
+                await ModelCompactionDialog.ShowManaged(editor.page.Core, editor.page.Window, recordKey, title.Text,
+                    () => Element.IsLoaded && !editor.page.Busy);
+            }
+            catch (Exception problem) { Problems.Report("配置模型自动压缩", problem); }
+            finally { if (Element.IsLoaded) ShowCompactionAvailability(); }
+        }
+
         string[]? Levels()
         {
             var declared = levels.Text.Split([',', '，', ' ', '、'], StringSplitOptions.RemoveEmptyEntries);
@@ -216,7 +245,7 @@ sealed partial class ProviderEditor
             ContextWindow: Optional(context),
             MaxOutputTokens: Optional(output),
             ReasoningLevels: Levels(),
-            RequestParameters: Parameters());
+            RequestParameters: editor.UsesAntigravity ? null : Parameters());
 
         // Keep takes the record a save gave a new model.
         public void Keep(ProviderModel[] saved)
@@ -224,6 +253,7 @@ sealed partial class ProviderEditor
             if (recordKey.Length == 0 && saved.FirstOrDefault(model => model.ProviderModelId == ID) is { } kept)
             {
                 recordKey = kept.RecordKey;
+                ShowCompactionAvailability();
             }
         }
     }

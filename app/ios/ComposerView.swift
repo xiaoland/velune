@@ -65,9 +65,6 @@ struct ComposerView: View {
                     .padding(.horizontal, 5).padding(.vertical, 8)
                     .frame(minHeight: 44).hidden().accessibilityHidden(true)
                     .overlay {
-                        if !model.canEditDraft {
-                            ScrollView { Text(model.draft.isEmpty ? " " : model.draft).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 5).padding(.vertical, 8) }
-                        } else {
                         TextEditor(text: $model.draft)
                             .scrollContentBackground(.hidden)
                             .overlay(alignment: .topLeading) {
@@ -83,7 +80,6 @@ struct ComposerView: View {
                                 guard key.modifiers.contains(.command) else { return .ignored }
                                 sendFromKeyboard(); return .handled
                             }
-                        }
                     }
                     .font(.body)
                 Button {

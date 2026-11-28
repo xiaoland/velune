@@ -497,6 +497,7 @@ mod tests {
             endpoint: "https://example.invalid".into(),
             execution_backend: crate::ExecutionBackend::Http,
             request_profile: crate::RequestProfile::Native,
+            codex_client_version: None,
             authentication_source: crate::ProviderAuthenticationSource::ApiKey,
             quota_source: crate::ProviderQuotaSource::None,
             authentication: crate::ProviderAuthenticationDescription {

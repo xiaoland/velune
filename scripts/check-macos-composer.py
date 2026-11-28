@@ -10,7 +10,11 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
+from contextlib import ExitStack
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from macos_identity import ROOT, app_bundle_path, validate_bundle
 
 
@@ -19,9 +23,116 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def prepare_claude_continuation(root, evidence, path, lifetime, editing):
+    """Tiny native history where an earlier reply is outside the replay chain."""
+    binary = shutil.which('claude', path=path)
+    if not binary:
+        raise SystemExit('Claude continuation checks require Claude Code on PATH')
+    config = root / 'claude'
+    project = (root / 'project').resolve()
+    project.mkdir()
+    source = str(uuid.uuid4())
+    directory = config / 'projects' / (''.join(c if c.isascii() and c.isalnum() else '-' for c in str(project)))
+    directory.mkdir(parents=True)
+    rows = []
+
+    def record(role, parent, **fields):
+        identity = str(uuid.uuid4())
+        rows.append(dict(type=role, uuid=identity, parentUuid=parent, isSidechain=False,
+                         sessionId=source, cwd=str(project), timestamp='2026-11-01T00:00:00.000Z',
+                         version='2.1.327', userType='external', **fields))
+        return identity
+
+    def message(role, parent, value, **fields):
+        body = dict(id='msg_' + uuid.uuid4().hex, role=role, content=[dict(type='text', text=value)])
+        if role == 'assistant':
+            body.update(type='message', model='claude-sonnet-4-6', stop_reason='end_turn',
+                        usage=dict(input_tokens=10, output_tokens=5))
+        return record(role, parent, message=body, **fields)
+
+    selected = message('user', None, 'oldest fork prompt')
+    old_reply = message('assistant', selected, 'oldest fork reply')
+    retained_parent = old_reply
+    if editing:
+        selected = message('user', old_reply, 'old edit prompt')
+        retained_parent = message('assistant', selected, 'old edit reply')
+    retained = message('user', retained_parent, 'retained later prompt')
+    retained_reply = message('assistant', retained, 'retained later reply')
+    compact = record('system', None, subtype='compact_boundary', logicalParentUuid=retained_reply,
+                     compactMetadata=dict(trigger='manual', preTokens=300, postTokens=30))
+    summary = message('user', compact, 'new compact summary', isCompactSummary=True)
+    keep = [retained, retained_reply]
+    rows[-2]['compactMetadata'].update(preservedMessages=dict(anchorUuid=summary, uuids=keep, allUuids=keep),
+                                       preservedSegment=dict(anchorUuid=summary, headUuid=retained, tailUuid=retained_reply))
+    latest = message('user', summary, 'later prompt after compact')
+    message('assistant', latest, 'later reply after compact')
+    archive = directory / (source + '.jsonl')
+    archive.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    archive_digest = digest(archive)
+    requests = []
+    roles = []
+    rejected = []
+    prompt = 'edited historical message' if editing else 'first message after fork'
+    reply = 'edited reply received' if editing else 'fork reply received'
+    markers = ['oldest fork prompt', 'oldest fork reply', 'old edit prompt', 'old edit reply',
+               'new compact summary', 'retained later prompt', 'retained later reply',
+               'later prompt after compact', 'later reply after compact', prompt]
+
+    class Messages(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if not self.path.split('?')[0].endswith('/messages'):
+                rejected.append(self.path.split('?')[0])
+                self.send_error(400)
+                return
+            captured = []
+            for message in request['messages']:
+                content = json.dumps(message['content'])
+                captured.extend((message['role'], marker) for marker in markers if marker in content)
+            requests.append([marker for _, marker in captured])
+            roles.append([role for role, _ in captured])
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.end_headers()
+            events = [
+                ('message_start', dict(message=dict(id='msg_' + uuid.uuid4().hex, type='message', role='assistant',
+                    model=request['model'], content=[], stop_reason=None, usage=dict(input_tokens=10, output_tokens=1)))),
+                ('content_block_start', dict(index=0, content_block=dict(type='text', text=''))),
+                ('content_block_delta', dict(index=0, delta=dict(type='text_delta', text=reply))),
+                ('content_block_stop', dict(index=0)),
+                ('message_delta', dict(delta=dict(stop_reason='end_turn', stop_sequence=None), usage=dict(output_tokens=5))),
+                ('message_stop', {}),
+            ]
+            for kind, fields in events:
+                self.wfile.write(f'event: {kind}\ndata: {json.dumps(dict(type=kind, **fields))}\n\n'.encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Messages)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    lifetime.callback(server.server_close)
+    lifetime.callback(server.shutdown)
+    (evidence / 'fixture.json').write_text(json.dumps(dict(
+        binary=binary, agentDirectory=str(config), cwd=str(project), sourceID='claude-check:' + source,
+        userID=selected, endpoint=f'http://127.0.0.1:{server.server_port}/v1')))
+
+    def verify(output, success):
+        intact = digest(archive) == archive_digest
+        (output / 'loopback.json').write_text(json.dumps(dict(originalUnchanged=intact, requests=requests,
+                                                            roles=roles, rejectedPaths=rejected), indent=2))
+        if success:
+            assert intact, 'continuation changed the original native archive'
+            assert requests == [['oldest fork prompt', 'oldest fork reply', prompt]], requests
+            assert roles == [['user', 'assistant', 'user']], roles
+
+    return verify
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'queued-editor', 'archived', 'palette-ime', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'sidebar-toolbar', 'outgoing-submissions'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -43,7 +154,7 @@ def main():
     library = app / 'Contents/Frameworks/libvelune_bindings.dylib'
     if library.exists():
         receipt['bindingsSHA256'] = digest(library)
-    with tempfile.TemporaryDirectory(prefix='velune-native-composer-', dir='/tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='velune-native-composer-', dir='/tmp') as temporary, ExitStack() as lifetime:
         root = Path(temporary)
         copied = root / 'Check.app'
         copy_flag = '-cR' if app.stat().st_dev == root.stat().st_dev else '-R'
@@ -74,12 +185,18 @@ def main():
             flags = ['--check-queued-message-editor']
             if args.dark:
                 flags.append('--queued-editor-dark')
+        if args.check == 'runtime-editor':
+            flags = ['--check-message-experience', '--experience-runtime-editor-only']
+        if args.check == 'model-auto-compaction':
+            flags = ['--check-message-experience', '--experience-model-auto-compaction-only']
         if args.check == 'archived':
             flags = ['--check-archived-conversations']
             if args.dark:
                 flags.append('--archived-check-dark')
         if args.check == 'palette-ime':
             flags = ['--check-palette-ime']
+        if args.check == 'palette-search':
+            flags = ['--check-palette-search']
         if args.check == 'pagination':
             flags = ['--check-list-pagination']
         if args.check == 'tabs':
@@ -98,20 +215,47 @@ def main():
                 flags.append('--background-check-dark')
         if args.check == 'experience':
             flags = ['--check-message-experience']
+        if args.check == 'appearance-zoom':
+            flags = ['--check-message-experience', '--experience-appearance-zoom-only']
+            if args.dark:
+                flags.append('--appearance-zoom-dark')
+        if args.check in ['fork-send', 'claude-compact-edit']:
+            editing = args.check == 'claude-compact-edit'
+            flag = '--experience-claude-compact-edit-only' if editing else '--experience-fork-send-only'
+            flags = ['--check-message-experience', flag]
+            verify_claude = prepare_claude_continuation(root, evidence, env.get('PATH', os.defpath), lifetime, editing)
+            env.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', DISABLE_AUTOUPDATER='1',
+                       HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9', NO_PROXY='127.0.0.1,localhost')
         if args.check == 'recovery':
             flags = ['--check-message-experience', '--experience-runtime-recovery-only']
         if args.check == 'compaction':
             flags = ['--check-message-experience', '--experience-compaction-only']
         if args.check == 'background-notifications':
             flags = ['--check-background-notifications']
+        if args.check == 'notification-navigation':
+            flags = ['--check-notification-navigation']
         if args.child_open:
             flags = ['--check-conversation-requests', '--check-child-open']
+        if args.check == 'aggregated-list':
+            flags = ['--check-aggregated-list']
         if args.check == 'provider-analytics':
             flags = ['--check-provider-analytics']
         if args.check == 'outgoing-submissions':
             flags = ['--check-outgoing-submissions']
+        if args.check == 'late-send-echo':
+            flags = ['--check-conversation-requests', '--check-late-send-echo']
+        if args.check == 'queue-withdrawal':
+            flags = ['--check-conversation-requests', '--check-queue-withdrawal']
         if args.check == 'sidebar-toolbar':
             flags = ['--check-sidebar-toolbar']
+        if args.check == 'telemetry-shutdown':
+            flags = ['--check-telemetry-shutdown']
+        if args.check == 'transcript':
+            flags = ['--check-message-experience', '--experience-native-row-order-only']
+        elif args.check == 'shell-motion':
+            flags = ['--check-shell-motion']
+        if args.check == 'file-links':
+            flags = ['--check-message-experience', '--experience-file-links-only']
         if args.check == 'sidebar':
             flags = ['--check-message-experience', '--experience-sidebar-only']
         if args.dark and args.check == 'continuation':
@@ -149,7 +293,17 @@ def main():
                 name = 'editor-core-' + native_log.name
                 shutil.copy2(native_log, output / name)
                 exported.append(name)
+        if args.check in ['fork-send', 'claude-compact-edit']:
+            verify_claude(output, receipt['exitCode'] == 0)
+            exported.append('loopback.json')
+            prefix = 'claude-compact-edit' if args.check == 'claude-compact-edit' else 'fork'
+            for native_log in (root / 'state' / 'logs').glob('*.jsonl'):
+                name = prefix + '-core-' + native_log.name
+                shutil.copy2(native_log, output / name)
+                exported.append(name)
         receipt['artifacts'] = sorted(exported)
+        if args.check in ['fork-send', 'claude-compact-edit'] and receipt['exitCode'] == 0:
+            receipt['loopbackRequests'] = 1
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
         print((output / 'native.log').read_text(), end='')
         print('Evidence:', output)

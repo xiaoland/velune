@@ -66,7 +66,7 @@ Codex 订阅由 application 自身管理，与 Harness 登录独立。保存提�
 
 当前普通配置为 schema 11。持久存储负责已知旧格式的备份与迁移，未知版本、损坏 JSON 和当前版本的未知字段保留原文件并报错，不以空配置覆盖。原 Harness 会话、认证与既有平台秘密保持原有归属。转换范围、锁与恢复步骤统一见[数据迁移](../../docs/development/migrations.md)。
 
-运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器支持 `pi-1.0`、`codex-0.159`、`codex-0.166`、`claude-code-2.1` 与 `dsh-acp-0.2`；通用 `acp-v1` 表示协商的协议版本，不限定 Agent 品牌或 CLI 版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
+运行时描述包含 familyId、versioned variant ID 与兼容版本区间文字（compatibleVersions），配置实例引用 variant。专用适配器与兼容区间见 [agent-runtime](../agent-runtime/README.md#版本与原生控制)。通用 `acp-v1` 表示协商的协议版本。family 不参与控制协议派发。应用协调 Codex app-server／DSH ACP 与 huihua 历史读取，原生 ID 与 runtimeId 共同形成公开会话身份；读取成功不等于原生恢复成功。运行时添加后直接可读历史，不要求模型或执行准备。新建显式给出会话模型并自动准备；历史视图选择模型后，在发送时按需恢复执行。Pi 历史中的 Velune 模型标记只恢复 managed 引用；原生目录提供的模型通过显式 native 选择发送，不另存会话状态。
 
 原生审批、问题回答及取消通过 RuntimeInteraction／RuntimeInteractionReply 完成，配置变更、执行和失败清理由应用协调。提供商导入支持 Pi、Codex 与 Claude Code 运行时；DSH 与通用 ACP 尚无提供商导入，增加执行 adapter 不自动增加导入。DSH 模型能力注入只使用已知字段，reasoning wire 映射未实现，不将能力列表解释为请求参数。
 
@@ -227,4 +227,4 @@ application 提供目标的规范身份、当前会话默认依据与 NextTurn �
 
 发送队列仍由 application 统一持有逐项的 ComposedTurn、目标运行时与模型选择。QueueWait::Control 表示释放原生连接后的异步控制权确认；尚未派发的消息保持等待，后续轮询在准入恢复后继续，不能把 CheckingControl 锁存为 SendFailed。停止／失败后的暂停仍保留明确用户恢复的边界。Codex 0.166 的实验性 thread/queue 接口只有输入存储与显式 start，尚未承载上述逐项执行选择，因此本实现没有镜像另一份原生待发队列。
 
-自动命名兜底配置属于 RuntimeInstance 的 automaticNaming／automaticNamingModel。仅观察到正常完成后，在后台直接调用 ai-provider 的有界文本操作，使用指定模型及现有认证解析；没有 Harness turn、工具或本地 gateway。禁用默认不产生调用。超时／取消／失败不改变会话状态；完成结果先复核实例选择与原生名称，再写入现有组织记录的 generatedTitles。ConversationTitle::Generated 区分生成名与 Native／FirstMessage；原生名优先，列表与 snapshot 使用相同投影。
+自动命名兜底配置属于 RuntimeInstance 的 automaticNaming／automaticNamingModel／automaticNamingPrompt。仅观察到正常完成且无原生标题后，在后台直接调用 ai-provider 的有界文本操作，使用指定模型、现有认证解析与实例提示词（留空用内置提示词）；没有 Harness turn、工具或本地 gateway。禁用默认不产生调用。超时／取消／失败不改变会话状态；完成结果先复核实例选择与原生名称，再写入现有组织记录的 generatedTitles。ConversationTitle::Generated 区分生成名与 Native／FirstMessage；原生名优先，列表与 snapshot 使用相同投影。

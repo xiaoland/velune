@@ -1,0 +1,56 @@
+{
+  "sessionId": "fixture-session",
+  "models": {
+    "currentModelId": "gemini-4-argon-medium",
+    "availableModels": [
+      {
+        "modelId": "gemini-4-argon-medium",
+        "name": "Gemini 4 Argon (Medium)"
+      },
+      {
+        "modelId": "gemini-4-argon-high",
+        "name": "Gemini 4 Argon (High)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-high",
+        "name": "Gemini 4 Hydrogen (High)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-xhigh",
+        "name": "Gemini 4 Hydrogen (XHigh)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-medium",
+        "name": "Gemini 4 Hydrogen (Medium)"
+      },
+      {
+        "modelId": "gemini-pro-orchestrator-g1-pro",
+        "name": "Orchestrator (Argon)"
+      },
+      {
+        "modelId": "gemini-3.8-flash-high",
+        "name": "Gemini 3.8 Flash (High)"
+      },
+      {
+        "modelId": "gemini-3.8-flash-medium",
+        "name": "Gemini 3.8 Flash (Medium)"
+      },
+      {
+        "modelId": "claude-opus-5-5-low",
+        "name": "Claude Opus 5.5 (Low)"
+      },
+      {
+        "modelId": "claude-opus-5-5-high",
+        "name": "Claude Opus 5.5 (High)"
+      },
+      {
+        "modelId": "claude-sonnet-5-5-medium",
+        "name": "Claude Sonnet 5.5 (Medium)"
+      },
+      {
+        "modelId": "gpt-oss-120b-medium",
+        "name": "GPT-OSS 120B (Medium)"
+      }
+    ]
+  }
+}

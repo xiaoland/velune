@@ -644,7 +644,7 @@ impl RemoteAccessService {
         tokio::select! {
             result = &mut direct => match result {
                 Ok(client) => Ok(client),
-                Err(error) if matches!(error, RemoteError::Unavailable | RemoteError::Timeout
+                Err(RemoteError::Unavailable | RemoteError::Timeout
                     | RemoteError::Closed | RemoteError::Unauthorized) => routed.await,
                 Err(error) => Err(error),
             },

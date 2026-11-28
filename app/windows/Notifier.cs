@@ -195,7 +195,8 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         {
             return;
         }
-        var window = alert.WindowId is { } id ? Quota.Name(id) : "";
+        var antigravity = provider.AuthenticationSource == ProviderAuthenticationSource.AntigravityCli;
+        var window = alert.WindowId is { } id ? (antigravity ? Quota.AntigravityName(id) : Quota.Name(id)) : "";
         var detail = alert.Kind switch
         {
             QuotaAlertKind.CapReached => window + Quota.Ceiling(alert.MaxUsedPercent ?? 100, snapshot.UsageDisplay, true) + "，直到额度回到上限以内。",
@@ -204,7 +205,7 @@ sealed class Notifier(Shell shell, DispatcherQueue dispatcher)
         };
         var notification = new AppNotificationBuilder()
             .AddText(provider.Name)
-            .AddText("额度提醒：" + detail)
+            .AddText((antigravity ? "执行目标额度提醒：" : "额度提醒：") + detail)
             .BuildNotification();
         // One notification per provider, condition and window.
         notification.Tag = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(alert.ProviderId + "\n" + alert.Kind + "\n" + alert.WindowId)))[..32];

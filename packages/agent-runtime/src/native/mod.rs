@@ -10,10 +10,13 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use velune_conversation::{AutoCompactionSetting, ModelAutoCompaction};
 #[cfg(all(test, unix))]
 mod background_tests;
 mod claude;
 mod claude_background;
+mod claude_composed;
+pub use claude_composed::ClaudeComposedAcceptance;
 mod claude_port;
 pub use claude_port::{
     ClaudeAdmissionError, ClaudeCommand, ClaudeDelivery, ClaudeOperationReceipt,
@@ -26,12 +29,13 @@ pub use claude::{
     rename_claude_session_at,
 };
 mod codex;
+mod codex_background;
 pub use codex::{
     CodexAdmissionError, CodexCommand, CodexDelivery, CodexInterruptDelivery,
     CodexInterruptReceipt, CodexOperationReceipt, CodexOperationTicket, ThreadChange,
     manage_thread, manage_thread_at, resume_provider_matches, update_read_state,
 };
-mod codex_history;
+pub(crate) mod codex_history;
 pub(crate) use codex_history::cleanup_owned_codex_import;
 mod codex_handoff_summary;
 mod codex_messages;
@@ -40,19 +44,14 @@ mod codex_questions;
 mod codex_retry;
 mod codex_side;
 mod codex_title;
+#[cfg(all(test, unix))]
+mod question_reconciliation_tests;
 pub use codex_handoff_summary::{
     HandoffSummaryArtifact, HandoffSummaryArtifactState, HandoffSummaryCleanupState,
     HandoffSummaryPhase, HandoffSummaryRequest, HandoffSummaryStatus,
 };
-pub(crate) use codex_history::read_codex_with_summary_at;
 pub use codex_history::{
-    HandoffSummaryRecovery, codex_context_provider, codex_models_for_provider,
-    codex_requires_portable_summary, codex_thread_model, export_codex_context,
-    export_codex_context_before, export_codex_context_with_summary, export_codex_context_without,
-    export_codex_context_without_many, list_codex_history, list_codex_history_at,
-    materialize_codex_import, materialize_owned_codex_import, read_codex_history,
-    read_codex_history_at, read_codex_summary_at, recover_codex_handoff_summary,
-    verify_codex_handoff_summary_source,
+    HandoffSummaryRecovery, codex_context_provider, materialize_owned_codex_import,
 };
 mod deepseek;
 mod deepseek_port;
@@ -139,6 +138,7 @@ pub struct NativeConfig {
     pub resources_directory: PathBuf,
     pub projection_directory: PathBuf,
     pub gateway: Option<GatewayInjection>,
+    pub auto_compaction: Option<AutoCompactionSetting>,
     pub mcp_servers: Vec<crate::mcp::Server>,
     /// Sub-agents the host supplies to gateway turns only; nothing of them is
     /// written where the Harness keeps its own definitions, so a turn on the
@@ -390,9 +390,12 @@ impl NativeSession {
         };
         // stop_task's stream-json schema is verified against this CLI
         // generation. Earlier supported CLIs retain observation-only tasks.
-        session.claude.task_stop_capable = session.config.kind == NativeKind::ClaudeCode
-            && semver::Version::parse(&actual_version)
-                .is_ok_and(|version| version >= semver::Version::new(2, 1, 292));
+        if session.config.kind == NativeKind::ClaudeCode
+            && let Ok(version) = semver::Version::parse(&actual_version)
+        {
+            session.claude.task_stop_capable = version >= semver::Version::new(2, 1, 292);
+            session.claude.background_followup_capable = version >= semver::Version::new(2, 1, 327);
+        }
         session.initialize()?;
         session.config.gateway = selected_gateway;
         Ok(session)
@@ -404,7 +407,7 @@ impl NativeSession {
         effort: Option<&str>,
         permission_mode: Option<&str>,
     ) -> Result<(rpc::RpcClient, bool)> {
-        let (mut command, dsh_history_overlay) = match config.kind {
+        let (mut command, home_key) = match config.kind {
             NativeKind::Codex166 => {
                 let mut command = crate::process_tree::command(&config.binary);
                 command.arg("app-server");
@@ -427,18 +430,13 @@ impl NativeSession {
                         json!(gateway.endpoint)
                     ));
                 }
-                (command, false)
+                (command, "CODEX_HOME")
             }
-            NativeKind::DeepSeek => Self::dsh_command(config)?,
+            NativeKind::DeepSeek => return Self::dsh_spawn(config, selection),
             NativeKind::ClaudeCode => (
                 Self::claude_command(config, selection, session, effort, permission_mode)?,
-                false,
+                "CLAUDE_CONFIG_DIR",
             ),
-        };
-        let home_key = match config.kind {
-            NativeKind::Codex166 => "CODEX_HOME",
-            NativeKind::DeepSeek => "DSH_HOME",
-            NativeKind::ClaudeCode => "CLAUDE_CONFIG_DIR",
         };
         if config.kind == NativeKind::ClaudeCode && Self::claude_default_config(config) {
             // Setting CLAUDE_CONFIG_DIR at all, even to its default, makes the CLI
@@ -454,12 +452,12 @@ impl NativeSession {
             command.env_remove("VELUNE_GATEWAY_TOKEN");
         }
         let rpc = rpc::RpcClient::spawn_at(command, &config.execution, config.os_home.as_deref())?;
-        Ok((rpc, dsh_history_overlay))
+        Ok((rpc, false))
     }
     fn initialize(&mut self) -> Result<()> {
         match self.config.kind {
             NativeKind::Codex166 => self.codex_initialize(),
-            NativeKind::DeepSeek => self.dsh_initialize(),
+            NativeKind::DeepSeek => Ok(()),
             NativeKind::ClaudeCode => self.claude_initialize(),
         }
     }
@@ -677,7 +675,7 @@ impl NativeSession {
             .ok_or_else(|| Error::new("运行时未打开侧聊"))
     }
     pub fn send(&mut self, input: &crate::TurnInput) -> Result<()> {
-        self.start_turn(input, false)
+        self.start_turn(input, false, false)
     }
 
     pub fn can_compact(&self) -> bool {
@@ -689,7 +687,7 @@ impl NativeSession {
         if !self.can_compact() || self.side {
             return Err(Error::new("此运行时不支持主动压缩上下文"));
         }
-        if self.has_background_work() {
+        if self.has_background_work() || self.waits_for_background_followup() {
             return Err(Error::new("请先等待子 Agent 结束"));
         }
         self.compacting = true;
@@ -729,9 +727,15 @@ impl NativeSession {
                 images: Vec::new(),
             },
             true,
+            false,
         )
     }
-    fn start_turn(&mut self, input: &crate::TurnInput, resuming: bool) -> Result<()> {
+    fn start_turn(
+        &mut self,
+        input: &crate::TurnInput,
+        resuming: bool,
+        composed_claude: bool,
+    ) -> Result<()> {
         self.ensure_idle()?;
         if !resuming && input.text.trim().is_empty() && input.images.is_empty() {
             return Err(Error::new("消息内容为空"));
@@ -748,7 +752,12 @@ impl NativeSession {
         if self.config.kind == NativeKind::DeepSeek && !input.images.is_empty() {
             return Err(Error::new("DeepSeek 运行时不接受图片"));
         }
-        if self.restart_needed() && self.has_background_work() {
+        let restart = if resuming {
+            self.restart_needed()
+        } else {
+            self.restart_needed_for_send(input.effort.as_deref(), input.permission_mode.as_deref())
+        };
+        if restart && self.work_status().is_pending() {
             return Err(Error::with_code(
                 "子 Agent 仍在运行；此轮需要重新启动运行时，请等待其结束或先停止子 Agent",
                 "outstanding_work",
@@ -759,19 +768,37 @@ impl NativeSession {
             permission_mode: input.permission_mode.clone(),
             ..Default::default()
         };
-        let result = self
-            .prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+        let starting_fork = matches!(self.claude.start, claude::ClaudeStart::Fork { .. });
+        let prepared = if restart {
+            self.prepare_turn(input.effort.as_deref(), input.permission_mode.as_deref())
+        } else {
+            Ok(())
+        };
+        let preparation_failed = prepared.is_err();
+        let result = prepared
+            .map_err(|error| {
+                if starting_fork {
+                    Error::with_code(error.to_string(), "claude_fork_input_not_sent")
+                } else {
+                    error
+                }
+            })
             .and_then(|()| {
-                if let Some(snapshot) = &mut self.snapshot {
+                if !composed_claude && let Some(snapshot) = &mut self.snapshot {
                     snapshot.executions.begin(ExecutionKind::UserTurn, resuming);
                 }
                 match self.config.kind {
                     NativeKind::Codex166 => self.codex_send(input),
                     NativeKind::DeepSeek => self.dsh_send(&input.text),
+                    NativeKind::ClaudeCode if composed_claude => {
+                        self.claude_send_input(input, true)
+                    }
                     NativeKind::ClaudeCode => self.claude_send(input),
                 }
             });
-        if result.is_err() {
+        // Pre-write admission can reject a composed frame while a reused
+        // Claude child still owns prior background work.
+        if result.is_err() && (!composed_claude || preparation_failed) {
             self.fail_connection();
         }
         result
@@ -933,6 +960,21 @@ impl NativeSession {
             NativeKind::ClaudeCode => self.claude_cancel(),
         }
     }
+    /// Capture the setting for the next preparation. A bound child keeps its
+    /// current configuration until its work has settled and it can be replaced.
+    pub fn set_auto_compaction(&mut self, setting: Option<AutoCompactionSetting>) {
+        if self.config.auto_compaction != setting {
+            self.config.auto_compaction = setting;
+            self.restart_required |= self.native_id.is_some();
+        }
+    }
+
+    /// Supply overrides before opening or creating a Codex thread on its
+    /// default model. The adapter matches the identity from its config read.
+    pub fn set_default_model_auto_compactions(&mut self, entries: Vec<ModelAutoCompaction>) {
+        self.codex.default_model_auto_compactions = entries;
+    }
+
     /// Select a gateway for the next turn. Existing native provider settings are never rewritten.
     pub fn select_model(&mut self, injection: GatewayInjection) -> Result<()> {
         self.ensure_idle()?;
@@ -940,6 +982,7 @@ impl NativeSession {
             self.restart_required = true;
         }
         self.config.gateway = Some(injection);
+        self.codex.default_model_auto_compactions.clear();
         Ok(())
     }
     /// DeepSeek requires the provider identity returned by its native catalog.
@@ -982,6 +1025,7 @@ impl NativeSession {
             id: model_id,
         });
         self.config.gateway = None;
+        self.codex.default_model_auto_compactions.clear();
         self.restart_required = true;
         Ok(())
     }
@@ -996,13 +1040,41 @@ impl NativeSession {
     /// Whether the next turn needs a new runtime process, which ends the
     /// current one with any work it still does: the turn's model moves
     /// between the runtime's own provider and Velune's gateway, or another
-    /// gateway injection or native model was selected. Claude Code takes the
-    /// turn's reasoning level and permission mode only at launch, so its
-    /// turn child is always replaced.
+    /// gateway injection or native model was selected. Claude Code takes a
+    /// new turn's launch configuration in a new child.
     pub fn restart_needed(&self) -> bool {
         self.config.kind == NativeKind::ClaudeCode
             || (self.config.gateway.is_some() && !self.gateway_turn)
             || self.restart_required
+    }
+
+    /// Reuse a Claude child retained by background work, with its actual launch
+    /// settings and session unchanged. Other starts keep normal preparation.
+    pub fn restart_needed_for_send(
+        &self,
+        effort: Option<&str>,
+        permission_mode: Option<&str>,
+    ) -> bool {
+        if self.config.kind == NativeKind::ClaudeCode
+            && self.claude.release_when_idle
+            && self.has_background_work()
+            && !self.waits_for_background_followup()
+            && !self.side
+            && !self.restart_required
+            && !self.claude.requires_action
+            && !self.claude.commands.barrier
+            && !self.claude.commands.cleanup_required
+            && self.native_id.is_some()
+            && self.claude.bound_session_id == self.native_id
+            && effort.is_none_or(|effort| self.claude.launched_effort.as_deref() == Some(effort))
+            && permission_mode.is_none_or(|mode| {
+                claude::claude_permission_mode(mode)
+                    .is_some_and(|mode| self.claude.permission_mode.as_deref() == Some(mode))
+            })
+        {
+            return false;
+        }
+        self.restart_needed()
     }
     /// Acquire this idle copy's writer before an edit sends its first prompt.
     /// Callers must never use execution reconfiguration to interrupt a source.
@@ -1032,6 +1104,10 @@ impl NativeSession {
         self.codex.commands.next_generation()?;
         if self.config.kind == NativeKind::ClaudeCode {
             self.claude.commands.next_generation()?;
+            self.claude.release_when_idle = false;
+            self.claude.foreground = None;
+            self.claude.tasks.clear();
+            self.claude.background_followups.clear();
         }
         self.rpc.shutdown();
         self.tunnel = None;
@@ -1081,6 +1157,10 @@ impl NativeSession {
                 NativeKind::ClaudeCode => {
                     self.native_id = Some(id.clone());
                     self.claude.bound_session_id = Some(id.clone());
+                    self.claude.launched_effort = effort.map(str::to_owned);
+                    self.claude.permission_mode = permission_mode
+                        .and_then(claude::claude_permission_mode)
+                        .map(str::to_owned);
                 }
             }
             Ok(())
@@ -1131,6 +1211,7 @@ impl NativeSession {
                 }
             }
             if self.config.kind == NativeKind::ClaudeCode {
+                self.claude_poll_composed_send();
                 self.claude_expire_background_controls();
                 self.claude_check_terminal_timeout();
             }
@@ -1141,6 +1222,7 @@ impl NativeSession {
                 }
                 self.codex_poll_title();
                 self.codex_handoff_summary_poll()?;
+                self.codex_poll_terminals();
             }
             if let Some(snapshot) = &mut self.snapshot
                 && revision != Some(snapshot.revision)
@@ -1225,7 +1307,8 @@ impl NativeSession {
         if matches!(self.config.kind, NativeKind::Codex166) {
             self.codex_cancel_title();
         }
-        let saved_retention = self.data.try_clone(|_| true)?;
+        // Hold the duplicate receive charge until the rename finishes.
+        let _saved_retention = self.data.try_clone(|_| true)?;
         let id = self
             .native_id
             .as_deref()
@@ -1307,6 +1390,7 @@ impl NativeSession {
             )
         })?;
         let work = match self.config.kind {
+            NativeKind::Codex166 if self.failed || self.process_ended => Vec::new(),
             NativeKind::Codex166 => {
                 let Some(runtime_id) = self
                     .snapshot
@@ -1322,6 +1406,7 @@ impl NativeSession {
                         conversation_id: Some(format!("{runtime_id}:{thread}")),
                         state: entry.state,
                     })
+                    .chain(self.codex.terminals.active_work())
                     .collect()
             }
             NativeKind::ClaudeCode if self.failed || self.process_ended => Vec::new(),
@@ -1347,9 +1432,29 @@ impl NativeSession {
         };
         Ok(Retained::from_parts(work, retention))
     }
+    pub(crate) fn work_status(&self) -> crate::work::WorkStatus {
+        use crate::work::WorkStatus;
+        match self.config.kind {
+            NativeKind::DeepSeek => WorkStatus::Untracked,
+            _ if self.has_background_work() => WorkStatus::Active,
+            _ if self.waits_for_background_followup() => WorkStatus::Settling,
+            NativeKind::Codex166
+                if !self.failed && !self.process_ended && self.codex.terminals.settling() =>
+            {
+                WorkStatus::Settling
+            }
+            _ => WorkStatus::Settled,
+        }
+    }
+
     fn has_background_work(&self) -> bool {
         match self.config.kind {
-            NativeKind::Codex166 => !self.codex.threads.is_empty(),
+            NativeKind::Codex166 => {
+                !self.failed
+                    && !self.process_ended
+                    && (!self.codex.threads.is_empty()
+                        || self.codex.terminals.active_work().next().is_some())
+            }
             NativeKind::ClaudeCode => {
                 !self.failed
                     && !self.process_ended
@@ -1363,8 +1468,22 @@ impl NativeSession {
             NativeKind::DeepSeek => false,
         }
     }
-    /// Ask the work besides the turn to stop. Claude Code's tasks belong to
-    /// its turn, which stays running until they end; stopping the turn stops them.
+
+    pub(crate) fn waits_for_background_followup(&self) -> bool {
+        !self.failed
+            && !self.process_ended
+            && self
+                .claude
+                .background_followups
+                .values()
+                .any(|kind| *kind != claude::BackgroundFollowup::Running)
+    }
+
+    fn claude_has_ongoing_background(&self) -> bool {
+        self.work_status().is_pending()
+    }
+
+    /// Ask the work besides the turn to stop if the adapter supports it.
     pub fn stop_background(&mut self) -> Result<()> {
         match self.config.kind {
             NativeKind::Codex166 => self.codex_stop_background(),
@@ -1500,6 +1619,7 @@ impl NativeSession {
     }
     fn set_native_thread(&mut self, id: &str, history: &[Message]) {
         self.native_id = Some(id.into());
+        self.codex.terminals = Default::default();
         self.turn_id = None;
         self.codex.turn_error = None;
         self.clear_requests();
@@ -1591,6 +1711,13 @@ impl NativeSession {
             self.data.merge_owner(DataOwner::Metadata, retention);
         }
     }
+    /// Apply naming metadata independently of transcript or execution state.
+    pub fn set_observed_title(&mut self, title: String) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.conversation.title = ConversationTitle::Native(title);
+            snapshot.revision = snapshot.revision.saturating_add(1);
+        }
+    }
     fn running(&mut self) {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.run_state = RunState::Running;
@@ -1619,13 +1746,14 @@ impl NativeSession {
     /// Ends the turn. The process stays while it does other work; the
     /// host releases the turn's gateway once that work has ended too.
     fn settle(&mut self, state: RunState) {
+        self.claude_finish_unconfirmed_composed_send();
         if let Some(snapshot) = &mut self.snapshot {
             snapshot
                 .executions
                 .finish((state == RunState::Failed).then_some(TurnOutcome::Failed));
         }
         if self.config.kind == NativeKind::ClaudeCode {
-            self.restart_required = true;
+            self.claude.release_when_idle = true;
         }
         self.turn_id = None;
         // A sub-agent's request still waits for its answer.
@@ -1683,14 +1811,14 @@ impl NativeSession {
         self.codex.cancel_pending = false;
         self.end_spent_process();
     }
-    /// A Claude Code turn's process serves only that turn: it ends once the
-    /// turn and its tasks have.
+    /// End a Claude child after its foreground turn and its background work,
+    /// including any notification-driven follow-up, have settled.
     fn end_spent_process(&mut self) {
         if self.config.kind == NativeKind::ClaudeCode
-            && self.restart_required
+            && self.claude.release_when_idle
             && !self.process_ended
             && !self.turn_running()
-            && !self.has_background_work()
+            && !self.claude_has_ongoing_background()
             && !self.has_pending_requests()
             && !self.rpc.has_pending_writes()
             && !self.claude.commands.pending()
@@ -1848,141 +1976,4 @@ fn sub_agent_conversations(messages: &[Message]) -> impl Iterator<Item = String>
 }
 
 #[cfg(all(test, unix))]
-mod compaction_tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn compaction_connection_failures_preserve_reply_and_confirmed_success() {
-        for phase in ["prepare", "pending", "completed"] {
-            let mut nonce = [0; 8];
-            getrandom::fill(&mut nonce).unwrap();
-            let root = std::env::temp_dir()
-                .join(format!("velune-compact-{:x}", u64::from_le_bytes(nonce)));
-            std::fs::create_dir(&root).unwrap();
-            let binary = root.join("codex");
-            std::fs::write(
-                &binary,
-                r#"#!/bin/sh
-if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit 0; fi
-if [ -f "$CODEX_HOME/fail-initialize" ]; then exit 1; fi
-while IFS= read -r line; do
-  case "$line" in
-    *'"id":'*) printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/{"id":\1,"result":{}}/p' ;;
-  esac
-done
-"#,
-            )
-            .unwrap();
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let mut session = NativeSession::connect(NativeConfig {
-                execution: crate::execution::ExecutionTarget::Local,
-                os_home: Some(root.clone()),
-                kind: NativeKind::Codex166,
-                binary,
-                node_binary: None,
-                agent_dir: root.clone(),
-                resources_directory: root.clone(),
-                projection_directory: root.clone(),
-                gateway: None,
-                mcp_servers: vec![],
-                session_agents: vec![],
-            })
-            .unwrap();
-            let messages = serde_json::from_value(json!([
-                {"id":"user","role":"user","completed":true,"blocks":[{"kind":"text","text":"hello"}]},
-                {"id":"answer","role":"assistant","completed":true,"blocks":[{"kind":"text","text":"done"}]}
-            ])).unwrap();
-            session.replace_snapshot("synthetic", Some(&root), "codex", messages);
-            if phase == "prepare" {
-                session.restart_required = true;
-                std::fs::write(root.join("fail-initialize"), "synthetic").unwrap();
-                assert!(session.compact().is_err());
-            } else {
-                session.compact().unwrap();
-                session.snapshot.as_mut().unwrap().messages[0].turn_usage = Some(TurnUsage {
-                    input_tokens: Some(90),
-                    context_tokens: Some(100),
-                    ..Default::default()
-                });
-                session.turn_id = Some("maintenance".into());
-                session.codex_handle_record(json!({"method":"thread/tokenUsage/updated","params":{
-                    "turnId":"maintenance","tokenUsage":{"last":{"inputTokens":10,"outputTokens":5},"modelContextWindow":200}
-                }})).unwrap();
-                let usage = session.snapshot.as_ref().unwrap().messages[0]
-                    .turn_usage
-                    .as_ref()
-                    .unwrap();
-                assert_eq!(usage.context_tokens, Some(15));
-                assert_eq!(usage.input_tokens, Some(90));
-                session.codex_handle_record(json!({"method":if phase == "completed" {"item/completed"} else {"item/started"},
-                    "params":{"item":{"id":"compact","type":"contextCompaction"}}})).unwrap();
-                let question = super::codex_questions::project(&json!({"type":"agentMessage","id":"ask-output","questions":[{"title":"Question","options":["A","B"]}]})).unwrap();
-                session
-                    .snapshot
-                    .as_mut()
-                    .unwrap()
-                    .pending_interactions
-                    .push(question);
-                session.sub_agents.insert("codex:child".into());
-                session.codex_handle_record(json!({"id":78,"method":"item/tool/requestUserInput","params":{"threadId":"child","turnId":"child-turn","questions":[{"id":"q","question":"Child RPC","options":null,"isOther":true}]}})).unwrap();
-                let child_request = session
-                    .snapshot()
-                    .unwrap()
-                    .pending_interactions
-                    .last()
-                    .unwrap()
-                    .id
-                    .clone();
-                assert!(session.interactions[&child_request].background);
-                session
-                    .reply(
-                        &child_request,
-                        RuntimeInteractionReply::Answers {
-                            answers: vec![InteractionAnswer {
-                                question_id: "q".into(),
-                                values: vec!["child answer".into()],
-                            }],
-                        },
-                    )
-                    .unwrap();
-                assert!(!session.interactions.contains_key(&child_request));
-                assert_eq!(session.snapshot().unwrap().pending_interactions.len(), 1);
-                session.codex_handle_record(json!({"id":77,"method":"item/tool/requestUserInput","params":{"threadId":"synthetic","turnId":"maintenance","isBlocking":false,"questions":[{"id":"q","question":"Native RPC","options":null}]}})).unwrap();
-                assert_eq!(session.snapshot().unwrap().pending_interactions.len(), 2);
-                session.fail_connection();
-                let pending = &session.snapshot().unwrap().pending_interactions;
-                assert_eq!(pending.len(), 1);
-                assert_eq!(pending[0].id, "codex-async:ask-output");
-            }
-            assert!(!session.compacting);
-            let snapshot = session.snapshot().unwrap();
-            assert_eq!(snapshot.run_state, RunState::Failed);
-            assert!(snapshot.messages.iter().all(|message| message.completed));
-            assert!(
-                matches!(&snapshot.messages.last().unwrap().blocks[0], MessageBlock::ContextCompaction { text } if text.contains("连接"))
-            );
-            if phase == "completed" {
-                let confirmed = snapshot
-                    .messages
-                    .iter()
-                    .find(|message| message.id == "compact")
-                    .unwrap();
-                assert!(
-                    matches!(&confirmed.blocks[0], MessageBlock::ContextCompaction { text } if text == "上下文已压缩")
-                );
-            }
-            let mut transcript = crate::transcript::TranscriptProjection::default();
-            transcript.apply(crate::transcript::TranscriptEvent::Replace {
-                messages: &snapshot.messages,
-                executions: &snapshot.executions,
-            });
-            assert_eq!(
-                transcript.turns()[0].last_message_id.as_deref(),
-                Some("answer")
-            );
-            drop(session);
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
-}
+mod compaction_tests;

@@ -73,6 +73,25 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             disclosure: SubscriptionDisclosure::for_source(ProviderAuthenticationSource::ClaudeCli),
         },
         ProviderTemplate {
+            id: "antigravityCliSubscription".into(),
+            kind: ProviderTemplateKind::Subscription,
+            name: "Google Antigravity 订阅".into(),
+            summary: "通过官方 agy 使用本机或指定 SSH 主机上已有的 Antigravity 登录。".into(),
+            protocol: Protocol::Messages,
+            endpoint: String::new(),
+            execution_backend: ExecutionBackend::AntigravityCli {
+                binary: String::new(),
+                ssh_destination: None,
+            },
+            request_profile: RequestProfile::Native,
+            authentication_source: ProviderAuthenticationSource::AntigravityCli,
+            quota_source: ProviderQuotaSource::AntigravityCliUsage,
+            executable_command: Some("agy".into()),
+            disclosure: SubscriptionDisclosure::for_source(
+                ProviderAuthenticationSource::AntigravityCli,
+            ),
+        },
+        ProviderTemplate {
             id: "kimiCodingPlan".into(),
             kind: ProviderTemplateKind::Subscription,
             name: "Kimi Coding Plan".into(),
@@ -103,7 +122,7 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
         api_template(
             "api",
             "API 提供商",
-            "以 API key 访问兼容 OpenAI Chat Completions、Responses 或 Anthropic Messages 协议的服务。",
+            "以 API key 访问兼容 OpenAI Chat Completions、Responses、Anthropic Messages 或 Gemini GenerateContent 协议的服务。",
             Protocol::ChatCompletions,
             "",
             ProviderQuotaSource::None,
@@ -122,6 +141,14 @@ pub fn provider_templates() -> Vec<ProviderTemplate> {
             "以 Claude Console API key 访问官方 Messages API，与 Claude Code 订阅分开配置。",
             Protocol::Messages,
             "https://api.anthropic.com",
+            ProviderQuotaSource::None,
+        ),
+        api_template(
+            "geminiApi",
+            "Google Gemini API",
+            "以 Google AI Studio 的 Gemini API key 调用原生 GenerateContent。",
+            Protocol::Gemini,
+            "https://generativelanguage.googleapis.com/v1beta",
             ProviderQuotaSource::None,
         ),
         api_template(
@@ -214,6 +241,9 @@ pub fn provider_quota_sources(
         (ExecutionBackend::Http, Auth::CodexOAuth) => vec![Quota::None, Quota::CodexUsage],
         (ExecutionBackend::ClaudeCli { .. }, Auth::ClaudeCli) => {
             vec![Quota::None, Quota::ClaudeCliUsage]
+        }
+        (ExecutionBackend::AntigravityCli { .. }, Auth::AntigravityCli) => {
+            vec![Quota::AntigravityCliUsage]
         }
         _ => vec![Quota::None],
     }

@@ -4,20 +4,18 @@ use std::{
     os::unix::fs::PermissionsExt,
     time::{Duration, Instant},
 };
+use velune_test_support::TempRoot;
 
 pub(super) struct Fixture {
-    root: PathBuf,
+    root: TempRoot,
     pub(super) session: NativeSession,
 }
 impl Fixture {
     pub(super) fn new(mode: &str) -> Self {
-        let mut nonce = [0; 8];
-        getrandom::fill(&mut nonce).unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "velune-claude-port-{:x}",
-            u64::from_le_bytes(nonce)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        Self::with_port(mode, true)
+    }
+    fn with_port(mode: &str, port: bool) -> Self {
+        let root = TempRoot::new("claude-port");
         std::fs::write(root.join("mode"), mode).unwrap();
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
@@ -47,11 +45,20 @@ for line in sys.stdin:
  if request.get('type')=='control_request':
   subtype=request['request']['subtype']
   if subtype=='initialize':
+   if mode=='refresh' and 'hooks' not in request['request']: continue
    old=os.path.join(root,'old-response')
    if os.path.exists(old): emit(json.load(open(old)))
    response(request)
   elif subtype=='side_question':
    emit({'type':'control_response','response':{'subtype':'success','request_id':request['request_id'],'response':{'response':'synthetic side answer'}}})
+  elif subtype=='set_permission_mode':
+   response({'request_id':'unrelated-control'})
+   if mode=='steer_disconnect': sys.exit(0)
+   if mode=='steer_ended':
+    emit({'type':'result','subtype':'success','is_error':False})
+    emit({'type':'system','subtype':'session_state_changed','state':'idle'})
+   response(request,mode=='steer_rejected')
+   if mode=='steer_success': response(request)
   elif mode=='delay':
    time.sleep(.12);terminal();response(request,True)
   elif subtype in ['interrupt','stop_task'] and mode in ['hold','block']:
@@ -59,9 +66,19 @@ for line in sys.stdin:
   else: response(request,mode=='reject')
  elif request.get('type')=='user' and not started:
   started=True
+  if mode.startswith('steer_'):
+   emit({'type':'system','subtype':'init','permissionMode':'default'})
+   if mode!='steer_success': continue
   emit({'type':'system','subtype':'task_started','task_id':'shell','run_id':'one','task_type':'local_bash','description':'Shell'})
   emit({'type':'control_request','request_id':'permission','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'synthetic'}}})
-  if mode=='block':
+  if mode=='partial-write':
+   # The next command must enter the real pipe before this fixture stops
+   # consuming it. The marker distinguishes a partial write from queue expiry.
+   prefix=os.read(sys.stdin.fileno(),1)
+   marker=os.path.join(root,'partial-write-prefix')
+   with open(marker+'.tmp','wb') as f: f.write(prefix)
+   os.replace(marker+'.tmp',marker)
+  if mode in ['block','partial-write']:
    while not os.path.exists(os.path.join(root,'release')):
     emit({'type':'system','subtype':'task_progress','task_id':'shell','run_id':'one','description':'pulse'})
     time.sleep(.02)
@@ -73,23 +90,30 @@ for line in sys.stdin:
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
-            os_home: Some(root.clone()),
+            os_home: Some(root.to_path_buf()),
             kind: NativeKind::ClaudeCode,
             binary,
             node_binary: None,
-            agent_dir: root.clone(),
-            resources_directory: root.clone(),
-            projection_directory: root.clone(),
+            agent_dir: root.to_path_buf(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.to_path_buf(),
             gateway: None,
+            auto_compaction: None,
             mcp_servers: vec![],
             session_agents: vec![],
         })
         .unwrap();
-        session.replace_snapshot("parent", Some(&root), "runtime", vec![]);
+        session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.claude.start = claude::ClaudeStart::Fresh { name: None };
-        session
-            .prepare_claude_commands(None, None, 64 * 1024 * 1024)
-            .unwrap();
+        if port {
+            session
+                .prepare_claude_commands(None, None, 64 * 1024 * 1024)
+                .unwrap();
+        } else {
+            let mut input = Self::input("once");
+            input.permission_mode = Some("manual".into());
+            session.send(&input).unwrap();
+        }
         Self { root, session }
     }
     fn input(text: &str) -> crate::TurnInput {
@@ -139,7 +163,9 @@ for line in sys.stdin:
     fn requests(&self) -> Vec<Value> {
         std::fs::read_to_string(self.root.join("requests.jsonl"))
             .unwrap()
-            .lines()
+            .split_inclusive('\n')
+            // A concurrent append can leave the last record incomplete.
+            .filter(|line| line.ends_with('\n'))
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
@@ -225,7 +251,9 @@ for line in sys.stdin:
     }
     fn complete(&mut self) {
         self.permission();
-        self.poll_until(|session| !session.has_pending_requests() && session.work().unwrap().is_empty());
+        self.poll_until(|session| {
+            !session.has_pending_requests() && session.work().unwrap().is_empty()
+        });
         self.emit(json!({"type":"result","subtype":"success","is_error":false}));
         self.emit(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
         self.poll_until(|session| !session.turn_running());
@@ -234,8 +262,155 @@ for line in sys.stdin:
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.session.shutdown().unwrap();
-        std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn claude_legacy_steer_updates_permission_without_answering_an_existing_tool_prompt() {
+    let mut fixture = Fixture::with_port("steer_success", false);
+    fixture.poll_until(|session| session.has_pending_requests());
+    let active_turn = fixture.session.turn_id.clone();
+    let mut steer = Fixture::input("steered");
+    steer.permission_mode = Some("bypassPermissions".into());
+    fixture.session.steer(&steer).unwrap();
+    steer.text = "steered again".into();
+    fixture.session.steer(&steer).unwrap();
+    // The test-only stdout fence proves the child consumed the user frame.
+    fixture
+        .session
+        .rpc
+        .claude_control(json!({"subtype":"initialize","hooks":{}}))
+        .unwrap();
+    fixture.session.poll().unwrap();
+
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(fixture.root.join("argv.json")).unwrap()).unwrap();
+    assert!(
+        argv.iter()
+            .any(|arg| arg == "--allow-dangerously-skip-permissions")
+    );
+    assert!(
+        !argv
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions")
+    );
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["--permission-mode", "manual"])
+    );
+    assert_eq!(fixture.session.turn_id, active_turn);
+    assert!(fixture.session.has_pending_requests());
+    let requests = fixture.requests();
+    let user_and_permission = requests
+        .iter()
+        .filter(|record| {
+            record["type"] == "user" || record["request"]["subtype"] == "set_permission_mode"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(user_and_permission.len(), 4);
+    assert_eq!(
+        user_and_permission[0]["message"]["content"][0]["text"],
+        "once"
+    );
+    assert_eq!(
+        user_and_permission[1]["request"]["mode"],
+        "bypassPermissions"
+    );
+    assert_eq!(
+        user_and_permission[2]["message"]["content"][0]["text"],
+        "steered"
+    );
+    assert_eq!(
+        user_and_permission[3]["message"]["content"][0]["text"],
+        "steered again"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|record| record["type"] == "control_response")
+    );
+    let snapshot = fixture.session.snapshot().unwrap();
+    let last = snapshot.messages.last().unwrap();
+    assert_eq!(
+        last.turn_settings
+            .as_ref()
+            .unwrap()
+            .permission_mode
+            .as_deref(),
+        Some("bypassPermissions")
+    );
+}
+
+#[test]
+fn claude_legacy_steer_never_sends_text_when_permission_is_rejected_or_the_turn_ends() {
+    for (mode, error) in [
+        ("steer_rejected", "steer_permission_rejected"),
+        ("steer_disconnect", "steer_permission_unconfirmed"),
+        ("steer_ended", "steer_settings_changed"),
+    ] {
+        let mut fixture = Fixture::with_port(mode, false);
+        let mut steer = Fixture::input("steered");
+        steer.permission_mode = Some("bypassPermissions".into());
+        assert_eq!(fixture.session.steer(&steer).unwrap_err().code(), error);
+        let requests = fixture.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|frame| frame["type"] == "user")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|frame| frame["request"]["subtype"] == "set_permission_mode")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn claude_input_uses_the_wire_uuid_for_its_live_row() {
+    let mut fixture = Fixture::new("hold");
+    fixture.user();
+    let messages = &fixture.session.snapshot().unwrap().messages;
+    let id = &messages
+        .iter()
+        .find(|message| message.role == MessageRole::User)
+        .unwrap()
+        .id;
+    let requests = fixture.requests();
+    let frame = requests
+        .iter()
+        .find(|request| request["type"] == "user")
+        .unwrap();
+    assert_eq!(frame["uuid"].as_str(), Some(id.as_str()));
+    assert_eq!(id.len(), 36);
+}
+
+#[test]
+fn claude_port_rejects_unapplied_steer_configuration_without_user_write() {
+    let mut fixture = Fixture::new("hold");
+    fixture.user();
+    let mut steer = Fixture::input("must not be sent");
+    steer.permission_mode = Some("bypassPermissions".into());
+    let Err(ClaudeAdmissionError::Rejected(error)) = fixture.session.enqueue_claude_command(
+        ClaudeCommand::Steer(steer),
+        Instant::now() + Duration::from_secs(3),
+        None,
+    ) else {
+        panic!("steer with unconfirmed settings was admitted")
+    };
+    assert_eq!(error.code(), "steer_settings_unsupported");
+    assert_eq!(
+        fixture
+            .requests()
+            .iter()
+            .filter(|frame| frame["type"] == "user")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -257,7 +432,11 @@ fn claude_port_written_is_not_accepted_and_held_ack_does_not_block_permission() 
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert!(f.session.turn_running(), "control ACK is not completion");
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
@@ -292,7 +471,8 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert!(
         f.session
-            .background_tasks().unwrap()
+            .background_tasks()
+            .unwrap()
             .tasks
             .iter()
             .any(|task| task.title == "pulse")
@@ -312,7 +492,11 @@ fn claude_port_blocked_stdin_keeps_poll_and_reserved_reply_admission_live() {
             .iter()
             .any(|r| r.ticket == *reply && matches!(r.delivery, ClaudeDelivery::Written))
     );
-    assert!(receipts.iter().any(|r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })));
+    assert!(
+        receipts.iter().any(
+            |r| r.ticket == *interrupt && matches!(r.delivery, ClaudeDelivery::Accepted { .. })
+        )
+    );
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         2
@@ -365,6 +549,92 @@ fn claude_port_stop_task_negative_ack_cannot_revive_terminal_and_ack_is_not_stop
             )
             .is_err()
     );
+}
+
+#[test]
+fn claude_background_refresh_requires_a_matching_ack_and_new_snapshot() {
+    let mut f = Fixture::new("refresh");
+    f.user();
+    let known = f.session.background_tasks().unwrap().tasks[0].clone();
+    let approvals = f.session.snapshot().unwrap().pending_interactions.clone();
+    assert_eq!(approvals.len(), 1);
+    f.session.available_models = vec![json!({"value":"existing-model"})];
+
+    f.session.claude_refresh_background_tasks();
+    let first = f
+        .session
+        .claude
+        .task_refresh
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    f.session.claude_refresh_background_tasks();
+    let pending = f.session.claude.task_refresh.as_mut().unwrap();
+    assert_eq!(pending.request_id, first);
+    pending.deadline = Instant::now();
+    f.session.poll().unwrap();
+    let timed_out = f.session.background_tasks().unwrap();
+    assert!(timed_out.live && timed_out.issue.as_ref().unwrap().contains("超时"));
+    assert_eq!(timed_out.tasks, vec![known.clone()]);
+    assert!(f.session.turn_running() && !f.session.failed);
+
+    f.session.claude_refresh_background_tasks();
+    let retry = f
+        .session
+        .claude
+        .task_refresh
+        .as_ref()
+        .unwrap()
+        .request_id
+        .clone();
+    assert_ne!(retry, first);
+    let ack = |request_id| {
+        json!({"type":"control_response","response":{
+            "subtype":"success", "request_id":request_id, "response":{"models":[]},
+            "pending_permission_requests":[{"type":"control_request","request_id":"permission",
+                "request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"synthetic"}}}]
+        }})
+    };
+    let snapshot = |description| {
+        json!({"type":"system","subtype":"background_tasks_changed",
+            "session_id":"parent","tasks":[{
+                "task_id":"shell","run_id":"one","task_type":"local_bash","description":description
+            }]
+        })
+    };
+    f.emit(ack(first.clone()));
+    f.emit(snapshot("原生推送"));
+    f.poll_until(|session| session.background_tasks().unwrap().tasks[0].title == "原生推送");
+    assert!(!f.session.claude.task_refresh.as_ref().unwrap().accepted);
+    assert!(f.session.background_tasks().unwrap().issue.is_some());
+
+    f.emit(ack(retry.clone()));
+    f.poll_until(|session| session.claude.task_refresh.as_ref().unwrap().accepted);
+    assert!(f.session.background_tasks().unwrap().issue.is_some());
+    f.emit(snapshot("刷新清单"));
+    f.poll_until(|session| session.claude.task_refresh.is_none());
+    let updated = f.session.background_tasks().unwrap();
+    assert!(updated.live && updated.issue.is_none());
+    assert_eq!(updated.tasks[0].id, known.id);
+    assert_eq!(updated.tasks[0].title, "刷新清单");
+    assert_eq!(
+        f.session.snapshot().unwrap().pending_interactions,
+        approvals
+    );
+    assert_eq!(
+        f.session.available_models,
+        vec![json!({"value":"existing-model"})]
+    );
+    let refreshes = f
+        .requests()
+        .into_iter()
+        .filter(|frame| {
+            frame["request"]["subtype"] == "initialize" && frame["request"].get("hooks").is_none()
+        })
+        .map(|frame| frame["request_id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(refreshes, vec![first, retry]);
 }
 
 #[test]
@@ -802,6 +1072,9 @@ fn claude_port_restart_fences_old_generation_and_keeps_fixed_fork_and_options() 
                 at: Some("fixed-boundary".into()),
                 name: Some("fork-name".into()),
             };
+            session.set_auto_compaction(Some(AutoCompactionSetting::Claude {
+                window_tokens: 700_000,
+            }));
             Ok(())
         })
         .unwrap();
@@ -828,10 +1101,18 @@ fn claude_port_restart_fences_old_generation_and_keeps_fixed_fork_and_options() 
         ["--effort", "high"],
         ["--permission-mode", "manual"],
         ["--name", "fork-name"],
+        ["--autocompact", "700000"],
     ] {
         assert!(args.windows(2).any(|args| args == pair));
     }
     assert!(args.iter().any(|arg| arg == "--fork-session"));
+    f.session.set_auto_compaction(None);
+    f.session
+        .prepare_claude_commands(None, None, 64 * 1024 * 1024)
+        .unwrap();
+    let args: Vec<String> =
+        serde_json::from_slice(&std::fs::read(f.root.join("argv.json")).unwrap()).unwrap();
+    assert!(!args.iter().any(|arg| arg == "--autocompact"));
 }
 
 #[test]
@@ -902,24 +1183,59 @@ fn claude_port_unknown_request_automatic_rejection_does_not_wait_for_blocked_std
 
 #[test]
 fn claude_port_partial_write_timeout_keeps_cleanup_fact_after_receipt_drain() {
-    let mut f = Fixture::new("block");
+    let mut f = Fixture::new("partial-write");
     f.user();
+    let command = ClaudeCommand::Steer(Fixture::input(&"x".repeat(2 * 1024 * 1024)));
+    // Encoding and admission share this absolute budget with the physical
+    // write. Use the fixture's ordinary preparation budget, then prove that
+    // bytes reached the child before testing expiry of the blocked write.
+    let deadline = Instant::now() + Duration::from_secs(3);
     let ticket = f
         .session
-        .enqueue_claude_command(
-            ClaudeCommand::Steer(Fixture::input(&"x".repeat(2 * 1024 * 1024))),
-            Instant::now() + Duration::from_millis(80),
-            None,
-        )
+        .enqueue_claude_command(command, deadline, None)
         .unwrap();
-    std::thread::sleep(Duration::from_millis(120));
-    assert!(f.session.poll().is_err());
+    let prefix = f.root.join("partial-write-prefix");
+    while !prefix.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "child never received a command byte"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(std::fs::read(prefix).unwrap(), b"{");
+    assert!(
+        Instant::now() < deadline,
+        "partial write was not observed before expiry"
+    );
+    f.session.poll().unwrap();
     assert!(
         f.session
             .take_claude_receipts()
             .iter()
-            .any(|r| r.ticket == *ticket
-                && matches!(r.delivery, ClaudeDelivery::Indeterminate { .. }))
+            .all(|receipt| receipt.ticket != *ticket),
+        "the command must remain physically incomplete after its first byte"
+    );
+    std::thread::sleep(
+        deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+    );
+    assert_eq!(f.session.poll().unwrap_err().code(), "timeout");
+    let receipts = f.session.take_claude_receipts();
+    let receipt = receipts
+        .iter()
+        .find(|receipt| receipt.ticket == *ticket)
+        .unwrap();
+    assert!(matches!(
+        receipt.delivery,
+        ClaudeDelivery::Indeterminate { .. }
+    ));
+    assert!(receipt.physical_write.is_none());
+    assert!(f.session.take_claude_receipts().is_empty());
+    assert_eq!(
+        f.requests()
+            .iter()
+            .filter(|record| record["type"] == "user")
+            .count(),
+        1
     );
     assert!(f.session.requires_failure_cleanup());
     assert!(!f.session.process_ended);
@@ -1078,7 +1394,9 @@ fn claude_port_checked_sequence_and_duplicate_reply_never_write_untracked_frames
             )
             .is_err()
     );
-    f.poll_until(|session| !session.claude.commands.pending() && session.work().unwrap().is_empty());
+    f.poll_until(|session| {
+        !session.claude.commands.pending() && session.work().unwrap().is_empty()
+    });
     assert_eq!(
         f.requests().iter().filter(|r| r["type"] == "user").count(),
         1
@@ -1181,8 +1499,7 @@ fn claude_port_rejected_create_side_context_preserves_prepared_user_routing() {
     let error = f
         .session
         .create_side_context(Some(&f.root), "runtime", "rejected context")
-        .err()
-        .expect("ordinary synchronous mutation must be rejected in port mode");
+        .expect_err("ordinary synchronous mutation must be rejected in port mode");
     assert_eq!(error.code(), "operation_pending");
     assert!(!f.session.side, "rejection must not enable side routing");
     assert_eq!(f.session.native_id, native_id);
@@ -1222,7 +1539,7 @@ fn claude_port_rejected_create_side_context_preserves_prepared_user_routing() {
 #[test]
 fn claude_port_create_side_context_remains_available_in_blocking_preparation() {
     let mut f = Fixture::new("hold");
-    let cwd = f.root.clone();
+    let cwd = f.root.to_path_buf();
     f.session
         .with_claude_blocking_preparation(|session| {
             session.create_side_context(Some(&cwd), "runtime", "portable side context")?;

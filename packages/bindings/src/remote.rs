@@ -563,7 +563,7 @@ impl VeluneRemoteEndpoint {
             .create_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
             permission: invitation.permission,
-            encoded: invitation.encode()?,
+            encoded: invitation.encode_url()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
         })
@@ -578,7 +578,7 @@ impl VeluneRemoteEndpoint {
             .create_telemetry_invitation(Duration::from_secs(lifetime_seconds))?;
         Ok(BindingRemoteInvitation {
             permission: invitation.permission,
-            encoded: invitation.encode()?,
+            encoded: invitation.encode_url()?,
             expires_at_unix_seconds: invitation.expires_at_unix_seconds,
             issuer: invitation.issuer,
         })
@@ -707,7 +707,10 @@ impl VeluneRemoteEndpoint {
                 closed: false,
             }),
         });
-        let initial = remote.request_reply(Command::ReadConfiguration)?;
+        // Seed the editor revision through an existing lightweight observation. Reading
+        // configuration here would scan native history before the caller's first list.
+        // Unlike activity reads, this remains available during native authentication.
+        let initial = remote.request_reply(Command::ReadComposerOwner)?;
         remote.state()?.expected = Some(initial.revision);
         Ok(remote_proxy(remote))
     }
@@ -860,7 +863,7 @@ impl RemoteApplication {
                         kind: remote_failure_kind(failure),
                         detail: failure.to_string(),
                         code: failure.code().into(),
-                        request_id: error.request_id,
+                        request_id: error.request_id.map(Box::new),
                         operation_id: String::new(),
                     })
                 }
@@ -868,7 +871,7 @@ impl RemoteApplication {
                     kind: BindingFailureKind::OutcomeUnknown,
                     detail: "请求结果已不可用；不得自动重发".into(),
                     code: "result_unavailable".into(),
-                    request_id: error.request_id,
+                    request_id: error.request_id.map(Box::new),
                     operation_id: String::new(),
                 }),
             },
@@ -900,5 +903,7 @@ impl VeluneApplication {
     }
 }
 
+#[cfg(test)]
+mod application_tests;
 #[cfg(test)]
 mod network_settings_tests;

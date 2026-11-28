@@ -61,6 +61,7 @@ impl CoreRuntime {
             Protocol::ChatCompletions => "openai-completions",
             Protocol::Responses => "openai-responses",
             Protocol::Messages => "anthropic-messages",
+            Protocol::Gemini => return Err(RuntimeError::invalid("专用适配器不使用 Gemini 入口")),
         };
         let runner = self
             .session
@@ -214,10 +215,9 @@ impl CoreRuntime {
         &self,
         runtime: &RuntimeInstance,
     ) -> Result<HistoryConfig, RuntimeError> {
-        let provider = match runtime.type_id {
-            RuntimeKind::Codex166 => "codex",
-            RuntimeKind::DeepSeek => "deepseek",
-            RuntimeKind::ClaudeCode => "claude-code",
+        let sessions = match runtime.type_id {
+            RuntimeKind::ClaudeCode => "projects",
+            RuntimeKind::Codex166 | RuntimeKind::DeepSeek => "sessions",
             RuntimeKind::Pi | RuntimeKind::Acp => {
                 return Err(RuntimeError::invalid("native history type"));
             }
@@ -226,17 +226,12 @@ impl CoreRuntime {
         let home = context.agent_dir;
         Ok(HistoryConfig {
             kind: runtime.type_id,
-            provider: provider.into(),
             binary: setting_path(runtime, "binary")?,
             node_binary: setting_path_optional(runtime, "nodeBinary").unwrap_or_default(),
             resources_directory: context.resources,
             execution: context.target,
             os_home: context.os_home,
-            root: home.join(if provider == "claude-code" {
-                "projects"
-            } else {
-                "sessions"
-            }),
+            root: home.join(sessions),
             home,
         })
     }
@@ -244,9 +239,11 @@ impl CoreRuntime {
         &mut self,
         cwd: Option<&Path>,
         key: &str,
-        project: Option<&velune_agent_runtime::creation::Retained<
-            velune_agent_runtime::native::codex_projects::NativeProject,
-        >>,
+        project: Option<
+            &velune_agent_runtime::creation::Retained<
+                velune_agent_runtime::native::codex_projects::NativeProject,
+            >,
+        >,
     ) -> Result<(), RuntimeError> {
         let runtime = self.active_instance()?.clone();
         let side_context = self.session.side.as_ref().map(|side| side.context.clone());
@@ -384,28 +381,31 @@ impl CoreRuntime {
             let text = async_answer_text(questions, &reply)?;
             let mut accepted_error = None;
             if let Some(text) = text {
-                let selection = self.async_question_selection(&snapshot)?;
-                let request = async_turn_request(&snapshot, selection, text);
-                let dispatched = if self.session.compacting
-                    || (self.turn_running() && !snapshot.follow_up.can_steer)
-                {
-                    if !snapshot.follow_up.can_queue {
-                        return Err(RuntimeError::invalid("当前会话暂时不能接收回答"));
-                    }
-                    self.send_queue(
-                        &request.conversation_id,
-                        crate::SendQueueOperation::Add {
-                            source_runtime_id: request.source_runtime_id,
-                            target_runtime_id: request.runtime_id,
-                            selection: request.selection,
-                            turn: request.turn,
-                        },
-                    )
-                } else if self.turn_running() {
-                    self.steer_turn(&request.turn)
-                } else {
-                    self.send_turn(request)
-                };
+                let running = self.turn_running();
+                let dispatched =
+                    if running && snapshot.follow_up.can_steer && !self.session.compacting {
+                        self.steer_turn(&async_turn_request(&snapshot, None, text).turn, None)
+                    } else {
+                        let queued = running || self.session.compacting;
+                        if queued && !snapshot.follow_up.can_queue {
+                            return Err(RuntimeError::invalid("当前会话暂时不能接收回答"));
+                        }
+                        let selection = self.async_question_selection(&snapshot)?;
+                        let request = async_turn_request(&snapshot, selection, text);
+                        if queued {
+                            self.send_queue(
+                                &request.conversation_id,
+                                crate::SendQueueOperation::Add {
+                                    source_runtime_id: request.source_runtime_id,
+                                    target_runtime_id: request.runtime_id,
+                                    selection: request.selection,
+                                    turn: request.turn,
+                                },
+                            )
+                        } else {
+                            self.send_turn(request)
+                        }
+                    };
                 if let Err(error) = dispatched {
                     if !error.delivery_accepted() {
                         return Err(error);

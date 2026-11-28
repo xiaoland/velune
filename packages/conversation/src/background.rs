@@ -29,7 +29,8 @@ pub struct BackgroundTaskInfo {
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundTaskList {
     pub tasks: Vec<BackgroundTaskInfo>,
-    /// False means the task receipts are historical, not an observation of a live owner.
+    /// True means the list is an observation of a live owner.
+    /// An offline list without an issue is an ordinary connection state.
     pub live: bool,
     pub issue: Option<String>,
 }

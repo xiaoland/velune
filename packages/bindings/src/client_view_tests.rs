@@ -1,18 +1,11 @@
 use super::*;
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs};
+use velune_test_support::TempRoot;
 
-struct Fixture(PathBuf);
+struct Fixture(TempRoot);
 impl Fixture {
     fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "velune-binding-views-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = TempRoot::new("binding-views");
         fs::write(
             root.join("huihua_sessions.mjs"),
             r#"
@@ -63,11 +56,6 @@ print(json.dumps({'contractVersion':1,'sessions':[
             resources_directory: self.0.to_string_lossy().into_owned(),
         })
         .unwrap()
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn reference(row: usize) -> ConversationReference {

@@ -1,0 +1,43 @@
+{
+  "initialize": {
+    "protocolVersion": 1,
+    "agentInfo": {"name": "fake-agy", "version": "1.5.3"},
+    "agentCapabilities": {},
+    "authMethods": []
+  },
+  "primary": {
+    "sessionId": "fake-session-primary",
+    "models": {"currentModelId": "gemini-test-medium", "availableModels": []},
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gemini-test",
+        "options": [
+          {"value": "gemini-test", "name": "gemini-test"},
+          {"value": "gemini-config-only", "name": "gemini-config-only"},
+          {"value": "claude-test-medium", "name": "claude-test-medium"}
+        ]
+      }
+    ]
+  },
+  "backup": {
+    "sessionId": "fake-session-backup",
+    "models": {
+      "currentModelId": "gemini-4-argon-high",
+      "availableModels": [
+        {"modelId": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)"},
+        {"modelId": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)"}
+      ]
+    }
+  },
+  "authentication_required": {"code": -32000, "message": "Authentication required"},
+  "end_turn": {"stopReason": "end_turn"},
+  "message_chunk": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {"type": "text", "text": "中文😀"}
+  },
+  "tool_call": {"name": "echo", "arguments": {"text": "probe"}}
+}

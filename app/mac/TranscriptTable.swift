@@ -88,7 +88,7 @@ struct TranscriptTable: NSViewRepresentable {
         }
     }
     private enum ContentKey: Equatable {
-        case message(UInt64, [String], String?, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), workActions(String), activity(TranscriptActivity), end
+        case message(UInt64, [String], Bool, Bool, Bool, Bool), work(String, Bool?, TurnSettingsSummary?), workActions(String), activity(TranscriptActivity), end
     }
     private struct Measured {
         var key: ContentKey
@@ -199,6 +199,7 @@ struct TranscriptTable: NSViewRepresentable {
     private var conversationID: String?
     private var revision: UInt64?
     private var activity: TranscriptActivity?
+    private var needsEntryRebuild = false
     private var outlineCollapsed = false
     private var transition: OutlineTransition?
     /// Finished turns the user expanded, and running turns the user collapsed:
@@ -309,9 +310,7 @@ struct TranscriptTable: NSViewRepresentable {
         measureToken?.cancel()
         measured.removeAll()
         for cell in visibleCells.values { cell.configurationToken = nil }
-        // Hidden tabs keep their rendered text; the next update lazily lays
-        // out their action rows against the new date environment.
-        if parent != nil { rebuildEntries() }
+        rebuildEntries()
     }
 
     func update(_ input: TranscriptTable) {
@@ -319,7 +318,7 @@ struct TranscriptTable: NSViewRepresentable {
         let outlineChanged = input.outlineCollapsed != outlineCollapsed
         let scrollRequested = lastBottomRequest != input.bottomRequest || input.jump?.token != lastJumpToken
         // Unrelated SwiftUI updates leave a running outline animation alone.
-        if contentChanged || outlineChanged || scrollRequested { finishTransition() }
+        if contentChanged || outlineChanged || scrollRequested || needsEntryRebuild { finishTransition() }
         parent = input
         clipFrameChanged()
         var restored: Position?
@@ -343,12 +342,12 @@ struct TranscriptTable: NSViewRepresentable {
             following = true
             measureToken?.cancel()
         }
-        if contentChanged || outlineChanged {
+        if contentChanged || outlineChanged || needsEntryRebuild {
             revision = input.revision; activity = input.activity
             outlineCollapsed = input.outlineCollapsed
             // Only a pure outline change on a shown list is animated; content
             // changes and explicit scrolling in the same update take precedence.
-            if outlineChanged, !contentChanged, !scrollRequested, !entries.isEmpty {
+            if outlineChanged, !contentChanged, !scrollRequested, !needsEntryRebuild, !entries.isEmpty {
                 changeOutline(anchorID: input.outlineAnchorID)
             } else {
                 rebuildEntries()
@@ -420,6 +419,10 @@ struct TranscriptTable: NSViewRepresentable {
     }
 
     private func rebuildEntries(anchor requested: Anchor? = nil) {
+        // A background tab retains its rows and reading position while it has
+        // no SwiftUI input. Rebuild on reattachment, even at the same revision.
+        guard parent != nil else { needsEntryRebuild = true; return }
+        needsEntryRebuild = false
         let next = buildEntries()
         let anchor = requested ?? captureAnchor()
         let previousHeights = Dictionary(entries.indices.map { (entries[$0].id, heights[$0]) }, uniquingKeysWith: { first, _ in first })
@@ -618,8 +621,8 @@ struct TranscriptTable: NSViewRepresentable {
         switch entries[index] {
         case .message(let row):
             let expanded = expandedBlocks[row.id] ?? []
-            return (.message(row.contentRevision, expanded.sorted(), row.status, row.copies, row.edit, row.fork != nil),
-                    .message(row.message, revision: row.contentRevision, expanded: expanded, status: row.status, copies: row.copies, edits: row.edit, forks: row.fork != nil))
+            return (.message(row.contentRevision, expanded.sorted(), row.sending, row.copies, row.edit, row.fork != nil),
+                    .message(row.message, revision: row.contentRevision, expanded: expanded, sending: row.sending, copies: row.copies, edits: row.edit, forks: row.fork != nil))
         case .work(let turn, let label, let expandable, let settings):
             let expanded = expandable ? showsWork(turn) : nil
             return (.work(label, expanded, settings), .work(label: label, expanded: expanded, settings: settings))
@@ -842,6 +845,14 @@ struct TranscriptTable: NSViewRepresentable {
         }
         if document.frame.width != clipWidth { programmatically { document.setFrameSize(NSSize(width: clipWidth, height: offsets.last ?? 0)) } }
         guard clipWidth != width else { materializeVisibleRows(); return }
+        // A dock area sliding away only widens the list: rows keep their
+        // layout, centred anew, and reflow once when it has settled, not
+        // during the slide. (A narrowing list reflows below, or text would be cut.)
+        if clipWidth > width, WorkspaceSplitController.areasMoving(in: scroll.window) {
+            scheduleSettle()
+            materializeVisibleRows()
+            return
+        }
         // A width that keeps changing (a divider or the window being dragged,
         // a sidebar sliding) reflows the text at most every `reflowInterval`:
         // laying text out again at each frame, in every pane, is what drops
@@ -1797,8 +1808,10 @@ enum TranscriptConversationLink {
         self.frame = frame
         self.openArtifact = openArtifact
         label.attributedStringValue = attributedLabel
-        copyButton.font = controlsFont
-        viewButton.font = controlsFont
+        // The native accessory bezel caps its intrinsic height on macOS.
+        let buttonFont = NSFont.systemFont(ofSize: min(controlsFont.pointSize, NSFont.smallSystemFontSize))
+        copyButton.font = buttonFont
+        viewButton.font = buttonFont
         viewButton.isHidden = language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "mermaid"
         label.sizeToFit()
         let padding = TranscriptRowLayout.codePadding, labelHeight = TranscriptRowLayout.codeLabelHeight
@@ -2210,64 +2223,15 @@ private struct TurnSettingsPopover: View {
     }
 }
 
+#if VELUNE_DEV_CHECKS
 extension TranscriptTableController {
-    /// Exercises the production model, virtualized controller, cell reuse and
-    /// AppKit's unignored accessibility children in an offscreen native window.
-    static func checkMaterializedRowOrder() {
-        let model = TranscriptModel()
-        let controller = TranscriptTableController()
-        let scroll = controller.view()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = scroll
-        scroll.layoutSubtreeIfNeeded()
-        guard let document = controller.document else { fatalError("合成消息列表未创建原生document") }
-        func cells(_ ids: [String]) -> [TranscriptCellView] {
-            document.subviews.compactMap { $0 as? TranscriptCellView }.filter { $0.rowID.map(ids.contains) == true }
-        }
-        func rowID(of element: Any) -> String? {
-            var view = element as? NSView ?? (element as? NSCell)?.controlView
-            while let current = view {
-                if let cell = current as? TranscriptCellView { return cell.rowID }
-                view = current.superview
-            }
+    var messageEntryIDsForCheck: [String] {
+        entries.compactMap { entry in
+            if case .message(let row) = entry { return row.id }
             return nil
         }
-        func apply(_ ids: [String]) {
-            let messages = ids.map { DeliveredMessage(id: $0, role: $0 == "N" ? .client : .assistant, blocks: [.text(text: "native order \($0)")]) }
-            model.apply(messages, turns: [], items: ids.map { .message(id: $0, messageId: $0) }, outline: [], identities: ids.map { .init(id: $0, messageId: $0) }, editable: [])
-            let items = model.items(for: model.rows, turnHeaders: false)
-            precondition(items.map(\.id) == ids, "权威消息模型顺序必须保持")
-            controller.update(TranscriptTable(controller: controller, conversationID: "synthetic-native-order", items: items, revision: model.contentRevision,
-                activity: nil, outlineCollapsed: false, outlineAnchorID: nil, cwd: nil, bottomRequest: 0, jump: nil,
-                followingChanged: { _ in }, outlineToggle: { _ in }, loadPayloads: { _ in }, openConversation: { _ in }, openAgentURI: { _ in }, openArtifact: { _ in },
-                editMessage: { _ in nil }, forkConversation: { _ in }, describeSettings: { _ in nil }))
-            controller.materializeVisibleRows(extra: document.bounds)
-            let materialized = cells(ids)
-            precondition(controller.entries.compactMap { entry -> String? in
-                if case .message(let row) = entry { return row.id }; return nil
-            } == ids)
-            precondition(materialized.map(\.rowID) == ids.map(Optional.some), "原生cell子视图必须与消息顺序一致")
-            precondition(zip(materialized, materialized.dropFirst()).allSatisfy { $0.0.frame.minY < $0.1.frame.minY }, "原生cell几何顺序必须一致")
-            let axIDs = NSAccessibility.unignoredChildren(from: document.subviews).compactMap(rowID).filter(ids.contains).reduce(into: [String]()) {
-                if $0.last != $1 { $0.append($1) }
-            }
-            precondition(axIDs == ids, "AppKit可访问性顺序不能把中间插入的消息堆到末尾")
-        }
-        apply(["A", "C"])
-        let kept = Dictionary(uniqueKeysWithValues: cells(["A", "C"]).map { ($0.rowID!, ObjectIdentifier($0)) })
-        controller.focusFromKeyboard()
-        precondition(document.subviews.last === controller.selectionOutline)
-        apply(["A", "N", "C"])
-        precondition(cells(["A", "C"]).allSatisfy { kept[$0.rowID!] == ObjectIdentifier($0) }, "中间插入不能重建已有cell")
-        precondition(document.subviews.last === controller.selectionOutline, "selection overlay必须保留在所有cells之上")
-        apply(["A", "C"])
-        precondition(cells(["A", "C"]).allSatisfy { kept[$0.rowID!] == ObjectIdentifier($0) })
-        let unchanged = document.subviews.map(ObjectIdentifier.init)
-        controller.materializeVisibleRows(extra: document.bounds)
-        precondition(document.subviews.map(ObjectIdentifier.init) == unchanged, "稳定物化不能改变子视图顺序或身份")
-        controller.viewRemoved()
-        window.contentView = nil
-        FileHandle.standardError.write(Data("PASS native transcript ordering: model/items, frame y, document/AX children A,C → A,N,C → A,C; retained cell identities and overlay\n".utf8))
     }
+
+    var selectionOutlineIsFrontmostForCheck: Bool { document?.subviews.last === selectionOutline }
 }
+#endif

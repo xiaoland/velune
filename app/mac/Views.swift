@@ -2,18 +2,12 @@ import SwiftUI
 import AppKit
 import VeluneBindings
 
-/// The conversation window's toolbar. Sidebar and detail contribute their
-/// own items; native customization is saved under this name on macOS 26.
-enum ConversationToolbar {
-    static let id = "conversation"
-}
-
-/// A conversation window: the panes, with dock areas for tool windows at
-/// the left, right and bottom. The list has its own workspace and opens
-/// conversations in the focused pane, which the toolbar and commands act on.
+/// A conversation window's editor column: the panes and the bottom dock
+/// area, with the window's sheets, alerts and command palette. The sidebar,
+/// the inspector and the toolbar are the window's AppKit shell around it
+/// (`WorkspaceShell`).
 struct VeluneRootView: View {
     @ObservedObject var window: ConversationWindowModel
-    @ObservedObject private var aggregated: AggregatedListModel
     /// The list's workspace.
     @ObservedObject var store: ConversationStore
     /// The focused pane's shown tab.
@@ -22,49 +16,13 @@ struct VeluneRootView: View {
     @ObservedObject var focused: ConversationStore
     let previewEmpty: Bool
     let previewSettings: Bool
-    @ObservedObject private var shortcuts = KeyboardShortcutSettings.shared
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.controlActiveState) private var activeState
-    @ObservedObject private var toolbarSettings = ToolbarSettings.shared
-    @State private var showsChanges = false
-    /// Change review is implemented but not yet part of the product
-    /// (2026-10-11 decision); this keeps its entry closed.
-    private static let changeReviewEnabled = false
-
-    init(window: ConversationWindowModel, store: ConversationStore, tab: ConversationTab, focused: ConversationStore,
-         previewEmpty: Bool, previewSettings: Bool) {
-        self.window = window
-        self.aggregated = window.aggregated
-        self.store = store
-        self.tab = tab
-        self.focused = focused
-        self.previewEmpty = previewEmpty
-        self.previewSettings = previewSettings
-    }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: Binding(get: { window.tools.tools(in: .left).isEmpty ? .detailOnly : .all },
-                                                      set: { $0 == .detailOnly ? window.tools.collapse(.left) : window.tools.showArea(.left) })) {
-            DockAreaView(window: window, side: .left)
-                .background(ConversationToolbarPartition(hasList: window.tools.tools(in: .left).contains(.list)))
-                .navigationSplitViewColumnWidth(min: window.tools.tools(in: .left) == [.list] ? 220 : 190, ideal: 240, max: 600)
-                .modifier(ConversationListSidebarToolbar(window: window))
-        } detail: {
-            withToolbar(panes)
-                .inspector(isPresented: Binding(get: { showsChanges || !window.tools.tools(in: .right).isEmpty },
-                                                set: { shown in
-                                                    if shown { window.tools.showArea(.right) }
-                                                    else if showsChanges { showsChanges = false }
-                                                    else { window.tools.collapse(.right) }
-                                                })) {
-                    if showsChanges { ChangeReviewView(store: focused).inspectorColumnWidth(min: 300, ideal: 440, max: 900) }
-                    else { DockAreaView(window: window, side: .right).inspectorColumnWidth(min: 200, ideal: 260, max: 720) }
-                }
-        }
-        .navigationSplitViewStyle(.balanced)
+        EditorColumn(window: window, previewEmpty: previewEmpty)
         .background(WindowLevelSetter(pinned: window.pinned))
-        .overlay { if let side = window.dockHint { DockZoneHighlight(side: side) } }
         .overlay(alignment: .top) {
             if let mode = window.palette {
                 ZStack(alignment: .top) {
@@ -109,252 +67,15 @@ struct VeluneRootView: View {
             ComposerSheet(window: window, tab: sheet, store: sheet.store)
         }
         .onChange(of: store.device.outlinePresentation) { _, _ in window.outlinePopover = false }
-        .focusedSceneValue(\.conversationCommands, ConversationCommandTarget(window: window))
         .task { if previewSettings { openSettings() } }
     }
-
-    private var panes: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                PaneLayoutView(window: window, layout: window.layout, path: [], previewEmpty: previewEmpty)
-                if !window.tools.tools(in: .bottom).isEmpty { BottomAreaView(window: window, available: geometry.size.height) }
-            }
-        }
-        // The window keeps the title for the Window menu and Mission Control; the tab bar shows it.
-        .navigationTitle([previewEmpty ? "新会话" : window.focusedEditor.title, deviceName].compactMap { $0 }.joined(separator: " — "))
-        .toolbar(removing: .title)
-    }
-
-    /// Customizable, so the toolbar's own menu offers display modes and
-    /// Customize Toolbar…, from macOS 26. Before it the trailing buttons
-    /// need a `Spacer()` item, and in a customizable toolbar SwiftUI removes
-    /// and inserts that flexible space again, saving the arrangement to user
-    /// defaults, on every layout of the window: each step of scrolling the
-    /// conversation list took about 50 ms instead of 2 ms on macOS 15. So
-    /// there the toolbar is a plain one whose buttons the settings hide and
-    /// reorder (`ToolbarSettings`).
-    @ViewBuilder private func withToolbar(_ content: some View) -> some View {
-        if #available(macOS 26, *) {
-            content.toolbar(id: ConversationToolbar.id) { customizableToolbarItems }
-        } else {
-            content.toolbar { toolbarItems }
-        }
-    }
-
-    @available(macOS 26, *)
-    @ToolbarContentBuilder private var customizableToolbarItems: some CustomizableToolbarContent {
-        Group {
-            ToolbarItem(id: "back", placement: .navigation) { backButton }
-            ToolbarItem(id: "forward", placement: .navigation) { forwardButton }
-            if let deviceName { ToolbarItem(id: "device", placement: .navigation) { deviceLabel(deviceName) } }
-        }
-        // Without the title nothing holds the buttons to the trailing end.
-        if !aggregated.conversationManagement.isEmpty { ToolbarItem(id: "operations") { ConversationOperationStatus(aggregated: aggregated) } }
-        ToolbarSpacer(.flexible)
-        ToolbarItem(id: "reload") { reloadButton }
-        Group {
-            ToolbarItem(id: "outline") { outlineButton }
-            if showsAgentsItem { ToolbarItem(id: "sub-agents") { agentsButton } }
-            if showsBackgroundTasksItem { ToolbarItem(id: "background-tasks") { backgroundTasksButton } }
-        }
-        if showsPinItem { ToolbarItem(id: "pin") { pinToggle } }
-        ToolbarItem(id: "split") { splitButton }
-        if Self.changeReviewEnabled { ToolbarItem(id: "changes") { changesToggle } }
-        if !store.device.problems.isEmpty { ToolbarItem(id: "problems") { ProblemsButton(store: store.device) } }
-    }
-
-    @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            backButton
-            forwardButton
-            if let deviceName { deviceLabel(deviceName) }
-        }
-        if !aggregated.conversationManagement.isEmpty { ToolbarItem { ConversationOperationStatus(aggregated: aggregated) } }
-        ToolbarItem { Spacer() }
-        ToolbarItemGroup {
-            ForEach(toolbarSettings.shown(in: .detail)) { button in
-                switch button {
-                case .reload: reloadButton
-                case .outline: outlineButton
-                case .subAgents: if showsAgentsItem { agentsButton }
-                case .backgroundTasks: if showsBackgroundTasksItem { backgroundTasksButton }
-                case .pin: if showsPinItem { pinToggle }
-                case .split: splitButton
-                case .problems: if !store.device.problems.isEmpty { ProblemsButton(store: store.device) }
-                case .listFilter, .newConversation: EmptyView()
-                }
-            }
-            if Self.changeReviewEnabled { changesToggle }
-        }
-    }
-
-    /// The paired device a window shows, which every conversation in it runs on.
-    private var deviceName: String? {
-        window.device.map { DeviceHub.shared?.name(of: $0) ?? "远程设备" }
-    }
-
-    private func deviceLabel(_ name: String) -> some View {
-        Label(name, systemImage: "desktopcomputer").labelStyle(.titleAndIcon).foregroundStyle(.secondary)
-            .help("此窗口中的会话运行在“\(name)”上")
-    }
-
-    /// Lets the window tell a right click on this tool's button (see `showsToolbarPlaceMenu`).
-    private func toolbarButtonAnchor(_ kind: ToolWindowKind) -> some View {
-        PaneAnchor { [window] in window.registerToolbarButton(kind, anchor: $0) }
-    }
-
-    private var showsAgentsItem: Bool { window.hasConversationFocus && (window.tools[.agents].place != .builtIn || focused.hasLinkedAgents) }
-    private var showsBackgroundTasksItem: Bool { window.hasConversationFocus && (window.tools[.backgroundTasks].place != .builtIn || focused.canShowBackgroundTasks) }
 
     private func closeToolPopovers() {
         window.outlinePopover = false; window.agentsPopover = false; window.backgroundTasksPopover = false
     }
-    /// A window of the editor area alone is often one to keep in view.
-    private var showsPinItem: Bool { !window.hasToolWindows || window.pinned }
-
-    private var backButton: some View {
-        Button { tab.goBack() } label: { Label("后退", systemImage: "chevron.backward") }
-            .help(shortcuts.help("回到之前查看的会话", .back)).disabled(!window.hasConversationFocus || focused.backHistory.isEmpty)
-            .accessibilityIdentifier("conversation-back")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-back"))
-    }
-
-    private var forwardButton: some View {
-        Button { tab.goForward() } label: { Label("前进", systemImage: "chevron.forward") }
-            .help(shortcuts.help("前往后退前的会话", .forward)).disabled(!window.hasConversationFocus || focused.forwardHistory.isEmpty)
-            .accessibilityIdentifier("conversation-forward")
-            .background(ConversationToolbarPartition.itemAnchor("conversation-forward"))
-    }
-
-    private var reloadButton: some View {
-        Button { focused.reloadFromRuntimes() } label: { Label("刷新当前会话", systemImage: "arrow.clockwise") }
-            .keyboardShortcut(shortcuts[.reload]).disabled(!focused.canReloadFromRuntimes)
-            .help(shortcuts.help("重新读取会话、控制状态和输入执行配置；右键可刷新设备状态", .reload))
-            .background(PaneAnchor { [window] in window.registerRefreshToolbarButton(anchor: $0) })
-    }
-
-    private var pinToggle: some View {
-        Toggle(isOn: $window.pinned) { Label("保持在最前面", systemImage: window.pinned ? "pin.fill" : "pin") }
-            .help(window.pinned ? "不再保持在其他应用的窗口前面" : "保持在其他应用的窗口前面")
-    }
-
-    private var splitButton: some View {
-        // As in Xcode: Option-click divides downward.
-        Button { window.split(NSEvent.modifierFlags.contains(.option) ? .vertical : .horizontal) } label: { Label("拆分", systemImage: "rectangle.split.2x1") }
-            .help(shortcuts.help("在右侧拆分出新面板", .splitRight) + "；" + shortcuts.help("按住 Option 点按则向下拆分", .splitDown))
-    }
-
-    private var changesToggle: some View {
-        Toggle(isOn: $showsChanges) { Label("变更", systemImage: "plusminus") }
-            .help("工作目录的 git 变更").keyboardShortcut("d", modifiers: [.command, .option])
-            .disabled(focused.loadedConversationWorkingDirectory == nil && !showsChanges)
-    }
-
-    /// The outline as a tool window is shown and hidden by the button.
-    /// In its own place the setting decides: a popover anchored to the
-    /// button, or a toggle that collapses the focused pane's message list in place.
-    @ViewBuilder private var outlineButton: some View {
-        let unavailable = !window.hasConversationFocus || focused.pendingConversationID != nil || focused.transcript.userRows.isEmpty
-        if window.tools[.outline].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.outline) }, set: { _ in window.toggle(.outline) })) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help(window.tools.isOpen(.outline) ? "隐藏会话大纲" : "显示会话大纲", .showOutline))
-                .background(toolbarButtonAnchor(.outline))
-        } else {
-            settingOutlineButton(unavailable: unavailable)
-        }
-    }
-
-    /// The linked agents as a tool window are shown and hidden by the
-    /// button; in their own place they pop over from it, offered only when
-    /// the focused conversation has any.
-    @ViewBuilder private var agentsButton: some View {
-        let running = LinkedAgent.all(of: focused).contains { focused.device.isConversationRunning($0.id) }
-        if window.tools[.agents].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.agents) }, set: { _ in window.toggle(.agents) })) { Label("关联 Agent", systemImage: "person.2") }
-                .help(shortcuts.help(window.tools.isOpen(.agents) ? "隐藏关联 Agent" : "显示关联 Agent", .showAgents))
-                .background(toolbarButtonAnchor(.agents))
-        } else {
-            Button { window.agentsPopover.toggle() } label: { Label("关联 Agent", systemImage: running ? "person.2.fill" : "person.2") }
-                .help(shortcuts.help(LinkedAgent.summary(of: focused), .showAgents))
-                .background(toolbarButtonAnchor(.agents))
-                .popover(isPresented: $window.agentsPopover, arrowEdge: .bottom) {
-                    LinkedAgentsView(store: focused, layout: window) { id, opening in
-                        window.agentsPopover = false
-                        window.openLinked(id, from: tab, opening: opening)
-                    }
-                }
-        }
-    }
-
-    @ViewBuilder private var backgroundTasksButton: some View {
-        if window.tools[.backgroundTasks].place != .builtIn {
-            Toggle(isOn: Binding(get: { window.tools.isOpen(.backgroundTasks) }, set: { _ in window.toggle(.backgroundTasks) })) {
-                Label("后台任务", systemImage: "terminal")
-            }
-            .help(shortcuts.help(window.tools.isOpen(.backgroundTasks) ? "隐藏后台任务" : "显示后台任务", .showBackgroundTasks))
-            .background(toolbarButtonAnchor(.backgroundTasks))
-        } else {
-            Button { window.backgroundTasksPopover.toggle() } label: { Label("后台任务", systemImage: "terminal") }
-                .help(shortcuts.help("查看后台任务", .showBackgroundTasks))
-                .background(toolbarButtonAnchor(.backgroundTasks))
-                .popover(isPresented: $window.backgroundTasksPopover, arrowEdge: .bottom) {
-                    BackgroundTasksView(store: focused, layout: window) { id, opening in
-                        window.backgroundTasksPopover = false
-                        window.openLinked(id, from: tab, opening: opening)
-                    }
-                }
-        }
-    }
-
-    @ViewBuilder private func settingOutlineButton(unavailable: Bool) -> some View {
-        switch store.device.outlinePresentation {
-        case .popover:
-            Button { window.outlinePopover.toggle() } label: { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help("会话大纲", .showOutline)).disabled(unavailable)
-                .background(toolbarButtonAnchor(.outline))
-                .popover(isPresented: Binding(get: { window.outlinePopover && !unavailable }, set: { window.outlinePopover = $0 }), arrowEdge: .bottom) {
-                    TranscriptOutlineView(model: focused.transcript, layout: window, editMessage: { [focused, tab] id in
-                        focused.editability(of: id) == nil ? nil : { window.outlinePopover = false; tab.edit(messageID: id) }
-                    }, deleteMessage: { [focused] id in
-                        focused.canDeleteMessage(id) ? { window.outlinePopover = false; focused.confirmDeleteMessage(id) } : nil
-                    }, isRunning: focused.loadedConversationID.map(focused.device.isConversationRunning) ?? false,
-                    goToBottom: { [tab] in window.outlinePopover = false; tab.scrollRequest &+= 1 }) { id in
-                        window.outlinePopover = false
-                        tab.navigate(to: id)
-                    }
-                }
-        case .inPlace:
-            Toggle(isOn: $tab.outlineCollapsed) { Label("会话大纲", systemImage: "list.bullet") }
-                .help(shortcuts.help(tab.outlineCollapsed ? "展开完整会话" : "折叠为用户消息大纲", .showOutline))
-                .background(toolbarButtonAnchor(.outline))
-                .disabled(unavailable && !tab.outlineCollapsed)
-        }
-    }
 }
 
-/// Where a dragged panel would dock: the sidebar, the inspector, or the strip below the panes.
-private struct DockZoneHighlight: View {
-    let side: DockSide
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            let rect: CGRect = switch side {
-            case .left: CGRect(x: 0, y: 0, width: min(260, size.width / 3), height: size.height)
-            case .right: CGRect(x: size.width - min(280, size.width / 3), y: 0, width: min(280, size.width / 3), height: size.height)
-            case .bottom: CGRect(x: 0, y: size.height - 180, width: size.width, height: 180)
-            }
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.accentColor.opacity(0.12))
-                .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 2)
-                .frame(width: max(0, rect.width - 12), height: max(0, rect.height - 12))
-                .position(x: rect.midX, y: rect.midY)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
-    }
-}
-
+/// Renames a conversation.
 struct ConversationRenameView: View {
     @ObservedObject var store: ConversationStore
     let conversation: Conversation
@@ -621,9 +342,11 @@ struct SettingsView: View {
 /// Settings for how Velune reads and behaves: usage, the conversation list
 /// and, before macOS 26, the toolbars.
 private struct GeneralSettingsView: View {
+    private enum LimitField: Hashable { case page, total }
     @ObservedObject var store: DeviceStore
     @State private var limit = 20
     @State private var totalLimit = 200
+    @FocusState private var focusedLimit: LimitField?
     private var editedLimits: ConversationBrowserLimits? {
         guard let page = UInt32(exactly: limit), page > 0,
               let total = UInt32(exactly: totalLimit), total > 0 else { return nil }
@@ -644,8 +367,8 @@ private struct GeneralSettingsView: View {
                 }.pickerStyle(.segmented).disabled(store.isLoading || store.isShuttingDown)
             }
             Section("会话列表") {
-                LabeledContent("每次加载") { limitField($limit) }
-                LabeledContent("列表总数上限") { limitField($totalLimit) }
+                LabeledContent("每次加载") { limitField($limit, field: .page) }
+                LabeledContent("列表总数上限") { limitField($totalLimit, field: .total) }
                 Text("列表最多先读取总数上限个会话，按组依次分给各组，每组每次加载若干个；折叠的组不读取。之后可在各组中加载更多。").uiFont(.caption).foregroundStyle(.secondary)
                 if editedLimits == nil {
                     Text("每次加载和列表总数上限都必须在 1 到 \(UInt32.max.formatted()) 之间。")
@@ -656,15 +379,23 @@ private struct GeneralSettingsView: View {
                 }.disabled(editedLimits == nil || editedLimits == store.conversationBrowserLimits || store.isShuttingDown)
             }
             if #unavailable(macOS 26) { ToolbarSettingsSection() }
-        }.formStyle(.grouped).onAppear { limit = Int(store.conversationBrowserLimits.page); totalLimit = Int(store.conversationBrowserLimits.total) }
+        }
+        .formStyle(.grouped)
+        .defaultFocus($focusedLimit, nil)
+        .onAppear {
+            limit = Int(store.conversationBrowserLimits.page)
+            totalLimit = Int(store.conversationBrowserLimits.total)
+            DispatchQueue.main.async { focusedLimit = nil }
+        }
     }
 
-    private func limitField(_ value: Binding<Int>) -> some View {
+    private func limitField(_ value: Binding<Int>, field: LimitField) -> some View {
         HStack(spacing: 6) {
             TextField("数量", value: value, format: .number)
                 .labelsHidden()
                 .multilineTextAlignment(.trailing)
                 .frame(width: 112)
+                .focused($focusedLimit, equals: field)
             Text("个会话")
         }
     }
@@ -770,7 +501,15 @@ struct ProviderSettingsView: View {
     /// A subscription is told apart by its account and login; others by their address.
     private func providerSummary(_ provider: ProviderSummary) -> String {
         let authentication = provider.authentication
-        guard let subscription = provider.composition.subscriptionName else { return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" }
+        guard let subscription = provider.composition.subscriptionName else {
+            // A missing key is as much the provider's state as a subscription's login.
+            let missingKey = authentication.method == .apiKey && !authentication.configured
+            return "\(provider.models.count) 个模型，地址：\(provider.endpoint)" + (missingKey ? "，需要配置 API key" : "")
+        }
+        if case .antigravityCli(_, let destination) = provider.composition.executionBackend {
+            let target = destination.map { "SSH \($0)" } ?? (store.transport?.isRemote == true ? "提供商所在设备" : "本机")
+            return "\(provider.models.count) 个模型，\(subscription)，执行目标 \(target)"
+        }
         let status = authentication.method == .oAuth ? (authentication.configured ? "已登录" : "需要登录") : (authentication.configured ? "已配置" : "需要配置认证")
         return (["\(provider.models.count) 个模型", subscription] + (authentication.accountLabel.map { ["账户 …\($0)"] } ?? []) + [status]).joined(separator: "，")
     }
@@ -823,10 +562,12 @@ private struct ProviderModelDraft: Identifiable {
 private struct ProviderModelFields: View {
     @Binding var draft: ProviderModelDraft
     var modelIDFocused: FocusState<Bool>.Binding
+    let showsRequestParameters: Bool
     @State private var parametersExpanded: Bool
-    init(draft: Binding<ProviderModelDraft>, modelIDFocused: FocusState<Bool>.Binding) {
+    init(draft: Binding<ProviderModelDraft>, modelIDFocused: FocusState<Bool>.Binding, showsRequestParameters: Bool = true) {
         _draft = draft
         self.modelIDFocused = modelIDFocused
+        self.showsRequestParameters = showsRequestParameters
         // A model with parameters opens with them visible; others stay clean.
         _parametersExpanded = State(initialValue: draft.wrappedValue.parameters != nil)
     }
@@ -856,17 +597,19 @@ private struct ProviderModelFields: View {
                 }
             }
         }
-        Section {
-            ImmediateDisclosureGroup(isExpanded: $parametersExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
-                    if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) { Text("额外请求参数"); Text(draft.parametersSummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    Spacer()
-                    FormInfoButton("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数以它自己的错误失败。速度档位是一条带参数的独立模型，例如同一模型 ID 加 service_tier=priority。")
+        if showsRequestParameters {
+            Section {
+                ImmediateDisclosureGroup(isExpanded: $parametersExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("参数", text: $draft.requestParameters, prompt: Text("逗号分隔的 key=value，如 service_tier=priority"))
+                        if !draft.validParameters { Text("每对参数写为 key=value").uiFont(.caption).foregroundStyle(.red) }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) { Text("额外请求参数"); Text(draft.parametersSummary).uiFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                        Spacer()
+                        FormInfoButton("随每个上游请求发送，覆盖适配器的同名字段；提供商不认识的参数以它自己的错误失败。速度档位是一条带参数的独立模型，例如同一模型 ID 加 service_tier=priority。")
+                    }
                 }
             }
         }
@@ -896,10 +639,13 @@ struct ProviderEditor: View {
     let provider: ProviderSummary?
     /// What a new provider starts from; `nil` when editing.
     var template: ProviderTemplate? = nil
+    var observeModelCompactionForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
+    var observeModelSelectionForCheck: ((@escaping (String?) -> Void) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var protocolID: ApiProtocol = .chatCompletions
     @State private var endpoint = ""
+    @State private var codexClientVersion = ""
     @State private var models: [ProviderModelDraft] = []
     @State private var quotaLimits: [QuotaLimit] = []
     @State private var composition = ProviderComposition()
@@ -933,7 +679,8 @@ struct ProviderEditor: View {
     /// OAuth subscriptions sign in once saved, unless they use an existing login.
     private var awaitsFirstSave: Bool { providerID == nil && composition.signInHint != nil && linkedLogin == nil }
     private var usesAPIKey: Bool { composition.authenticationSource == .apiKey }
-    private var usesClaudeCLI: Bool { composition.claudeBinary != nil }
+    private var usesClaudeCLI: Bool { if case .claudeCli = composition.executionBackend { return true }; return false }
+    private var usesAntigravityCLI: Bool { if case .antigravityCli = composition.executionBackend { return true }; return false }
     /// The account source differs from the saved one; the saved status no longer applies.
     private var linkedLoginChanged: Bool { usesClaudeCLI && linkedLogin != authentication.linkedLogin }
     /// Local Claude Code runtimes whose own login a provider can use.
@@ -945,11 +692,44 @@ struct ProviderEditor: View {
     }
     /// The command a CLI backend runs, from the template the composition comes from.
     private var executableCommand: String? { template?.executableCommand ?? composition.subscriptionTemplate?.executableCommand }
+    private var cliName: String { usesAntigravityCLI ? "Antigravity CLI" : "Claude Code" }
+    private var sshDestination: String? {
+        guard let value = composition.antigravitySSHDestination?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+    private var canDiscoverExecutables: Bool {
+        usesClaudeCLI || (usesAntigravityCLI && sshDestination == nil && store.transport?.isRemote != true)
+    }
     private var usesHTTP: Bool { if case .http = composition.executionBackend { return true }; return false }
+    private var codexVersionPrompt: String {
+        store.transport?.isRemote == true ? "自动（留空）" : "自动（\(defaultCodexClientVersion())）"
+    }
     private var showsQuota: Bool { usesSubscription || composition.quotaSource != .none || !quotaLimits.isEmpty || (providerID.flatMap { store.providerQuotas[$0] }.map { $0.freshness != .unsupported } ?? false) }
     private var modelIndex: Int? { guard case .model(let id) = selection else { return nil }; return models.firstIndex { $0.id == id } }
-    private var claudeBinary: String? { composition.claudeBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && (claudeBinary.map { ($0 as NSString).isAbsolutePath } ?? true) && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
+    private func modelAutoCompactionTarget(_ draft: ProviderModelDraft) -> ModelAutoCompactionTarget? {
+        guard let providerID,
+              let model = store.providers.first(where: { $0.id == providerID })?.models.first(where: { $0.recordKey == draft.recordKey }) else { return nil }
+        return ModelAutoCompactionTarget.managed(model.recordKey, title: model.displayName, in: store)
+    }
+    private var cliBinary: String? { composition.cliBinary?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var antigravityTarget: ExecutionBackend? {
+        guard usesAntigravityCLI, let cliBinary else { return nil }
+        return .antigravityCli(binary: cliBinary, sshDestination: sshDestination)
+    }
+    private var validCLI: Bool {
+        guard let cliBinary else { return true }
+        guard usesAntigravityCLI else { return (cliBinary as NSString).isAbsolutePath }
+        guard !cliBinary.isEmpty, cliBinary.rangeOfCharacter(from: .controlCharacters) == nil else { return false }
+        guard let sshDestination else {
+            // The selected device validates its own local path syntax.
+            return store.transport?.isRemote == true || cliBinary.hasPrefix("/")
+        }
+        let parts = sshDestination.split(separator: "@", omittingEmptySubsequences: false)
+        return cliBinary.hasPrefix("/") && parts.count <= 2
+            && parts.allSatisfy { !$0.isEmpty && !$0.hasPrefix("-") }
+            && sshDestination.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(.controlCharacters).union(CharacterSet(charactersIn: "/\\"))) == nil
+    }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (!usesHTTP || URL(string: endpoint)?.host != nil) && validCLI && quotaCredentialsValid && models.allSatisfy(\.valid) && (!editingAPIKey || (!apiKey.isEmpty && (originalAPIKey != nil || authentication.method != .apiKey || clearAuthentication))) }
     private var quotaCredentialsValid: Bool { (quotaAccessKeyID.isEmpty && quotaSecret.isEmpty) || (!quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty) }
     private var quotaAuthentication: ProviderSummary? { store.providers.first { $0.id == providerID } ?? provider }
     var body: some View {
@@ -986,12 +766,17 @@ struct ProviderEditor: View {
                 Group {
                     if let index = modelIndex {
                         Form {
-                            ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused)
+                            ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused, showsRequestParameters: !usesAntigravityCLI)
                                 .id(models[index].id)
+                            Section {
+                                ModelAutoCompactionLink(store: store, target: modelAutoCompactionTarget(models[index]),
+                                                        observeForCheck: observeModelCompactionForCheck)
+                                    .id(models[index].id)
+                            }
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }
                     } else if selection == .quota && showsQuota {
-                        ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits)
+                        ProviderQuotaForm(store: store, providerID: providerID, limits: $quotaLimits, antigravityTarget: antigravityTarget)
                     } else { connectionForm }
                 }.formStyle(.grouped).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1002,15 +787,21 @@ struct ProviderEditor: View {
         .onAppear {
             if let provider {
                 name = provider.name; protocolID = provider.protocol; endpoint = provider.endpoint; models = provider.models.map(ProviderModelDraft.init); quotaLimits = provider.quotaLimits; composition = provider.composition
+                codexClientVersion = provider.codexClientVersion ?? ""
             } else if let template {
                 // A subscription is named after it until told apart; an API provider by its service.
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocol; endpoint = template.endpoint; composition = template.composition
             }
             linkedLogin = provider?.authentication.linkedLogin
+            observeModelSelectionForCheck? { key in
+                if let key, let draft = models.first(where: { $0.recordKey == key }) { selection = .model(draft.id) }
+                else if key == nil { addModel(ProviderModelDraft()) }
+            }
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
-            if composition.claudeBinary != nil { discoverExecutables() }
+            discoverExecutables()
         }
+        .onChange(of: sshDestination) { _, _ in discoverExecutables() }
         .onChange(of: selection) { _, value in if value == .connection { readAPIKeyIfNeeded() } }
         .sheet(isPresented: $choosingTemplates) { ModelTemplatePicker(templates: store.modelTemplates) { values in for template in values { addModel(ProviderModelDraft(template.model)) } } }
         .sheet(isPresented: $showingBilling) {
@@ -1034,28 +825,32 @@ struct ProviderEditor: View {
         case .apiAccount: "官方 API 账户额度"
         case .codexUsage: "Codex 订阅额度"
         case .claudeCliUsage: "Claude Code 订阅额度"
+        case .antigravityCliUsage: "Antigravity 订阅额度"
         }
     }
-    private var claudeBinaryField: some View {
-        LabeledContent("Claude Code") {
+    private var cliBinaryField: some View {
+        LabeledContent(cliName) {
             HStack {
-                TextField("Claude Code", text: Binding(get: { composition.claudeBinary ?? "" }, set: { composition.claudeBinary = $0 }), prompt: Text("claude 可执行文件的绝对路径"))
+                TextField(cliName, text: Binding(get: { composition.cliBinary ?? "" }, set: { composition.cliBinary = $0 }), prompt: Text("\(executableCommand ?? cliName) 可执行文件的绝对路径"))
                     .labelsHidden()
-                if executableCandidates.count > 1 || (executableCandidates.count == 1 && executableCandidates[0] != claudeBinary) {
-                    Menu("已发现") { ForEach(executableCandidates, id: \.self) { path in Button(path) { composition.claudeBinary = path } } }.fixedSize()
-                }
-                Button("选择…") {
-                    let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-                    if panel.runModal() == .OK, let url = panel.url { composition.claudeBinary = url.path }
+                if canDiscoverExecutables {
+                    if executableCandidates.count > 1 || (executableCandidates.count == 1 && executableCandidates[0] != cliBinary) {
+                        Menu("已发现") { ForEach(executableCandidates, id: \.self) { path in Button(path) { composition.cliBinary = path } } }.fixedSize()
+                    }
+                    Button("选择…") {
+                        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url { composition.cliBinary = url.path }
+                    }
                 }
             }
         }
     }
     private func discoverExecutables() {
-        guard let executableCommand else { return }
+        guard canDiscoverExecutables, let executableCommand else { return }
         MacExecutableDiscovery.candidates(command: executableCommand) { paths in
+            guard canDiscoverExecutables else { return }
             executableCandidates = paths
-            if claudeBinary?.isEmpty == true, let first = paths.first { composition.claudeBinary = first }
+            if cliBinary?.isEmpty == true, let first = paths.first { composition.cliBinary = first }
         }
     }
     private var connectionForm: some View {
@@ -1077,11 +872,20 @@ struct ProviderEditor: View {
                             .help(protocolID == .messages ? "Anthropic Messages 协议基础 URL；请求路径为 /v1/messages。" : "提供商的协议服务基础 URL。")
                     }
                 }
-                if !usesHTTP { claudeBinaryField }
+                if usesAntigravityCLI {
+                    TextField("SSH 目标", text: Binding(get: { composition.antigravitySSHDestination ?? "" }, set: { composition.antigravitySSHDestination = $0 }),
+                              prompt: Text("可留空，或填 user@host、SSH 别名"))
+                        .help("留空时在提供商所在设备执行。程序路径填写所选设备上的绝对路径。")
+                }
+                if !usesHTTP { cliBinaryField }
+                if composition.requestProfile == .codexResponses {
+                    TextField("Codex 客户端版本", text: $codexClientVersion, prompt: Text(codexVersionPrompt))
+                        .help("留空时采用该设备适配器支持的最新版本。可填写主版本.次版本.修订号。")
+                }
             } header: {
                 Text("连接")
             } footer: {
-                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(composition.claudeBinary != nil ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅使用的 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
+                Text(composition.subscriptionName.map { "\($0)固定协议与连接方式\(usesClaudeCLI ? "，由本机官方 Claude Code CLI 执行请求" : "")。" + (usesAPIKey ? "填写此订阅使用的 API key。" : "使用 API key 请另外添加 API 提供商。") } ?? "切换协议后采用默认适配参数；模型 ID 与已填写的能力保留。")
                     .formFooterStyle()
             }
             if composition.quotaSource == .arkCodingUsage {
@@ -1105,7 +909,9 @@ struct ProviderEditor: View {
                         ForEach(claudeLoginRuntimes) { instance in Text("运行时“\(instance.name)”的登录").tag(LinkedClaudeLogin?.some(.runtime(instanceId: instance.id))) }
                     }
                 }
-                if editingAPIKey {
+                if usesAntigravityCLI {
+                    Text("使用所选执行环境中已有的 agy 登录。请先在该环境中登录 agy。").foregroundStyle(.secondary)
+                } else if editingAPIKey {
                     HStack {
                         if showKey { TextField("API key", text: $apiKey) } else { SecureField("API key", text: $apiKey) }
                         Button { showKey.toggle() } label: { Image(systemName: showKey ? "eye.slash" : "eye") }.buttonStyle(.borderless).help(showKey ? "隐藏 API key" : "显示 API key")
@@ -1132,7 +938,7 @@ struct ProviderEditor: View {
                     }
                 }
                 if !editingAPIKey && (!usesSubscription || usesAPIKey) { Button("使用 API key…") { editingAPIKey = true; clearAuthentication = true; if !usesAPIKey { composition = ProviderComposition() }; apiKey = "" } }
-                if providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
+                if !usesAntigravityCLI && providerID != nil && authentication.linkedLogin == nil && !linkedLoginChanged && (authentication.configured || editingAPIKey) {
                     Button("清除认证", role: .destructive) { clearAuthentication = true; editingAPIKey = false; apiKey = ""; originalAPIKey = nil }
                 }
                 if usesSubscription, let disclosure = authentication.disclosure ?? template?.disclosure {
@@ -1142,17 +948,19 @@ struct ProviderEditor: View {
                     ImmediateDisclosureGroup("来源详情") { Text(provenance.displayName).uiFont(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
                 }
             }
-            Section {
-                Picker("查询来源", selection: $composition.quotaSource) {
-                    ForEach(providerQuotaSources(executionBackend: composition.executionBackend, authenticationSource: composition.authenticationSource), id: \.self) { source in
-                        Text(quotaSourceTitle(source)).tag(source)
+            if !usesAntigravityCLI {
+                Section {
+                    Picker("查询来源", selection: $composition.quotaSource) {
+                        ForEach(providerQuotaSources(executionBackend: composition.executionBackend, authenticationSource: composition.authenticationSource), id: \.self) { source in
+                            Text(quotaSourceTitle(source)).tag(source)
+                        }
                     }
+                } header: {
+                    Text("额度查询")
+                } footer: {
+                    Text("额度查询独立于模型请求协议与创建模板。Kimi、ARK 和官方账户查询需要相应官方服务地址及认证；更改后保存生效。")
+                        .formFooterStyle()
                 }
-            } header: {
-                Text("额度查询")
-            } footer: {
-                Text("额度查询独立于模型请求协议与创建模板。Kimi、ARK 和官方账户查询需要相应官方服务地址及认证；更改后保存生效。")
-                    .formFooterStyle()
             }
             if usesHTTP && !usesSubscription && usesAPIKey && composition.requestProfile == .native && providerBillingService(endpoint: endpoint) != nil {
                 Section {
@@ -1195,16 +1003,32 @@ struct ProviderEditor: View {
     /// Saves; `signingIn` keeps the editor open on the saved provider and starts its login.
     /// API-key subscriptions save the entered key without changing their protocol composition.
     private func commit(signingIn: Bool = false) {
-        let edit: AuthenticationEdit = editingAPIKey && apiKey != originalAPIKey ? .setApiKey(value: apiKey) : clearAuthentication ? .clear
-            : linkedLoginChanged ? linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear : .keep
+        let edit: AuthenticationEdit
+        if usesAntigravityCLI { edit = .keep }
+        else if editingAPIKey && apiKey != originalAPIKey { edit = .setApiKey(value: apiKey) }
+        else if clearAuthentication { edit = .clear }
+        else if linkedLoginChanged { edit = linkedLogin.map(AuthenticationEdit.useClaudeCodeLogin) ?? .clear }
+        else { edit = .keep }
         let quotaEdit: QuotaAuthenticationEdit? = clearingQuotaAuthentication ? .clear : !quotaAccessKeyID.isEmpty && !quotaSecret.isEmpty ? .setAccessKey(accessKeyId: quotaAccessKeyID, secretAccessKey: quotaSecret, confirmed: quotaConfirmed) : quotaConfirmed ? .confirmBinding : nil
         let existing = Set(store.providers.map(\.id))
-        var saving = composition; if let claudeBinary { saving.claudeBinary = claudeBinary }
-        store.saveProvider(ProviderDraft(id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines), protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "", executionBackend: saving.executionBackend, requestProfile: saving.requestProfile, authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource, models: models.map(\.definition), quotaLimits: quotaLimits), authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
+        var saving = composition
+        saving.cliBinary = cliBinary
+        saving.antigravitySSHDestination = sshDestination
+        let version = codexClientVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = ProviderDraft(
+            id: providerID ?? "", name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            protocol: protocolID, endpoint: usesHTTP ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            executionBackend: saving.executionBackend, requestProfile: saving.requestProfile,
+            authenticationSource: saving.authenticationSource, quotaSource: saving.quotaSource,
+            models: models.map(\.definition), quotaLimits: quotaLimits,
+            codexClientVersion: saving.requestProfile == .codexResponses && !version.isEmpty ? version : nil
+        )
+        store.saveProvider(draft, authenticationEdit: edit, quotaAuthenticationEdit: quotaEdit) {
             apiKey = ""; originalAPIKey = nil; quotaAccessKeyID = ""; quotaSecret = ""
             guard signingIn, let saved = store.providers.first(where: { $0.id == providerID }) ?? store.providers.first(where: { !existing.contains($0.id) }) else { dismiss(); return }
             // Later saves keep the new authentication and the models' assigned keys.
             savedID = saved.id; clearAuthentication = false; editingAPIKey = false; composition = saved.composition; linkedLogin = saved.authentication.linkedLogin
+            codexClientVersion = saved.codexClientVersion ?? ""
             models = saved.models.map(ProviderModelDraft.init); selection = .connection
             store.startAuthentication(saved.id)
         }
@@ -1303,7 +1127,7 @@ struct RuntimeSettingsView: View {
                 }
             }
             .contextMenu(forSelectionType: String.self) { ids in instanceMenu(ids) } primaryAction: { ids in
-                if let id = ids.first { editor = store.runtimeInstances.first { $0.id == id } }
+                if let id = ids.first { openEditor(store.runtimeInstances.first { $0.id == id }) }
             }
             .listStyle(.bordered).padding(.horizontal, 20).padding(.top, 16)
             HStack {
@@ -1313,7 +1137,7 @@ struct RuntimeSettingsView: View {
                 Spacer()
                 Button("在资源库中查看…") { if let id = selectedID { ResourceLibraryNavigator.shared.show(id, openWindow) } }
                     .disabled(selected == nil).help("管理所选运行时的指令、技能等原生资源")
-                Button("编辑…") { editor = selected }.disabled(selected == nil)
+                Button("编辑…") { openEditor(selected) }.disabled(selected == nil || store.isLoading)
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }
         .sheet(isPresented: $discovering, onDismiss: offerResources) { RuntimeDiscoveryView(store: store) }
@@ -1335,6 +1159,11 @@ struct RuntimeSettingsView: View {
 
     private func rememberIDs() { knownIDs = Set(store.runtimeInstances.map(\.id)) }
 
+    private func openEditor(_ runtime: RuntimeInstance?) {
+        guard !store.isLoading else { return }
+        editor = runtime
+    }
+
     /// After an add sheet has closed, offers the library to a new runtime that
     /// can use some of its resources.
     private func offerResources() {
@@ -1352,7 +1181,7 @@ struct RuntimeSettingsView: View {
 
     @ViewBuilder private func instanceMenu(_ ids: Set<String>) -> some View {
         if let id = ids.first, let runtime = store.runtimeInstances.first(where: { $0.id == id }) {
-            Button("编辑…") { editor = runtime }
+            Button("编辑…") { openEditor(runtime) }.disabled(store.isLoading)
             Button("在资源库中查看…") { ResourceLibraryNavigator.shared.show(id, openWindow) }
             Button(runtime.enabled ? "停用" : "启用") { var updated = runtime; updated.enabled.toggle(); store.saveRuntimeInstance(updated) }.disabled(store.isBusy)
             Button("删除…") { deleting = runtime }
@@ -1375,7 +1204,9 @@ struct RuntimeEditor: View {
     @State private var draftID = UUID().uuidString
     /// Type-specific edits belong to this form, while identity and execution stay shared.
     @State private var typeDrafts: [RuntimeKind: TypeDraft] = [:]
+#if VELUNE_DEV_CHECKS
     var observeForCheck: ((RuntimeEditorCheckAccess) -> Void)? = nil
+#endif
     @State private var executableDiscoveryRunning = false
     @State private var executableDiscoveryMessage: String?
     @State private var execution: ExecutionLoad = .loading
@@ -1480,7 +1311,7 @@ struct RuntimeEditor: View {
         return path.hasPrefix("/") && !path.contains("\0") ? .some(path) : nil
     }
     /// A managed HOME holds the runtime directory, so that field goes away.
-    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") && !["automaticNaming", "automaticNamingModel"].contains($0.key) } }
+    private var fields: [SettingField] { (descriptor?.fields ?? []).filter { !(home == .managed && $0.key == "agentDir") && !["automaticNaming", "automaticNamingModel", "automaticNamingPrompt"].contains($0.key) } }
     private var homeField: SettingField {
         SettingField(key: "home", label: "HOME 目录", kind: remote ? .text : .directoryPath, required: true, value: "", options: [],
                      help: remote ? "执行机器上的绝对目录。" : nil)
@@ -1581,6 +1412,7 @@ struct RuntimeEditor: View {
             if let instance, newConversationMode == .chosen { loadNewConversationModels(instance) }
             DispatchQueue.main.async { discoverExecutableIfNeeded() }
         }
+#if VELUNE_DEV_CHECKS
         .onChange(of: executionReady) { _, ready in
             guard ready else { return }
             observeForCheck?(RuntimeEditorCheckAccess(type: typeSelection, settings: $settings,
@@ -1588,6 +1420,7 @@ struct RuntimeEditor: View {
                 execution: { homeExecution.flatMap { home in transportExecution.map { RuntimeExecution(transport: $0, home: home, remoteResourcesDirectory: remoteResourcesExecution ?? nil) } } },
                 launch: { launch }, save: commit))
         }
+#endif
     }
 
     private var automaticNamingSection: some View {
@@ -1601,6 +1434,14 @@ struct RuntimeEditor: View {
                             Text(model.displayName + "（" + provider.name + "）").tag(model.recordKey)
                         }
                     }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("命名提示词")
+                    TextField("命名提示词", text: Binding(get: { settings["automaticNamingPrompt"] ?? "" }, set: { settings["automaticNamingPrompt"] = $0 }), prompt: Text("留空使用默认提示词"), axis: .vertical)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3...6)
                 }
             }
         } header: { Text("自动命名") } footer: {
@@ -1715,7 +1556,7 @@ struct RuntimeEditor: View {
         }
     }
     @ViewBuilder private var newConversationPickers: some View {
-        let models: [RuntimeModel] = if case .ready(let choices) = newConversationModels { choices } else { [] }
+        let models = newConversationModels?.models ?? []
         let chosen = newConversationChoice.model
         // A model kept here that the catalog no longer lists still shows.
         let listed = chosen.map { model in models.contains { $0.selection == model } } ?? true
@@ -1761,7 +1602,7 @@ struct RuntimeEditor: View {
     }
     private func loadNewConversationModels(_ instance: RuntimeInstance) {
         // The core still knows the saved type until this form is committed.
-        guard typeID == instance.typeId else { return }
+        guard typeID == instance.typeId, newConversationModels != .loading else { return }
         let readingType = instance.typeId
         newConversationModels = .loading
         store.readModelCatalog(runtimeID: instance.id) { catalog in
@@ -1769,6 +1610,7 @@ struct RuntimeEditor: View {
             else { typeDrafts[readingType]?.models = catalog }
         }
     }
+
     @ViewBuilder private func agentSection(_ instance: RuntimeInstance) -> some View {
         Section {
             switch agent {

@@ -338,6 +338,12 @@ impl CoreRuntime {
             AuthenticationMaterial::ClaudeCliLinked { .. } => {
                 self.inspect_linked_claude(&gateway_id, &provider_id)
             }
+            AuthenticationMaterial::AntigravityCli => Ok(crate::AuthenticationMetadata {
+                configured: true,
+                account_label: None,
+                capabilities: capabilities(provider, true),
+                actions: Some(Vec::new()),
+            }),
             AuthenticationMaterial::RuntimeProvider { source, .. } => {
                 let metadata = authentication::inspect(&self.options.resources_directory, source)
                     .map_err(RuntimeError::Invalid)?;
@@ -364,6 +370,11 @@ impl CoreRuntime {
             AuthenticationMaterial::ClaudeCliLinked { .. } => {
                 return Err(RuntimeError::invalid(
                     "此提供商沿用既有的 Claude Code 登录；请在 Claude Code 中登录，再检查登录状态。",
+                ));
+            }
+            AuthenticationMaterial::AntigravityCli => {
+                return Err(RuntimeError::invalid(
+                    "请在绑定的执行环境中使用官方 agy 登录 Antigravity",
                 ));
             }
             AuthenticationMaterial::CodexSubscription { .. } => {

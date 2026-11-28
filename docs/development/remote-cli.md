@@ -13,4 +13,4 @@ scripts/velune --android <adb序列号> connect --peer <被控端peer>
 scripts/velune revoke --peer <控制端peer>
 ```
 
-`invite` 与界面的“添加控制设备”相同，会开启控制入口并生成五分钟邀请；输出含邀请秘密，应直接传给 `begin`，不要保存到日志。其余命令返回 JSON，失败退出码非零。`status` 只返回远控状态，不读取会话正文。批准要求当前 attempt、预期 peer 和核对码同时匹配；CLI 与界面共用授权规则。应用退出时接口关闭；修改 `VELUNE_HOME` 或使用隔离实例时，CLI 必须连接对应实例的 socket。
+`invite` 与界面的“添加控制设备”相同，会开启控制入口并输出五分钟有效的邀请链接。链接含邀请秘密，应直接传给 `begin`。其余命令返回 JSON，失败退出码非零。`status` 只返回远控状态。`approve` 要求当前 attempt、预期 peer 和核对码同时匹配，CLI 与界面共用授权规则。应用退出时接口关闭，隔离实例使用自身状态目录下的 socket。

@@ -1,34 +1,36 @@
-//! Background metadata reads never prepare, focus, or load another session.
+//! Background metadata reads only query an already-owned runtime connection.
 use super::*;
 use velune_conversation::{BackgroundTaskList, BackgroundTaskOutput};
 
 impl CoreRuntime {
     pub(crate) fn background_tasks(
-        &self,
+        &mut self,
         runtime: &str,
         conversation: &str,
+        manual: bool,
     ) -> Result<BackgroundTaskList, RuntimeError> {
-        let session = std::iter::once(&self.session)
-            .chain(&self.parked)
+        let session = std::iter::once(&mut self.session)
+            .chain(&mut self.parked)
             .find(|session| session.conversation_id() == Some(conversation));
         if let Some(session) = session {
             if !Self::background_runtime_matches(session, runtime) {
                 return Err(RuntimeError::invalid("后台任务来源运行时不匹配"));
             }
-            if let Some(live) = session.active_state.live() {
-                // The public response is the DTO. Keep the receive charge on
-                // the owned observation until it crosses this boundary.
-                return live
-                    .background_tasks()
-                    .map(|result| result.into_parts().0)
-                    .map_err(|error| RuntimeError::context("读取后台任务", error));
+            if let Some(live) = session.active_state.live_mut() {
+                live.refresh_background_tasks(manual)
+                    .map_err(|error| RuntimeError::context("刷新后台任务", error))?;
+                return Self::read_background_observation(live);
             }
         }
-        Ok(BackgroundTaskList {
-            tasks: Vec::new(),
-            live: false,
-            issue: Some("当前没有可查询的任务宿主。历史任务通知仍保留在会话消息中。".into()),
-        })
+        Ok(BackgroundTaskList::default())
+    }
+    fn read_background_observation(
+        live: &dyn LiveConversation,
+    ) -> Result<BackgroundTaskList, RuntimeError> {
+        // Keep the receive charge on the observation until it crosses this boundary.
+        live.background_tasks()
+            .map(|result| result.into_parts().0)
+            .map_err(|error| RuntimeError::context("读取后台任务", error))
     }
     fn background_runtime_matches(session: &session::Session, runtime: &str) -> bool {
         session.projected().is_some_and(|snapshot| {
@@ -70,13 +72,14 @@ impl CoreRuntime {
         conversation: &str,
         task: &str,
     ) -> Result<BackgroundTaskList, RuntimeError> {
-        self.background_session(runtime, conversation)?
+        let live = self
+            .background_session(runtime, conversation)?
             .active_state
             .live_mut()
-            .ok_or_else(|| RuntimeError::invalid("此历史任务不能独立停止"))?
-            .stop_background_task(task)
+            .ok_or_else(|| RuntimeError::invalid("此历史任务不能独立停止"))?;
+        live.stop_background_task(task)
             .map_err(|error| RuntimeError::context("停止后台任务", error))?;
-        self.background_tasks(runtime, conversation)
+        Self::read_background_observation(live)
     }
 }
 
@@ -120,6 +123,7 @@ mod tests {
                     crate::Command::ReadBackgroundTasks {
                         runtime_id: "synthetic".into(),
                         conversation_id: "parked".into(),
+                        manual: true,
                     },
                     false,
                     &view,
@@ -129,7 +133,7 @@ mod tests {
                 panic!("expected task list")
             };
             assert!(
-                !list.live && list.tasks.is_empty() && list.issue.is_some(),
+                !list.live && list.tasks.is_empty() && list.issue.is_none(),
                 "cold launch receipts must not be parsed on owner or treated as live tasks"
             );
             assert!(app.runtime.session.key == key);

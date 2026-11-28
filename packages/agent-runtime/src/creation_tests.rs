@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    LiveConversation,
     acp::{AcpCommand, Client, Config},
     native::{DshCommand, NativeConfig, NativeKind, NativeSession},
 };
@@ -102,6 +101,7 @@ impl Owner {
                 resources_directory: home.0.clone(),
                 projection_directory: home.0.clone(),
                 gateway: None,
+                auto_compaction: None,
                 mcp_servers: Vec::new(),
                 session_agents: Vec::new(),
             })
@@ -704,14 +704,24 @@ fn retained_cold_data_does_not_pin_actual_connection_or_home_cleanup() {
     })
     .unwrap();
     let (released, lifetime_released) = mpsc::channel();
-    policy.retain_until_settled(Arc::new(Lifetime(released))).unwrap();
+    policy
+        .retain_until_settled(Arc::new(Lifetime(released)))
+        .unwrap();
     rpc.arm_creation(&policy).unwrap();
     let data = rpc.request("fixture/read", &serde_json::json!({})).unwrap();
     assert_eq!(data["payload"].as_str().unwrap().len(), 1024 * 1024);
-    assert!(matches!(lifetime_released.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert!(matches!(
+        lifetime_released.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
     drop(rpc);
-    lifetime_released.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(policy.is_settled(), "actual IO, not cached data, holds the HOME lease");
+    lifetime_released
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert!(
+        policy.is_settled(),
+        "actual IO, not cached data, holds the HOME lease"
+    );
     assert_eq!(data["payload"].as_str().unwrap().len(), 1024 * 1024);
     drop(data);
 }

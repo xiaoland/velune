@@ -20,33 +20,37 @@ svc run build-windows
 
 ## 产品版本与构建号
 
-根 `version.txt` 是产品完整 SemVer 的唯一来源。`scripts/version.py` 校验并提供完整版本、数字核心版本和发布构建号。Mac、Windows、Android 和 iOS 的用户可见版本读取该来源。Apple 平台的 ShortVersion 使用数字核心，显示字段保留 beta 标识。release-please 的 manifest 仅记录它上次发布的基线。Rust 内部 crate 版本独立，不按产品 beta 逐包修改。
+根 `version.txt` 是产品完整 SemVer 的唯一来源。`scripts/version.py` 校验并提供完整版本、数字核心版本和发布构建号。Mac、Windows、Android 和 iOS 的用户可见版本读取该来源。Apple 平台的 ShortVersion 使用数字核心，显示字段保留预发布标识。Release Please 的 manifest 记录上一次发布的基线。Rust 内部 crate 版本独立。
 
 `VELUNE_BUILD_NUMBER` 是共享的正整数发布序号，本地开发缺省为 1。Apple BundleVersion 和 Android versionCode 消费它。正式发行由唯一的 release workflow run 建立序号并写入草稿 Release 元数据，tag 的补跑沿用该序号。版本 helper 和该环境变量都纳入构建来源，不能把不同序号当作同一输入。可先用 `python3 scripts/version.py --format build-info` 查看，不需要构建 App。
 
 直接 Xcode 和 iOS 构建入口复用现有首个 native phase，由根版本和模板生成 `target/ios-generated/Info.plist`。不改写已跟踪的模板，重复相同内容保留输出时间戳。
 
-## 正式 Beta 发行
+<a id="正式-beta-发行"></a>
+
+## 预览版发行
 
 仓库已启用 GitHub release immutability。草稿阶段补齐全部资产，公开后由 GitHub 锁定资产及关联 tag。[不可变发布](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 
-发行权威是 `main`。日常集成继续在默认分支 `develop`。发行顺序为 develop → main 提升 PR → release-please 版本 PR → main 合并产生的草稿 tag/Release → 固定 tag SHA 的目标平台构建 → 所有资产、对应源码和校验清单齐备后公开 prerelease → main → develop 回流 PR。热修复也从 main 开 PR，按相同流程形成新 beta。Release Please 的 manifest 记录工具上一次发布版本，产品版本仍只由根 `version.txt` 提供。
+发行顺序为 `develop` → `main` 提升 PR → Release Please 版本 PR → 合并版本 PR 后创建 tag 与草稿 Release → 按 tag SHA 构建并公开 prerelease → `main` → `develop` 回流 PR。热修复从 `main` 开 PR，合入后沿用同一版本与打包流程。
+
+合并版本 PR 前，核对目标版本、`version.txt`、Release Please manifest 和生成的 `CHANGELOG.md`。需要显式选定版本时，在进入 `main` 的 Conventional Commit 正文中单独放一行 `Release-As: <目标版本>`。上次 Alpha 通过该方式指定版本。 [上游版本规则](https://github.com/googleapis/release-please/blob/main/src/versioning-strategies/prerelease.ts)
 
 release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，让 `PR checks / validate` 对该 PR head SHA 运行并通过后再合并。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
 
-PR 检查先验证版本、Release Please manifest、脚本语法和差异空白。包含 Rust 源码或 Cargo 输入的 PR 才在 Linux 安装固定 Go 工具链并构建 `velune-bindings`，以检查共享 core／bindings 与 Linux RelayKit 链接边界。持久化文件变化再运行对应 repository、analytics、迁移或 remote 存储窄测。网关执行或配置文件变化运行其回环配置快照检查。纯文档改动不触发 Rust 构建，也不因本地未关联的全仓格式问题阻塞。
+PR 检查先验证版本、Release Please manifest、脚本语法和差异空白，再运行合成脚本检查。涉及 Rust 构建输入时，Linux CI 还会检查 Rust 格式、Clippy 和依赖边界，构建 `velune-bindings` 以核对共享 core 与 RelayKit 的链接，并运行默认测试。门禁范围与本地入口见[静态检查与 CI](validation.md#静态检查与-ci)。
 
-首 beta 的 Release workflow 使用 GitHub-hosted `macos-15` arm64、`macos-15-intel` x86_64 和 `ubuntu-24.04` Android arm64 runner，Windows 发行暂缓。macOS 工作流显式选择镜像内的 Xcode 26.3（Swift 6.2），满足项目 SwiftPM 依赖。runner image 更新时需确认该选择仍存在。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。历史读取 runtime-support 的 `package.json` 要求 Node.js 22.18+，工作流固定 Node 22.18.0。
+[Release workflow](../../.github/workflows/release.yml) 配置 macOS arm64、macOS x86_64 与 Android arm64 构建，以及对应的 runner 镜像、Xcode 和 Node 版本。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。
 
 Android 发行采用固定 keystore，由以下 GitHub repository secrets 提供材料。 `ANDROID_RELEASE_KEYSTORE_BASE64`、`ANDROID_RELEASE_STORE_PASSWORD`、`ANDROID_RELEASE_KEY_ALIAS`、`ANDROID_RELEASE_KEY_PASSWORD`。CI 要求四项齐全、APK 签名验证通过，且证书 SHA-256 与已保管发行公钥相符。不提供无签名发布回退。不要打印或提交密钥材料。
 
-Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。首次安装的系统放行步骤见[用户指南](../usage.md#平台与安装)。Android beta 使用固定发行签名，首版面向新安装。现有 pre-beta/debug APK 密钥不同，无法原地覆盖，旧安装继续保留等待数据转移入口；卸载会删除私有数据。
+Mac 包分别为 arm64、x86_64 zip，使用 ad-hoc 签名且未公证。首次安装的系统放行步骤见[用户指南](../usage.md#平台与安装)。Android APK 可覆盖使用同一发行签名的已发布版本。不同签名的调试安装应保留，等待数据转移入口。卸载会删除私有数据。
 
 Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed，固定 CLI／SDK 为 1.2.161，应用身份为 Velune，渠道为 win-x64-beta。实际产物名称包含渠道，安装器为 `Velune-win-x64-beta-Setup.exe`，完整包为 `Velune-<version>-win-x64-beta-full.nupkg`，feed 为 `releases.win-x64-beta.json`。`scripts/package-windows-velopack.ps1` 对已构建目录打包，`scripts/package-release.py windows` 核验实际包内容和三个资产的摘要。当前正式 workflow 不调度 Windows 构建或公开这些资产，依赖与 AGPL 许可保持，跨协议能力保留。后续重新启用需先闭合 Windows 对应源码／许可门禁。应用更新入口及持久数据目录见 [Windows 说明](../../app/windows/README.md#安装与更新)。
 
 正式包封装会读取实际二进制版本：macOS 核对 Info.plist 的 SemVer／数字核心／构建号及 daily manifest，并用 `lipo` 核对架构；Android 用 SDK `aapt` 核对 APK 的 applicationId、versionName、versionCode 与 arm64 ABI；Windows 从 `Velune.dll` 读取 ProductVersion。任一值和根 `version.txt` 或发布身份不符，封装失败。Android 构建回执根据 Gradle `output-metadata.json` 选择当前签名模式的 APK，不依赖旧文件路径猜测。
 
-GitHub Release 中每个平台包都有 build metadata（源码 SHA、完整 SemVer、构建号、架构、签名状态及包摘要），发布前逐一比对预定清单中的实际包并核验摘要。另附全资产 `SHA256SUMS.txt` 和精确 tag 的 `velune-<tag>-source.tar.gz`（含 vendored RelayKit 源码）。首 beta 要求 Mac 两个架构、Android 和源码的四份 metadata，源码平台集合恰为 macos／android。构建失败时修复后对原来的 workflow run 重跑失败 job。需要新 run 时使用仍为草稿的 tag dispatch 重试，保持原 `release-build.json` 的构建号。全部资产成功后才解除草稿状态并建立回流 PR。首轮 promotion merge commit 的 body 须保留一次性 `Release-As: 0.1.0-beta.1` trailer（建议 subject 为 `chore(release): 提升首个公开 beta 源码至 main`，trailer 单独成行），以固定目标首版号。仅写在 PR 描述里不一定进入提交。此覆盖只用于首个候选。后续 beta 由 prerelease 策略按已合并的 Conventional Commits 递增，0.x breaking 变更按 release-please pre-major 策略递增 minor。
+发布前核对 macOS 双架构、Android APK 和 `velune-<tag>-source.tar.gz` 及其四份 `.build.json`，确认源码 SHA、完整 SemVer、构建号、架构、签名状态和包摘要与本次发行一致。源码包包含 vendored RelayKit 源码与 macOS、Android 对应源码，`SHA256SUMS.txt` 覆盖资产清单。暂时性失败可重跑原 run 的失败 job。需要新 run 时使用同一草稿 tag 补跑。全部资产成功后解除草稿状态并建立回流 PR。
 
 ## 并行构建与结果来源
 
@@ -83,8 +87,12 @@ python3 scripts/build-cache.py prune --domain host-rust --budget-gib 16
 python3 scripts/build-cache.py prune --domain host-rust --budget-gib 16 --apply
 ```
 
+`report` 另外给出用途域以外目录的合计：平台生成目录与 App 之外，任务自建的 target-dir、复制进 `target/checks` 的源码树和任务证据也在这里。本工具不回收它们；任务结束时由所属任务删除自己的输出。2026-11 的盘点中，这部分有 122 个无人引用的目录，物理占用约 86 GiB，与三个用途域之和相当。
+
+macOS 开发 profile 的调试信息留在 `deps/*.rcgu.o`，增量重编每次以新文件名写出一整组对象，旧组不再被读取，Cargo 与 rustc 都不删除。`host-rust` 因此随编辑次数增长，2026-11 实测 20 天从约 4.6 GiB 涨到 66.5 GiB（物理），其中约 26 GiB 是无引用的调试对象，其余主要是旧变体（velune-application 一个 crate 就有 44 套）及其增量缓存；超出预算后整体回收是预期的维护方式。
+
 普通构建不会自动清缓存。维护仅在超预算时回收所选整个用途域，下次对应构建需要重新预热；没有按mtime或Cargo内部hash猜测删除的垃圾回收器。apply先取得所有平台锁和已知Cargo缓存锁；活跃构建、外部路径、symlink／junction及含共享链接的缓存拒绝回收。下载缓存、runtime-support、可运行App、目标生成目录与用户数据不属于这些用途域。
 
-历史目录只有明确验证替代路径并列入脚本退役白名单后才能使用 `--retired <name>` 回收。旧 `target/debug`、`ios-rust`、`ios-bindgen`、`android-bindgen` 和根级Android triple已经由新链替代；旧release及仍使用的packaged输出保持受保护。空间统计以分配块为主，Windows缺少块统计时用文件大小，APFS共享块与并行磁盘活动使实际释放量不一定等于报告大小。
+空间统计以分配块为主，Windows缺少块统计时用文件大小。APFS 克隆共享块，`du` 与本报告都可能高估：同一批对象在一个镜像工作树中统计为 83 GiB，删除后卷可用空间只增加约 2.5 GiB。判断实际占用以删除前后的卷可用空间为准。
 
 不要每次build先clean，也不要复制整套编译树作为任务证据。保留日志、计时、来源和必要截图；临时worktree清理前可保留有用的标准热缓存，不能覆盖其它owner正在使用的域。新机器／跨worktree优先共享下载及固定工具，生成目录和bundle不共写。

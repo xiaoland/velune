@@ -22,6 +22,7 @@ public sealed partial class ConversationView
     // The queue as last shown.
     string shownQueue = "";
     bool sessionOptionsRead;
+    bool showingModelCompaction;
 
     void AttachComposer()
     {
@@ -101,7 +102,7 @@ public sealed partial class ConversationView
     async void Steer()
     {
         var text = Input.Text;
-        if (!Model.Submission.CanSubmitDraft || Model.Submission.Action != ComposerSubmission.Kind.Queue || !Model.CanSteer)
+        if (Model.FollowUp?.CanSteer != true)
         {
             Send();
             return;
@@ -249,7 +250,7 @@ public sealed partial class ConversationView
         Input.PlaceholderText = $"输入消息，{keys.SendKey} 发送，{keys.NewLineKey} 换行，/ 命令";
         ToolTipService.SetToolTip(SendButton, submission.Action == ComposerSubmission.Kind.Resume ? "继续当前会话；不支持原生恢复的运行时会发送“continue”"
             : submission.Action == ComposerSubmission.Kind.Queue
-                ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
+                ? Model.CanSteer ? $"{keys.SendKey} 加入发送队列；{keys.SteerKey} 插入本轮并沿用本轮模型和推理强度" : $"{keys.SendKey} 加入发送队列，本轮结束后发出"
                 : $"{keys.SendKey} 发送消息");
         AttachButton.IsEnabled = !Model.Busy && Model.DraftEditable;
         CompactButton.IsEnabled = Model.CanCompact;
@@ -290,7 +291,7 @@ public sealed partial class ConversationView
         var followUp = Model.FollowUp;
         var queue = followUp?.Queue ?? [];
         ShowQueueBar(followUp);
-        var steer = Model.CanSteer;
+        var steer = Model.CanSteerQueued;
         var signature = string.Join("\n", queue.Select(message => $"{message.Id}\t{message.EditContext?.Revision}\t{message.Text}\t{message.Attachments.Length}")) + (steer ? "\nsteer" : "") + (Model.Busy ? "\nbusy" : "");
         if (signature == shownQueue)
         {
@@ -318,7 +319,7 @@ public sealed partial class ConversationView
         if (steer)
         {
             var into = new Button { Content = "插入本轮", IsEnabled = !Model.Busy };
-            ToolTipService.SetToolTip(into, "经运行时的原生通道送入正在运行的这一轮，不另起一轮");
+            ToolTipService.SetToolTip(into, "插入正在运行的本轮，沿用本轮的模型和推理强度");
             into.Click += (_, _) => Model.SteerQueued(message.Id);
             actions.Children.Add(into);
         }
@@ -399,6 +400,101 @@ public sealed partial class ConversationView
                     break;
             }
         }
+    }
+
+    bool CanConfigureModel(string runtimeId) => !showingQueuedEditor && Model.CanEditModelAutoCompaction(runtimeId);
+
+    void FillModelAutoCompaction(IList<MenuFlyoutItemBase> items)
+    {
+        if (Model.Configuration.Runtime(Model.Next) is not { } runtime) return;
+        var acp = runtime.TypeId == RuntimeKind.Acp;
+        if (!acp && !ModelCompactionDialog.Supports(runtime.TypeId)) return;
+        var enabled = CanConfigureModel(runtime.Id);
+        ModelAutoCompaction[] saved;
+        try { saved = VeluneBindingsMethods.RuntimeModelAutoCompactions(runtime); }
+        catch (BindingException failure)
+        {
+            items.Add(Heading("无法读取自动压缩设置：" + Core.Describe(failure)));
+            return;
+        }
+
+        var current = acp ? Model.AcpAutoCompactionModel : Model.NextTurn.Choice.Model ?? Model.NextTurn.Model;
+        string Name(ModelSelection.Native model) => Model.NextTurn.Models.FirstOrDefault(option => Equals(option.Selection, model))?.Name
+            ?? (model.ProviderId is { Length: > 0 } provider ? model.ModelId + "（" + provider + "）" : model.ModelId);
+        if (current is ModelSelection.Native native)
+        {
+            var existing = saved.FirstOrDefault(entry => Equals(entry.Model, native))?.Setting;
+            if (acp) FillAcpAutoCompaction(items, runtime.Id, native, Name(native), existing, enabled);
+            else items.Add(Item("自动压缩…", () => ConfigureNativeModel(runtime.Id, native, Name(native)), enabled));
+        }
+
+        var other = new MenuFlyoutSubItem { Text = "已保存模型的自动压缩", IsEnabled = enabled };
+        foreach (var entry in saved)
+        {
+            if (entry.Model is not ModelSelection.Native model || Equals(model, current)) continue;
+            var title = Name(model);
+            if (!Model.NextTurn.Models.Any(option => Equals(option.Selection, model))) title += "（目录未列出）";
+            if (acp)
+            {
+                var unavailable = new MenuFlyoutSubItem { Text = title };
+                unavailable.Items.Add(Heading("需打开使用此模型的 ACP 会话才能修改 Agent 选项"));
+                unavailable.Items.Add(Item("跟随 Agent 设置", () => Model.SaveAcpAutoCompaction(runtime.Id, model, null)));
+                other.Items.Add(unavailable);
+            }
+            else other.Items.Add(Item(title, () => ConfigureNativeModel(runtime.Id, model, Name(model))));
+        }
+        if (other.Items.Count > 0) items.Add(other);
+    }
+
+    async void ConfigureNativeModel(string runtimeId, ModelSelection.Native model, string name)
+    {
+        if (showingModelCompaction || !CanConfigureModel(runtimeId)) return;
+        showingModelCompaction = true;
+        try
+        {
+            if (await Model.ReadModelCompactionRuntime(runtimeId) is not { } runtime || !ModelCompactionDialog.Supports(runtime.TypeId)) return;
+            await ModelCompactionDialog.Show(window.ShowDialog, name, model, [runtime], () => CanConfigureModel(runtimeId),
+                (_, setting) => Model.SaveModelAutoCompaction(runtimeId, model, setting));
+        }
+        catch (Exception failure) { Problems.Report("配置原生模型自动压缩", failure, Model.Device); }
+        finally { showingModelCompaction = false; }
+    }
+
+    void FillAcpAutoCompaction(IList<MenuFlyoutItemBase> items, string runtimeId, ModelSelection model, string name, AutoCompactionSetting? current, bool enabled)
+    {
+        var options = Model.AcpAutoCompactionOptions;
+        if (options.Length == 0 && current == null) return;
+        var menu = new MenuFlyoutSubItem { Text = "自动压缩 · " + name, IsEnabled = enabled };
+        ToolTipService.SetToolTip(menu, "对当前模型的后续轮次生效");
+        menu.Items.Add(Item("跟随 Agent 设置", () => Model.SaveAcpAutoCompaction(runtimeId, model, null), current != null));
+        var other = new MenuFlyoutSubItem { Text = "从 Agent 选项中选取" };
+        ToolTipService.SetToolTip(other, "仅选择此 Agent 用于自动压缩的选项");
+        foreach (var option in options)
+        {
+            var choiceMenu = new MenuFlyoutSubItem { Text = option.Name };
+            if (option.Description is { Length: > 0 } detail) ToolTipService.SetToolTip(choiceMenu, detail);
+            void AddChoice(string title, AcpConfigValue value)
+            {
+                var setting = new AutoCompactionSetting.Acp(option.Id, value);
+                choiceMenu.Items.Add(Choice("acp-compaction", title, Equals(current, setting), () => Model.SaveAcpAutoCompaction(runtimeId, model, setting)));
+            }
+            switch (option.Value)
+            {
+                case AcpConfigValue.Boolean:
+                    AddChoice("开启", new AcpConfigValue.Boolean(true));
+                    AddChoice("关闭", new AcpConfigValue.Boolean(false));
+                    break;
+                case AcpConfigValue.Select:
+                    foreach (var choice in option.Choices) AddChoice(choice.Name, new AcpConfigValue.Select(choice.Value));
+                    break;
+            }
+            (VeluneBindingsMethods.IsAcpAutoCompactionOption(option) ? menu : other).Items.Add(choiceMenu);
+        }
+        if (other.Items.Count > 0) menu.Items.Add(other);
+        if (current is AutoCompactionSetting.Acp saved && !options.Any(option =>
+            option.Id == saved.OptionId && VeluneBindingsMethods.AcpAutoCompactionAccepts(option, saved.Value)))
+            menu.Items.Add(new MenuFlyoutItem { Text = "已保存的压缩设置当前不可用", IsEnabled = false });
+        items.Add(menu);
     }
 
     void FillMessageMenu(MenuFlyout menu, DeliveredMessage message)

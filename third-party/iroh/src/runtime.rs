@@ -82,17 +82,22 @@ impl noq::Runtime for Runtime {
             return;
         }
 
-        use tracing::{Instrument, trace_span};
+        use tracing::{Instrument, instrument::WithSubscriber, trace_span};
 
         let task_id = self.task_counter.fetch_add(1, Ordering::Relaxed);
         let cancel = self.cancel.clone();
         let span = trace_span!("runtime", me = %self.id.fmt_short(), task_id);
-        self.tasks.spawn(async move {
-            // wrapping the future in a cancellation token is what allows
-            // us to "abort" tasks in the event the runtime is meant to
-            // close quickly and ungracefully
-            cancel.run_until_cancelled(future.instrument(span)).await;
-        });
+        self.tasks.spawn(
+            async move {
+                // wrapping the future in a cancellation token is what allows
+                // us to "abort" tasks in the event the runtime is meant to
+                // close quickly and ungracefully
+                cancel.run_until_cancelled(future.instrument(span)).await;
+            }
+            // Span IDs belong to the creating subscriber. Keep it active through
+            // cancellation and the inner future's drop, not only its poll.
+            .with_current_subscriber(),
+        );
     }
 
     #[cfg(wasm_browser)]

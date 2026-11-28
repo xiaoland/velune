@@ -21,12 +21,21 @@ pub(super) struct ExecutionPreparation {
 
 impl ExecutionPreparation {
     pub(super) fn prepare(&self) -> Result<Option<String>, RuntimeError> {
+        self.prepare_with_known_resources(&BTreeSet::new())
+    }
+
+    pub(super) fn prepare_with_known_resources(
+        &self,
+        known: &BTreeSet<String>,
+    ) -> Result<Option<String>, RuntimeError> {
         for directory in &self.directories {
             self.target
                 .create_dir_all(directory)
                 .map_err(|error| RuntimeError::context("managed HOME 初始化", error))?;
         }
-        if let Some((key, local, remote)) = &self.resources {
+        if let Some((key, local, remote)) = &self.resources
+            && !known.contains(key)
+        {
             velune_agent_runtime::execution::install_resources(&self.target, local, remote)
                 .map_err(|error| RuntimeError::context("远端辅助资源安装", error))?;
             return Ok(Some(key.clone()));

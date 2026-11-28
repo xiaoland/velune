@@ -74,7 +74,7 @@ struct ArtifactSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                ArtifactTabItem(window: window, tab: tab, selected: true, place: 0, count: 1, slide: { _ in })
+                ArtifactTabItem(window: window, tab: tab)
                     .frame(width: 200, height: PaneChrome.barHeight)
                     .help("拖到标签栏、分屏或窗口外")
                 Spacer()
@@ -88,38 +88,6 @@ struct ArtifactSheet: View {
     }
 }
 
-/// Reuses the editor drag handle; artifacts never create a conversation
-/// store, start a runtime or participate in composer lifecycle.
-struct ArtifactTabItem: View {
-    @ObservedObject var window: ConversationWindowModel
-    let tab: ArtifactTab
-    let selected: Bool
-    let place: Int
-    let count: Int
-    let slide: (TabSlide) -> Void
-    @State private var hovering = false
-    var body: some View {
-        ZStack {
-            TabHandle(window: window, tab: tab, title: tab.title, place: place, count: count, actions: .init(
-                select: { window.selectTab(tab.id) }, rename: {}, close: { close() },
-                hover: { hovering = $0 }, closePointer: { _ in }, slide: slide, menu: menu))
-            HStack(spacing: 5) {
-                Image(systemName: hovering ? "xmark" : "flowchart").frame(width: 16)
-                Text(tab.title).lineLimit(1).truncationMode(.tail)
-                Spacer(minLength: 0)
-            }.font(.system(size: 11)).foregroundStyle(selected ? .primary : .secondary)
-                .padding(.horizontal, 8).allowsHitTesting(false)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(alignment: .trailing) { TabShade.line.frame(width: 1) }
-    }
-    private func close() {
-        if window.artifactSheet?.id == tab.id { window.closeArtifactSheet() } else { window.closeTab(tab.id) }
-    }
-    private func menu() -> NSMenu {
-        NSHostingMenu(rootView: EditorTabActions(window: window, tabID: tab.id))
-    }
-}
 
 /// Local-only renderer. Diagram text crosses the JS boundary as a value,
 /// never as HTML. Navigation, network and Mermaid links are disabled.

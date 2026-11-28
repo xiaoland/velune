@@ -187,6 +187,7 @@ fn analytics_request(row: crate::analytics::AnalyticsRow) -> Result<AnalyticsReq
         "chatCompletions" => Protocol::ChatCompletions,
         "responses" => Protocol::Responses,
         "messages" => Protocol::Messages,
+        "geminiGenerateContent" => Protocol::Gemini,
         _ => return Err(Error::invalid("分析记录包含未知协议")),
     };
     let outcome = match row.outcome.as_str() {

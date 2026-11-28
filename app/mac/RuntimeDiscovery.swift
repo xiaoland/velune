@@ -25,8 +25,11 @@ struct RuntimeDiscoveryView: View {
                 ForEach(candidates, id: \.runtime.id) { candidate in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack { Text(candidate.runtime.name); if let version = candidate.version { Text(version).foregroundStyle(.secondary) }; if candidate.alreadyConfigured { Text("已配置").foregroundStyle(.secondary) } }
-                        Text(candidate.runtime.settings["agentDir"] ?? "").uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        Text(candidate.runtime.settings["binary"] ?? "").help("Node：" + (candidate.runtime.settings["nodeBinary"] ?? "")).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if let directory = candidate.runtime.settings["agentDir"] {
+                            Text(directory).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        let node = candidate.runtime.settings["nodeBinary"] ?? ""
+                        Text(candidate.runtime.settings["binary"] ?? "").help(node.isEmpty ? "" : "Node：" + node).uiFont(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         if !candidate.supported { Text(candidate.detail).uiFont(.caption).foregroundStyle(.secondary) }
                     }.tag(candidate.runtime.id).selectionDisabled(!candidate.supported || candidate.alreadyConfigured)
                 }
@@ -60,7 +63,7 @@ struct RuntimeDiscoveryView: View {
                 guard active else { return }
                 switch result {
                 case .success(let path): gather(hints[...], node: path, probes: [])
-                case .failure(let error): discovering = false; status = ""; store.recordProblem(error, source: "发现 Agent 运行时")
+                case .failure: gather(hints[...], node: "", probes: [])
                 }
             }
         }

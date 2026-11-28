@@ -71,13 +71,11 @@ pub(crate) const CODEX_PERMISSION_MODES: &[PermissionMode] = &[
 /// The versions an adapter carries.
 pub enum Versions {
     /// A dedicated adapter's CLI versions: from the one verified with the
-    /// actual CLI up to, not including, the next version that may break it
-    /// (a semantic minor version; for 0.x the minor too), raised once a
-    /// newer CLI is verified. Versions compare by major.minor.patch, so an
-    /// alpha or beta counts as its release.
+    /// actual CLI through its highest supported minor series. The minimum
+    /// compares by major.minor.patch, so an alpha or beta counts as its release.
     Cli {
         minimum: &'static str,
-        below: &'static str,
+        through: &'static str,
     },
     /// The protocol major version `acp-v1` negotiates.
     AcpProtocol(u64),
@@ -85,23 +83,27 @@ pub enum Versions {
 impl Versions {
     /// Whether a version the CLI reports is in the range.
     pub fn contains(&self, version: &str) -> bool {
-        let Self::Cli { minimum, below } = self else {
+        let Self::Cli { minimum, through } = self else {
             return false;
         };
-        let (Ok(version), Ok(minimum), Ok(below)) = (
+        let (Ok(version), Ok(minimum), Ok(through)) = (
             semver::Version::parse(version),
             semver::Version::parse(minimum),
-            semver::Version::parse(below),
+            semver::Version::parse(through),
         ) else {
             return false;
         };
         let core = |v: &semver::Version| (v.major, v.minor, v.patch);
-        core(&version) >= core(&minimum) && core(&version) < core(&below)
+        core(&version) >= core(&minimum)
+            && (version.major, version.minor) <= (through.major, through.minor)
     }
     /// The range as users read it.
     pub fn describe(&self) -> String {
         match self {
-            Self::Cli { minimum, below } => format!("≥{minimum}，<{below}"),
+            Self::Cli { minimum, through } => {
+                let maximum = semver::Version::parse(through).expect("supported runtime version");
+                format!("≥{minimum}，<{}.{}.0", maximum.major, maximum.minor + 1)
+            }
             Self::AcpProtocol(major) => format!("协议 {major}"),
         }
     }
@@ -132,6 +134,9 @@ impl SideChatStrategy {
 pub struct RuntimeVariant {
     pub kind: RuntimeKind,
     pub family_id: &'static str,
+    /// The command a user's PATH conventionally provides. Executable
+    /// discovery looks for it at the range's minimum version.
+    pub command: Option<&'static str>,
     pub name: &'static str,
     pub versions: Versions,
     pub can_rename_conversations: bool,
@@ -157,12 +162,24 @@ pub struct RuntimeVariant {
 /// Pi's range, shared with the Pi provider import.
 pub const PI_VERSIONS: Versions = Versions::Cli {
     minimum: "1.0.2",
-    below: "1.5.0",
+    through: "1.4.0",
 };
+/// Highest supported Codex client version used as the subscription default.
+pub const CODEX_LATEST_SUPPORTED_VERSION: &str = "0.171.0";
+
+pub const ANTIGRAVITY_FAMILY: &str = "antigravity";
+// 1.5.1 exposes the account's models to ACP clients under their own names.
+pub const ANTIGRAVITY_ACP_MINIMUM: semver::Version = semver::Version::new(1, 5, 1);
+
+pub fn supports_antigravity_acp(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|version| version >= ANTIGRAVITY_ACP_MINIMUM)
+}
+
 const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Acp,
         family_id: "acp",
+        command: None,
         name: "ACP v1",
         versions: Versions::AcpProtocol(1),
         can_rename_conversations: false,
@@ -180,10 +197,11 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::ClaudeCode,
         family_id: "claude-code",
+        command: Some("claude"),
         name: "Claude Code 2.1",
         versions: Versions::Cli {
             minimum: "2.1.286",
-            below: "2.2.0",
+            through: "2.1.0",
         },
         can_rename_conversations: true,
         can_delete_conversations: false,
@@ -200,6 +218,7 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Pi,
         family_id: "pi",
+        command: Some("pi"),
         name: "Pi Agent 1.4",
         versions: PI_VERSIONS,
         can_rename_conversations: true,
@@ -210,6 +229,7 @@ const VARIANTS: &[RuntimeVariant] = &[
             Protocol::ChatCompletions,
             Protocol::Responses,
             Protocol::Messages,
+            Protocol::Gemini,
         ],
         permission_modes: &[],
         resume: ResumeStrategy::Message("continue"),
@@ -221,10 +241,11 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::Codex166,
         family_id: "codex",
+        command: Some("codex"),
         name: "Codex 0.166",
         versions: Versions::Cli {
             minimum: "0.166.0",
-            below: "0.168.0",
+            through: CODEX_LATEST_SUPPORTED_VERSION,
         },
         can_rename_conversations: true,
         can_delete_conversations: true,
@@ -242,10 +263,11 @@ const VARIANTS: &[RuntimeVariant] = &[
     RuntimeVariant {
         kind: RuntimeKind::DeepSeek,
         family_id: "deepseek-harness",
+        command: Some("dsh"),
         name: "DeepSeek Harness 0.2",
         versions: Versions::Cli {
             minimum: "0.2.0-rc.2",
-            below: "0.3.0",
+            through: "0.2.0",
         },
         can_rename_conversations: false,
         can_delete_conversations: false,
@@ -264,6 +286,17 @@ const VARIANTS: &[RuntimeVariant] = &[
         accepts_images: false,
     },
 ];
+impl RuntimeVariant {
+    /// The PATH command and minimum version platforms look for, when the
+    /// runtime is a versioned CLI with a conventional command.
+    pub fn executable(&self) -> Option<(&'static str, &'static str)> {
+        match (self.command, &self.versions) {
+            (Some(command), Versions::Cli { minimum, .. }) => Some((command, minimum)),
+            _ => None,
+        }
+    }
+}
+
 pub fn variants() -> &'static [RuntimeVariant] {
     VARIANTS
 }
@@ -408,7 +441,7 @@ pub fn probe_version_at(
     execution: &crate::execution::ExecutionTarget,
     os_home: Option<&Path>,
 ) -> Result<String> {
-    if !VARIANTS.iter().any(|v| v.family_id == family_id) {
+    if family_id != ANTIGRAVITY_FAMILY && !VARIANTS.iter().any(|v| v.family_id == family_id) {
         return Err(Error::new("未知运行时系列"));
     }
     if family_id == "acp" {
@@ -432,7 +465,8 @@ pub fn probe_version_at(
     } else {
         binary
     };
-    let mut command = if matches!(family_id, "codex" | "claude-code") {
+    let uses_node = !matches!(family_id, "codex" | "claude-code" | ANTIGRAVITY_FAMILY);
+    let mut command = if !uses_node {
         crate::process_tree::command(binary)
     } else if let Some(node) = node_binary {
         let mut command = crate::process_tree::command(node);
@@ -453,10 +487,12 @@ pub fn probe_version_at(
                 "runtime version probe failed"
             );
             if error.code() == "process_exit" {
-                Error::with_code(
-                    "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本",
-                    "version_probe_failed",
-                )
+                let detail = if uses_node {
+                    "公开版本命令执行失败，请检查外部安装是否完整及 Node 版本"
+                } else {
+                    "公开版本命令执行失败，请检查外部安装是否完整"
+                };
+                Error::with_code(detail, "version_probe_failed")
             } else {
                 error
             }

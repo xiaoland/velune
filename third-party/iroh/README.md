@@ -21,4 +21,6 @@ diff /tmp/iroh-runtime-baseline/Cargo.toml third-party/iroh/Cargo.toml
 
 本补丁不实现动态 token refresh。Velune 更新认证配置时替换整个网络代际，并等待旧 Endpoint 退出；不能将取消请求或 abort 当成资源已经释放。该退出边界由 packages/remote 管理，不由此补丁另建传输栈。
 
-当上游提供“独立于 home relay 候选的精确 URL 认证”且保持上述 Debug 保密边界时，升级并验证等价行为后删除本目录及根 Cargo patch。任何后续上游升级均需先重建运行基线再重新审视 runtime.patch，不能直接覆盖供应源码。
+原生 `Runtime::spawn` 在创建 transport task 的 span 后，同时向任务传播创建它的 tracing Dispatch。绑定范围覆盖取消等待的整个 future，使正常关闭时的取消与子 future 析构仍在同一 subscriber 下执行；只传播 span 会让 registry 在另一个 Dispatch 中释放父 span。此接线不改变任务跟踪、取消和关闭等待的顺序，也不通过关闭遥测来规避问题。
+
+当上游提供“独立于 home relay 候选的精确 URL 认证”并保持上述 Debug 保密边界，以及 transport task 的 Dispatch 传播边界时，升级并验证等价行为后删除本目录及根 Cargo patch。任何后续上游升级均需先重建运行基线再重新审视 runtime.patch，不能直接覆盖供应源码。

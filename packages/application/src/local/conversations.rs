@@ -1,6 +1,5 @@
 //! Local application conversations use cases.
 use super::*;
-use crate::conversation::ConversationSnapshot;
 use crate::local::continuation::LogicalProjection;
 use crate::{ComposedTurn, ConfigurationSnapshot, ModelSelection, SnapshotResult};
 
@@ -426,6 +425,8 @@ impl CoreRuntime {
         }
         if matches!(self.session.active_state, ActiveState::History(_))
             || self.session.model_selection.as_ref() != Some(&selection)
+            || (self.session.configuration_changed
+                && self.runtime_instance(runtime_id)?.type_id == RuntimeKind::ClaudeCode)
         {
             let snapshot = self.native_snapshot().expect("validated conversation");
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
@@ -617,6 +618,9 @@ impl CoreRuntime {
     ) -> Result<SnapshotResult, RuntimeError> {
         match self.prepare_conversation_read(runtime_id, id)? {
             super::conversation_history::ConversationRead::Ready(snapshot) => Ok(*snapshot),
+            super::conversation_history::ConversationRead::Present => {
+                unreachable!("prepare_conversation_read returns Ready or Load")
+            }
             super::conversation_history::ConversationRead::Load(request) => {
                 self.finish_conversation_read(request.load())
             }
@@ -737,7 +741,8 @@ impl CoreRuntime {
             self.for_each_session(|core| {
                 if core.session.execution_runtime_id.as_deref() == Some(runtime_id)
                     && core
-                        .native_snapshot()
+                        .session
+                        .projected()
                         .is_some_and(|view| view.conversation.id == id)
                     && let Some(live) = core.session.active_state.live_mut()
                 {
@@ -749,6 +754,11 @@ impl CoreRuntime {
                 Ok(())
             })?;
             if renamed_live {
+                if runtime.type_id == RuntimeKind::Pi {
+                    // Pi shares this owner with foreground RPC. Do not hold
+                    // it for a native index scan after dispatching the rename.
+                    return Ok(self.list_after_live_rename(id, title));
+                }
                 return self.list();
             }
         }
@@ -851,7 +861,7 @@ impl CoreRuntime {
             // active index refresh below cannot invalidate a cached archive.
             let source = self.runtime_source_key(&runtime)?;
             let config = self.history_config(&runtime)?;
-            let summaries = if config.provider == "codex" {
+            let summaries = if config.kind == velune_agent_runtime::version::RuntimeKind::Codex166 {
                 self.read_codex_projects(&runtime, true)?
             } else {
                 browsing::shared_summaries(history::list_archived(&config, &runtime.id)?)
@@ -939,11 +949,6 @@ impl CoreRuntime {
         if self.turn_running() {
             return Err(RuntimeError::invalid("runtime is busy"));
         }
-        if let ActiveState::Native(session) = &self.session.active_state
-            && session.restart_needed()
-        {
-            self.ensure_work_ended()?;
-        }
         let (text, images) = prompt.message.unwrap_or_default();
         let images = super::attachments::turn_images(images)?;
         let resuming = prompt.message.is_none();
@@ -959,17 +964,30 @@ impl CoreRuntime {
                 .ok_or_else(|| RuntimeError::invalid("请选择此会话的模型"))?;
             self.prepare_with_selection(snapshot, selection.as_ref(), false)?;
         }
-        self.retire_native_settings_for_submission();
-        self.begin_turn_observation();
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .begin_user_turn(&gateway_id, &session)
-                .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
-        }
         // Preparation may have changed the native session. Capture the pre-send
         // transcript once for inherited options and the new user-message boundary.
         self.refresh_transcript();
         let (effort, permission_mode) = self.turn_options(prompt.effort, prompt.permission_mode)?;
+        let mut reusing_claude = false;
+        if let ActiveState::Native(session) = &self.session.active_state {
+            let restart = if resuming {
+                session.restart_needed()
+            } else {
+                session.restart_needed_for_send(effort.as_deref(), permission_mode.as_deref())
+            };
+            if restart {
+                self.ensure_work_ended()?;
+            } else {
+                reusing_claude = self.active_instance()?.type_id == RuntimeKind::ClaudeCode;
+            }
+        }
+        self.retire_native_settings_for_submission();
+        self.begin_turn_observation();
+        if !reusing_claude && let Some((gateway_id, session)) = self.backend_session_identity() {
+            self.session_backends()
+                .begin_user_turn(&gateway_id, &session)
+                .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
+        }
         let input = pi::TurnInput {
             text: text.into(),
             effort,
@@ -988,11 +1006,49 @@ impl CoreRuntime {
         {
             self.bind_gateway_model()?;
         }
-        self.drain_runtime()?;
+        self.apply_acp_model_auto_compaction(prompt.runtime_id)?;
+        // The selected connection and its gateway belong to this dispatch.
+        // Full projection sync follows dispatch: it can settle prior background
+        // work, retire the connection, or advance the send queue.
         self.check_submission_cancelled(self.session.conversation_id().unwrap_or_default())?;
         self.session.unsubmitted_draft = None;
         let mut submitted = None;
-        let sent =
+        // Pi's ordinary send() only queues the prompt. A user initiated
+        // composed send holds its application reply until this exact native
+        // prompt response settles.
+        let pi_application = if !resuming {
+            self.execution_control_ticket(execution_workers::ExecutionCommandKind::Send)?
+        } else {
+            None
+        };
+        let pi_ticket = if let (Some(application), ActiveState::Pi(pi)) =
+            (pi_application, &mut self.session.active_state)
+        {
+            let native = pi
+                .begin_submission_prompt(&input)
+                .map_err(|error| RuntimeError::context("Pi 输入未派发", error))?;
+            Some((application, native))
+        } else {
+            None
+        };
+        if let Some((application, native)) = pi_ticket {
+            self.session.pi_submission = Some(editing::PiSubmission {
+                application,
+                native,
+            });
+            self.mark_execution_started(application);
+        }
+        let claude = if pi_ticket.is_none() && !resuming {
+            self.try_start_claude_composed(&input)
+        } else {
+            None
+        };
+        let composed_claude = claude.is_some();
+        let sent = if let Some(result) = claude {
+            result
+        } else if pi_ticket.is_some() {
+            Ok(())
+        } else {
             telemetry::observe(
                 self.telemetry.as_ref(),
                 "harness.dispatch",
@@ -1021,9 +1077,38 @@ impl CoreRuntime {
                     },
                 },
             )
-            .map_err(|error| RuntimeError::context("message send", error));
+        };
+        let native_error = sent
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<velune_agent_runtime::native::Error>())
+            .map(velune_agent_runtime::native::Error::code);
+        let rejected_fork_start = native_error == Some("claude_fork_input_not_sent");
+        let sent = sent.map_err(|error| {
+            if native_error == Some("outstanding_work") {
+                RuntimeError::OutstandingWork
+            } else if reusing_claude || composed_claude {
+                RuntimeError::runtime_operation("message send", error)
+            } else {
+                RuntimeError::context("message send", error)
+            }
+        });
         let pending_fork = self.session.refresh_pending_native_fork();
-        if sent.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
+        if rejected_fork_start {
+            // Only a known failure before user-frame dispatch admits a retry.
+            // Keep the live-only fork's source and boundary on the session.
+            if let Err(error) = self.finish_managed_turn() {
+                tracing::warn!(target: "velune_application", event = "fork_start_cleanup_failed", detail = %error);
+            }
+            if self.session.pending_native_fork.is_some()
+                && let ActiveState::History(snapshot) = &mut self.session.active_state
+            {
+                snapshot.actions.can_send = true;
+            }
+        } else if sent.is_err()
+            && self.session.gateway_runner.is_some()
+            && !self.session.executing()
+        {
             self.finish_managed_turn()?;
         }
         sent?;
