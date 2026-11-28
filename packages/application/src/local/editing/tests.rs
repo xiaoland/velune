@@ -2077,8 +2077,10 @@ for line in sys.stdin:
     .unwrap();
     let mut session = pi::PiSession::new(config);
     session.start(client, projection);
-    core.session.active_state = ActiveState::Pi(Box::new(session));
-    core.session.execution_runtime_id = Some("pi".into());
+    core.session.install_execution(
+        ActiveState::Pi(Box::new(session)),
+        execution::SessionExecution::native(core.runtime_instance("pi").unwrap().clone()),
+    );
     let source_key = core.session.key;
     let mut view = core.current_snapshot().unwrap();
     assert!(!view.actions.can_send);

@@ -202,13 +202,10 @@ impl NativeControls {
 impl session::Session {
     pub(super) fn owns_native_control(&self) -> bool {
         self.side.is_none()
-            && self
-                .execution_configuration
-                .as_ref()
-                .is_some_and(|configuration| {
-                    configuration.runtime.type_id == RuntimeKind::Codex166
-                        && configuration.gateway.is_none()
-                })
+            && self.execution().is_some_and(|configuration| {
+                configuration.runtime.type_id == RuntimeKind::Codex166
+                    && configuration.gateway().is_none()
+            })
             && matches!(self.active_state, ActiveState::Native(_))
     }
 }
@@ -405,7 +402,7 @@ impl CoreRuntime {
         {
             return None;
         }
-        let configuration = self.session.execution_configuration.as_ref()?;
+        let configuration = self.session.execution()?;
         let selection = self.session.model_selection.as_ref()?;
         if configuration.native_project
             || matches!(selection, Some(crate::ModelSelection::Managed { .. }))
@@ -459,7 +456,7 @@ impl CoreRuntime {
     fn created_draft_grant(&self) -> Option<&CreatedDraft> {
         let grant = self.session.native_controls.created_draft.as_ref()?;
         let draft = self.session.unsubmitted_draft.as_ref()?;
-        let configuration = self.session.execution_configuration.as_ref()?;
+        let configuration = self.session.execution()?;
         let snapshot = self.session.projected()?;
         if grant.session != self.session.key
             || draft.creation_token != Some(grant.token)
@@ -470,7 +467,7 @@ impl CoreRuntime {
             || self.session.side.is_some()
             || self.session.pending_native_fork.is_some()
             || configuration.native_project
-            || configuration.gateway.is_some()
+            || configuration.gateway().is_some()
             || self.session.configuration_changed
             || draft.native_id != grant.native_id
             || draft.public_id != grant.native_id
@@ -553,7 +550,7 @@ impl CoreRuntime {
         {
             return false;
         }
-        let Some(configuration) = &self.session.execution_configuration else {
+        let Some(configuration) = self.session.execution() else {
             return false;
         };
         if configuration.native_project

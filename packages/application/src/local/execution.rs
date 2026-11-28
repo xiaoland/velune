@@ -2,40 +2,133 @@
 use super::*;
 use crate::conversation::ConversationSnapshot;
 
-pub(super) struct ExecutionConfiguration {
+use velune_agent_runtime::execution::{ExecutionTarget, LoopbackTunnel};
+use velune_gateway::{
+    CredentialResolver, ExecutionBackends, QuotaSource, Runner, SchedulingState, SessionIdentity,
+    SharedAnalyticsSink,
+};
+
+pub(super) struct SessionExecution {
     pub(super) runtime: RuntimeInstance,
-    pub(super) gateway: Option<GatewayConfig>,
     /// Project preparation remains on the compatibility submission path.
     pub(super) native_project: bool,
-    pub(super) gateway_session: Option<velune_gateway::SessionIdentity>,
-    pub(super) backends: velune_gateway::ExecutionBackends,
+    gateway: Option<GatewayExecution>,
+}
+
+impl SessionExecution {
+    pub(super) fn native(runtime: RuntimeInstance) -> Self {
+        Self {
+            runtime,
+            native_project: false,
+            gateway: None,
+        }
+    }
+
+    pub(super) fn managed(runtime: RuntimeInstance, gateway: GatewayExecution) -> Self {
+        Self {
+            runtime,
+            native_project: false,
+            gateway: Some(gateway),
+        }
+    }
+
+    pub(super) fn gateway(&self) -> Option<&GatewayExecution> {
+        self.gateway.as_ref()
+    }
+}
+
+/// One Runner and the exact routing and backend control authority it captured.
+pub(super) struct GatewayExecution {
+    config: GatewayConfig,
+    identity: SessionIdentity,
+    backends: ExecutionBackends,
+    runner: Runner,
+    tunnel: Option<LoopbackTunnel>,
+}
+
+impl GatewayExecution {
+    pub(super) fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
+
+    pub(super) fn runner(&self) -> &Runner {
+        &self.runner
+    }
+
+    pub(super) fn endpoint(&self) -> &str {
+        self.tunnel
+            .as_ref()
+            .map_or(self.runner.endpoint(), LoopbackTunnel::endpoint)
+    }
+
+    pub(super) fn via(mut self, target: &ExecutionTarget) -> Result<Self, RuntimeError> {
+        self.tunnel = Some(
+            LoopbackTunnel::open(target, self.runner.endpoint())
+                .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?,
+        );
+        Ok(self)
+    }
+
+    pub(super) fn begin_user_turn(&self) -> Result<(), velune_ai::InvalidContract> {
+        self.backends
+            .begin_user_turn(&self.config.id, &self.identity)
+    }
+
+    pub(super) fn cancel(&self) {
+        self.backends
+            .cancel_session(&self.config.id, &self.identity);
+    }
+
+    pub(super) fn finish_user_turn(&self) {
+        self.backends
+            .finish_user_turn(&self.config.id, &self.identity);
+    }
+
+    #[cfg(all(test, unix))]
+    pub(super) fn uses_backends(&self, backends: &ExecutionBackends) -> bool {
+        Arc::ptr_eq(&self.backends.claude_code, &backends.claude_code)
+            && Arc::ptr_eq(&self.backends.antigravity, &backends.antigravity)
+    }
+}
+
+/// Captures dispatch inputs on the Core owner, including for a worker launch.
+pub(super) struct GatewayLaunch {
+    config: GatewayConfig,
+    resolver: Arc<dyn CredentialResolver>,
+    aliases: BTreeMap<String, String>,
+    analytics: SharedAnalyticsSink,
+    scheduling: SchedulingState,
+    quota: Arc<dyn QuotaSource>,
+    identity: SessionIdentity,
+    backends: ExecutionBackends,
+    telemetry: Option<Arc<velune_telemetry::ClientTelemetry>>,
+}
+
+impl GatewayLaunch {
+    pub(super) fn start(self) -> Result<GatewayExecution, RuntimeError> {
+        let runner = Runner::start_with_scheduling(
+            self.config.to_gateway_config()?,
+            self.resolver,
+            self.aliases,
+            Some(self.analytics),
+            self.scheduling,
+            self.quota,
+            Some(self.identity.clone()),
+            self.backends.clone(),
+        )
+        .map_err(|error| RuntimeError::context("gateway startup", error))?;
+        runner.set_telemetry(self.telemetry, None, None);
+        Ok(GatewayExecution {
+            config: self.config,
+            identity: self.identity,
+            backends: self.backends,
+            runner,
+            tunnel: None,
+        })
+    }
 }
 
 impl CoreRuntime {
-    pub(super) fn capture_execution_configuration(
-        &mut self,
-        runtime: &RuntimeInstance,
-        gateway: Option<(&GatewayConfig, velune_gateway::SessionIdentity)>,
-    ) {
-        self.session.execution_configuration = Some(ExecutionConfiguration {
-            runtime: runtime.clone(),
-            gateway: gateway.as_ref().map(|(gateway, _)| (*gateway).clone()),
-            native_project: false,
-            gateway_session: gateway.map(|(_, session)| session),
-            backends: self.execution_backends.clone(),
-        });
-        self.session.configuration_changed = false;
-    }
-
-    pub(super) fn session_backends(&self) -> &velune_gateway::ExecutionBackends {
-        self.session
-            .execution_configuration
-            .as_ref()
-            .map_or(&self.execution_backends, |configuration| {
-                &configuration.backends
-            })
-    }
-
     pub(super) fn prepare_runtime(
         &mut self,
         runtime_id: &str,
@@ -76,79 +169,46 @@ impl CoreRuntime {
         // Stopping the previous runtime removes its native projection. Capture
         // the public identity first, and give a new, unnamed conversation its
         // own execution identity until the harness creates its native ID.
-        let session = self
-            .session
-            .conversation_id()
-            .map(|id| velune_gateway::SessionIdentity {
-                namespace: "velune.conversation".into(),
-                id: id.into(),
-            })
-            .unwrap_or_else(|| velune_gateway::SessionIdentity {
-                namespace: "velune.prepared_execution".into(),
-                id: crate::new_record_key(),
-            });
+        let conversation = self.session.conversation_id().map(str::to_owned);
         if runtime.type_id != RuntimeKind::Pi {
             self.shutdown_active()?;
-            self.capture_execution_configuration(&runtime, Some((&gateway, session)));
             let runtime_projection = self.execution_context(&runtime)?.projection;
             let lane = self.lane_projection(&runtime_projection);
-            let runner = self
-                .start_gateway_runner(&gateway, self.native_aliases(&runtime, model_record_key)?)?;
-            self.session.gateway_runner = Some(runner);
-            let servers = self.collaboration_servers();
-            let result = (|| {
-                let injection = self.native_injection(&runtime, model_record_key)?;
-                let mut config = self.native_config(&runtime, Some(injection))?;
-                config.auto_compaction =
-                    runtime.model_auto_compaction(&crate::ModelSelection::Managed {
-                        model_record_key: model_record_key.to_owned(),
-                    })?;
-                config.projection_directory = lane;
-                config.mcp_servers = servers;
-                config.session_agents = self.turn_subagents(&runtime);
-                telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
-                    NativeSession::connect(config)
-                })
-                .map_err(|error| RuntimeError::context("运行时连接失败", error))
-            })();
-            match result {
-                Ok(session) => {
-                    self.session.active_state = ActiveState::Native(Box::new(session));
-                    self.session.execution_runtime_id = Some(runtime.id);
-                    self.session.model_record_key = None;
-                    return Ok(());
-                }
-                Err(error) => {
-                    self.session.gateway_runner = None;
-                    return Err(error);
-                }
-            }
-        }
-        runnable_pi_model(&gateway, model_record_key)?;
-        let physical_model_id = gateway
-            .pi_binding_id(
-                model_record_key,
-                gateway.authentication_revision(model_record_key),
-            )
-            .map_err(RuntimeError::invalid)?;
-        let route_aliases = gateway
-            .selectable_keys()
-            .map(|key| {
-                gateway
-                    .pi_binding_id(key, gateway.authentication_revision(key))
-                    .map(|alias| (alias, key.to_owned()))
-                    .map_err(RuntimeError::invalid)
+            let aliases = self.native_aliases(&runtime, model_record_key)?;
+            let gateway = self
+                .gateway_launch(gateway, aliases, conversation)
+                .start()?;
+            let injection = Self::native_injection(&runtime, &gateway, model_record_key)?;
+            let mut config = self.native_config(&runtime, Some(injection))?;
+            config.auto_compaction =
+                runtime.model_auto_compaction(&crate::ModelSelection::Managed {
+                    model_record_key: model_record_key.to_owned(),
+                })?;
+            config.projection_directory = lane;
+            config.mcp_servers = self.collaboration_servers();
+            config.session_agents = self.turn_subagents(&runtime);
+            let session = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
+                NativeSession::connect(config)
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+            .map_err(|error| RuntimeError::context("运行时连接失败", error))?;
+            self.session.install_execution(
+                ActiveState::Native(Box::new(session)),
+                SessionExecution::managed(runtime, gateway),
+            );
+            self.session.model_record_key = None;
+            return Ok(());
+        }
+        let pi_composition::PiManagedModel {
+            physical_id,
+            aliases,
+            protocol,
+        } = pi_composition::PiManagedModel::resolve(&gateway, model_record_key)?;
         self.shutdown_active()?;
-        self.capture_execution_configuration(&runtime, Some((&gateway, session)));
-        let runner = self.start_gateway_runner(&gateway, route_aliases)?;
         let context = self.prepare_execution_context(&runtime)?;
-        let tunnel = velune_agent_runtime::execution::LoopbackTunnel::open(
-            &context.target,
-            runner.endpoint(),
-        )
-        .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?;
+        let gateway = self
+            .gateway_launch(gateway, aliases, conversation)
+            .start()?
+            .via(&context.target)?;
         let projection_dir = self.lane_projection(&context.projection);
         let config = PiConfig {
             mcp_servers: self.collaboration_servers(),
@@ -170,7 +230,7 @@ impl CoreRuntime {
                 &runtime,
                 Some(model_record_key),
             )?,
-            gateway_token: Some(runner.token().into()),
+            gateway_token: Some(gateway.runner().token().into()),
             session_dir: setting_path_optional(&runtime, "sessionDir"),
             session: None,
             side: false,
@@ -181,53 +241,44 @@ impl CoreRuntime {
         config
             .validate_sdk()
             .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-        let protocol = pi_gateway_api(
-            gateway
-                .resolve_dispatch(model_record_key)
-                .map_err(RuntimeError::invalid)?
-                .provider()
-                .protocol,
+        materialize_models(&config, gateway.config(), gateway.endpoint(), protocol)?;
+        write_selection_file(&config, model_record_key, &physical_id)?;
+        self.session.install_execution(
+            ActiveState::Pi(Box::new(pi::PiSession::new(config))),
+            SessionExecution::managed(runtime, gateway),
         );
-        if let Err(error) = materialize_models(&config, &gateway, tunnel.endpoint(), protocol) {
-            drop(runner);
-            return Err(error);
-        }
-        write_selection_file(&config, model_record_key, &physical_model_id)?;
-        self.session.gateway_runner = Some(runner);
-        self.session.gateway_tunnel = Some(tunnel);
-        self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
-        self.session.execution_runtime_id = Some(runtime_id.into());
         self.session.model_record_key = None;
         Ok(())
     }
 
-    /// Aliases, credentials, quota bindings and session identity belong to one
-    /// prepared execution. Editing saved configuration affects the next one.
-    fn start_gateway_runner(
+    pub(super) fn gateway_launch(
         &self,
-        gateway: &GatewayConfig,
+        config: GatewayConfig,
         aliases: BTreeMap<String, String>,
-    ) -> Result<Runner, RuntimeError> {
-        let runner = Runner::start_with_scheduling(
-            gateway.to_gateway_config()?,
-            crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
-                gateway,
+        conversation_id: Option<String>,
+    ) -> GatewayLaunch {
+        let (namespace, id) = match conversation_id {
+            Some(id) => ("velune.conversation", id),
+            None => ("velune.prepared_execution", crate::new_record_key()),
+        };
+        GatewayLaunch {
+            resolver: crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
+                &config,
                 &self.options,
                 self.subscription_quota.clone(),
             ),
+            quota: self.subscription_quota.source(&config.id),
+            config,
             aliases,
-            Some(self.analytics.clone()),
-            self.scheduling_state.clone(),
-            self.subscription_quota.source(&gateway.id),
-            self.session
-                .execution_configuration
-                .as_ref()
-                .and_then(|configuration| configuration.gateway_session.clone()),
-            self.execution_backends.clone(),
-        )
-        .map_err(|error| RuntimeError::context("gateway startup", error))?;
-        runner.set_telemetry(self.telemetry.clone(), None, None);
-        Ok(runner)
+            analytics: self.analytics.clone(),
+            scheduling: self.scheduling_state.clone(),
+            identity: SessionIdentity {
+                namespace: namespace.into(),
+                id,
+            },
+            backends: self.execution_backends.clone(),
+            telemetry: self.telemetry.clone(),
+        }
     }
 
     pub(super) fn start_pi_for_session(
@@ -235,14 +286,13 @@ impl CoreRuntime {
         cwd: Option<&Path>,
         source: Option<&ConversationSnapshot>,
         model_record_key: Option<&str>,
-        physical_model_id: Option<&str>,
     ) -> Result<(), RuntimeError> {
         let runtime = self
             .session
-            .execution_runtime_id
-            .as_deref()
-            .ok_or_else(|| RuntimeError::invalid("Pi 执行运行时不可用"))
-            .and_then(|_| self.active_instance().cloned())?;
+            .execution()
+            .ok_or_else(|| RuntimeError::invalid("Pi 执行运行时不可用"))?
+            .runtime
+            .clone();
         let runtime_context = format!(
             "runtime startup；{}",
             super::browsing::runtime_context(&runtime)
@@ -283,9 +333,6 @@ impl CoreRuntime {
         config.session = session.map(Path::to_owned);
         config.side = self.session.side.is_some();
         config.name = None;
-        if let (Some(logical), Some(physical)) = (model_record_key, physical_model_id) {
-            write_selection_file(&config, logical, physical)?;
-        }
         let mut client = telemetry::observe(self.telemetry.as_ref(), "harness.start", || {
             pi::Client::spawn(config.clone())
         })
@@ -305,11 +352,7 @@ impl CoreRuntime {
         {
             return Err(super::browsing::history_read_changed());
         }
-        let runtime_id = self
-            .session
-            .execution_runtime_id
-            .as_deref()
-            .unwrap_or_default();
+        let runtime_id = runtime.id.as_str();
         let mut projection = if let Some(source) = source.filter(|_| !config.side) {
             PiProjection::from_history(source)
         } else {
@@ -383,11 +426,7 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("runtime shutdown", error)),
             None => Ok(()),
         };
-        self.session.gateway_runner = None;
-        self.session.gateway_tunnel = None;
-        self.session.execution_runtime_id = None;
-        self.session.execution_configuration = None;
-        self.session.configuration_changed = false;
+        self.session.clear_execution();
         self.session.model_record_key = None;
         self.complete_turn_observation(if result.is_ok() && cancellation_requested {
             velune_telemetry::Outcome::Cancelled
@@ -399,7 +438,7 @@ impl CoreRuntime {
 }
 
 #[cfg(all(test, unix))]
-mod gateway_execution_tests {
+pub(super) mod gateway_execution_tests {
     use super::*;
     use crate::conversation::ConversationSnapshot;
     use axum::{
@@ -408,7 +447,7 @@ mod gateway_execution_tests {
     };
     use std::{os::unix::fs::PermissionsExt, sync::Mutex, time::Duration};
 
-    fn provider(id: &str, endpoint: &str) -> crate::ProviderDraft {
+    pub(in crate::local) fn provider(id: &str, endpoint: &str) -> crate::ProviderDraft {
         crate::ProviderDraft {
             id: id.into(),
             name: id.into(),
@@ -433,7 +472,7 @@ mod gateway_execution_tests {
         }
     }
 
-    fn save(core: &mut CoreRuntime, draft: crate::ProviderDraft, key: &str) {
+    pub(in crate::local) fn save(core: &mut CoreRuntime, draft: crate::ProviderDraft, key: &str) {
         core.save_provider(
             "default".into(),
             draft,
@@ -443,7 +482,7 @@ mod gateway_execution_tests {
         .unwrap();
     }
 
-    fn snapshot(id: &str) -> ConversationSnapshot {
+    pub(in crate::local) fn snapshot(id: &str) -> ConversationSnapshot {
         PiProjection::new(ConversationSummary {
             native_read_state: None,
             id: id.into(),
@@ -547,7 +586,7 @@ for line in sys.stdin:
     emit({'type':'response', 'id':identity, 'command':command, 'success':True, 'data':data})
 "#;
 
-    fn pi_execution_fixture(mode: &str) -> (PathBuf, crate::Application) {
+    pub(in crate::local) fn pi_execution_fixture(mode: &str) -> (PathBuf, crate::Application) {
         let root =
             std::env::temp_dir().join(format!("velune-pi-execution-{}", crate::new_record_key()));
         fs::create_dir(&root).unwrap();
@@ -800,7 +839,7 @@ else:
 
             until(core, "idle after cleanup", |core| {
                 matches!(core.session.active_state, ActiveState::History(_))
-                    && core.session.gateway_runner.is_none()
+                    && core.session.gateway().is_none()
             });
             let shown = core.current_snapshot().unwrap();
             assert!(
@@ -877,15 +916,17 @@ for line in sys.stdin:
             "binary":"/usr/bin/python3", "node_binary":"/usr/bin/python3", "rpc_entry":helper,
         }))
         .unwrap();
-        core.session.execution_runtime_id = Some("pi".into());
-        core.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
+        core.session.install_execution(
+            ActiveState::Pi(Box::new(pi::PiSession::new(config))),
+            SessionExecution::native(core.runtime_instance("pi").unwrap().clone()),
+        );
         let id = format!("pi:{}", root.join("existing.jsonl").display());
         let mut source = PiProjection::new(snapshot(&id).conversation);
         source.replace_history(&json!({"messages":[
             {"id":"pi:session:old:0","role":"user","content":"synthetic earlier prompt"}
         ]}));
         let source = source.snapshot.unwrap();
-        core.start_pi_for_session(None, Some(&source), None, None)
+        core.start_pi_for_session(None, Some(&source), None)
             .unwrap();
         let live = core.native_snapshot().expect("started Pi view");
         assert_eq!(live.conversation.id, source.conversation.id);
@@ -1016,20 +1057,12 @@ for line in sys.stdin:
         save(core, provider("b", &format!("{origin}/b/v1")), "b-key");
         core.session.active_state = ActiveState::History(Box::new(snapshot("pi:first").into()));
         core.prepare_runtime("pi", "a").unwrap();
-        assert_eq!(core.backend_session_identity().unwrap().1.id, "pi:first");
-        let old_gateway = core
-            .session
-            .execution_configuration
-            .as_ref()
-            .unwrap()
-            .gateway
-            .as_ref()
-            .unwrap()
-            .clone();
+        assert_eq!(core.session.gateway().unwrap().identity.id, "pi:first");
+        let old_gateway = core.session.gateway().unwrap().config().clone();
         let old_alias = old_gateway
             .pi_binding_id("a", old_gateway.authentication_revision("a"))
             .unwrap();
-        let runner = core.session.gateway_runner.as_ref().unwrap();
+        let runner = core.session.gateway().unwrap().runner();
         let old_endpoint = runner.endpoint().to_owned();
         let old_token = runner.token().to_owned();
         let old_quota = Arc::downgrade(&core.subscription_quota);
@@ -1072,12 +1105,7 @@ for line in sys.stdin:
         assert_eq!(core.gateways, committed);
         fs::remove_dir(root.join("generic-config.json.tmp")).unwrap();
         assert_eq!(
-            core.session
-                .execution_configuration
-                .as_ref()
-                .unwrap()
-                .gateway
-                .as_ref(),
+            core.session.gateway().map(GatewayExecution::config),
             Some(&old_gateway)
         );
         release.notify_one();
@@ -1089,8 +1117,8 @@ for line in sys.stdin:
 
         core.focus_new();
         core.prepare_runtime("codex", "b").unwrap();
-        let second_identity = core.backend_session_identity().unwrap().1;
-        let runner = core.session.gateway_runner.as_ref().unwrap();
+        let second_identity = core.session.gateway().unwrap().identity.clone();
+        let runner = core.session.gateway().unwrap().runner();
         assert_ne!(runner.endpoint(), old_endpoint);
         assert_eq!(
             send(runner.endpoint(), runner.token(), "shared-model-name")
@@ -1100,8 +1128,8 @@ for line in sys.stdin:
         );
         core.focus_new();
         core.prepare_runtime("codex", "a").unwrap();
-        assert_ne!(core.backend_session_identity().unwrap().1, second_identity);
-        let runner = core.session.gateway_runner.as_ref().unwrap();
+        assert_ne!(core.session.gateway().unwrap().identity, second_identity);
+        let runner = core.session.gateway().unwrap().runner();
         assert_eq!(
             send(runner.endpoint(), runner.token(), "shared-model-name")
                 .await
@@ -1149,7 +1177,8 @@ for line in sys.stdin:
         );
         core.upsert_runtime(runtime.clone()).unwrap();
         assert!(core.prepare_runtime("codex", "a").is_err());
-        assert!(core.session.gateway_runner.is_none());
+        assert!(core.session.execution().is_none());
+        assert!(core.active_instance().is_err());
         runtime
             .settings
             .insert("binary".into(), codex.to_string_lossy().into_owned());

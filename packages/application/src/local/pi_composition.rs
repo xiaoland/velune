@@ -23,6 +23,37 @@ pub(super) fn runnable_pi_model<'a>(
         .model())
 }
 
+pub(super) struct PiManagedModel {
+    pub(super) physical_id: String,
+    pub(super) aliases: BTreeMap<String, String>,
+    pub(super) protocol: &'static str,
+}
+
+impl PiManagedModel {
+    pub(super) fn resolve(gateway: &GatewayConfig, key: &str) -> Result<Self, RuntimeError> {
+        let protocol = pi_gateway_api(
+            gateway
+                .resolve_dispatch(key)
+                .map_err(RuntimeError::invalid)?
+                .provider()
+                .protocol,
+        );
+        let binding = |key: &str| {
+            gateway
+                .pi_binding_id(key, gateway.authentication_revision(key))
+                .map_err(RuntimeError::invalid)
+        };
+        Ok(Self {
+            physical_id: binding(key)?,
+            aliases: gateway
+                .selectable_keys()
+                .map(|key| binding(key).map(|alias| (alias, key.to_owned())))
+                .collect::<Result<_, _>>()?,
+            protocol,
+        })
+    }
+}
+
 pub(super) fn pi_gateway_api(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::ChatCompletions => "openai-completions",

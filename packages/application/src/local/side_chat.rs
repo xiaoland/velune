@@ -200,7 +200,7 @@ impl CoreRuntime {
         if let Some(mode) = &turn.permission_mode {
             self.validate_permission_mode(&runtime, mode)?;
         }
-        if self.session.execution_runtime_id.as_deref() != Some(target_runtime_id)
+        if self.session.execution_runtime_id() != Some(target_runtime_id)
             || self.session.model_selection.as_ref() != Some(&selection)
             || matches!(self.session.active_state, ActiveState::History(_))
         {
@@ -241,13 +241,13 @@ impl CoreRuntime {
             permission_mode: turn.permission_mode,
             images: Vec::new(),
         };
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.execution_backends
-                .begin_user_turn(&gateway_id, &session)
+        if let Some(gateway) = self.session.gateway() {
+            gateway
+                .begin_user_turn()
                 .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
         }
         if matches!(self.session.active_state, ActiveState::Pi(_))
-            && self.session.gateway_runner.is_some()
+            && self.session.gateway().is_some()
         {
             self.bind_gateway_model()?;
         }
@@ -278,10 +278,9 @@ impl CoreRuntime {
             return Ok(());
         }
         if self.turn_running()
-            && let Some((gateway_id, session)) = self.backend_session_identity()
+            && let Some(gateway) = self.session.gateway()
         {
-            self.execution_backends
-                .cancel_session(&gateway_id, &session);
+            gateway.cancel();
         }
         let result = self.shutdown_active();
         self.session = Default::default();

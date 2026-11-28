@@ -739,7 +739,7 @@ impl CoreRuntime {
             // A linked conversation may name a source owned by another open
             // session. Always use its live owner instead of a second file writer.
             self.for_each_session(|core| {
-                if core.session.execution_runtime_id.as_deref() == Some(runtime_id)
+                if core.session.execution_runtime_id() == Some(runtime_id)
                     && core
                         .session
                         .projected()
@@ -769,7 +769,7 @@ impl CoreRuntime {
             && !listed
             && runtime.type_id == RuntimeKind::Pi
             && matches!(self.session.active_state, ActiveState::Pi(_))
-            && self.session.execution_runtime_id.as_deref() == Some(runtime_id)
+            && self.session.execution_runtime_id() == Some(runtime_id)
             && self
                 .native_snapshot()
                 .is_some_and(|snapshot| snapshot.conversation.id == id)
@@ -983,9 +983,10 @@ impl CoreRuntime {
         }
         self.retire_native_settings_for_submission();
         self.begin_turn_observation();
-        if !reusing_claude && let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .begin_user_turn(&gateway_id, &session)
+
+        if !reusing_claude && let Some(gateway) = self.session.gateway() {
+            gateway
+                .begin_user_turn()
                 .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
         }
         let input = pi::TurnInput {
@@ -1105,10 +1106,7 @@ impl CoreRuntime {
             {
                 snapshot.actions.can_send = true;
             }
-        } else if sent.is_err()
-            && self.session.gateway_runner.is_some()
-            && !self.session.executing()
-        {
+        } else if sent.is_err() && self.session.gateway().is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         sent?;
@@ -1121,7 +1119,7 @@ impl CoreRuntime {
         }
         self.sync_projection()
             .map_err(RuntimeError::after_delivery)?;
-        if self.session.gateway_runner.is_some() && !self.session.executing() {
+        if self.session.gateway().is_some() && !self.session.executing() {
             self.finish_managed_turn()
                 .map_err(RuntimeError::after_delivery)?;
         }
@@ -1153,16 +1151,6 @@ impl CoreRuntime {
             .pi()?
             .set_model(Some("velune"), "auto")
             .map_err(|error| RuntimeError::context("gateway model binding", error))
-    }
-
-    pub(super) fn backend_session_identity(
-        &self,
-    ) -> Option<(String, velune_gateway::SessionIdentity)> {
-        let configuration = self.session.execution_configuration.as_ref()?;
-        Some((
-            configuration.runtime.gateway_id.clone(),
-            configuration.gateway_session.clone()?,
-        ))
     }
 
     pub(crate) fn cancel(&mut self, runtime_id: &str) -> Result<SnapshotResult, RuntimeError> {
@@ -1273,7 +1261,7 @@ impl CoreRuntime {
         let active_runtime = self
             .native_snapshot()
             .map(|snapshot| snapshot.conversation.runtime_id)
-            .or_else(|| self.session.execution_runtime_id.clone());
+            .or_else(|| self.session.execution_runtime_id().map(str::to_owned));
         if active_runtime.as_deref() != Some(requested) {
             return Err(RuntimeError::invalid("runtime instance is not active"));
         }
@@ -1282,7 +1270,7 @@ impl CoreRuntime {
 
     pub(super) fn sync_projection(&mut self) -> Result<(), RuntimeError> {
         self.drain_runtime()?;
-        let runtime_id = self.session.execution_runtime_id.clone();
+        let runtime_id = self.session.execution_runtime_id().map(str::to_owned);
         let model_record_key = self.session.model_record_key.clone();
         if let ActiveState::Pi(session) = &mut self.session.active_state
             && session

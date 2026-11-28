@@ -51,7 +51,7 @@ impl CoreRuntime {
         runtime_id: String,
     ) -> Result<crate::AcpRuntimeInfo, RuntimeError> {
         let runtime = self.runtime_instance(&runtime_id)?;
-        if self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
+        if self.session.execution_runtime_id() == Some(&runtime.id)
             && let ActiveState::Acp(session) = &self.session.active_state
         {
             return Ok(acp_runtime_info(session));
@@ -127,7 +127,7 @@ impl CoreRuntime {
             })
             .transpose()?;
         if !is_new
-            && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
+            && self.session.execution_runtime_id() == Some(&runtime.id)
             && let ActiveState::Acp(session) = &mut self.session.active_state
             && session
                 .snapshot()
@@ -166,9 +166,10 @@ impl CoreRuntime {
                 .map_err(|error| RuntimeError::context("ACP 模型选择", error))?;
         }
         self.shutdown_active()?;
-        self.capture_execution_configuration(&runtime, None);
-        self.session.execution_runtime_id = Some(runtime.id);
-        self.session.active_state = ActiveState::Acp(Box::new(session));
+        self.session.install_execution(
+            ActiveState::Acp(Box::new(session)),
+            execution::SessionExecution::native(runtime),
+        );
         Ok(())
     }
 
