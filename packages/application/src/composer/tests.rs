@@ -33,7 +33,7 @@ fn blank_tab_contexts_keep_independent_content_and_choices_after_promotion() {
     let contexts: Vec<_> = (0..2)
         .map(|_| ComposerContextKey::Conversation {
             owner_id: owner_id.clone(),
-            conversation_id: format!("draft:{}", identity()),
+            conversation_id: LocalConversation::draft_id(&identity()),
         })
         .collect();
     let inputs = [identity(), identity()];

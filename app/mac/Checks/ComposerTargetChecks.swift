@@ -299,7 +299,7 @@ import VeluneBindings
         && cold.composerInputs.inputID(for: "synthetic-cold-a") == coldInput.id }
     precondition(coldAliases.model(for: .conversation("synthetic-cold-a"), tab: coldTab) === coldInput
                  && coldInput.attachments.count == 1, "冷启动先恢复的副本不能被首次目录读取覆盖")
-    let scopedDraft = ConversationStore.draftConversationPrefix + UUID().uuidString
+    let scopedDraft = draftConversationId(tabIdentity: UUID().uuidString)
     let creationInput = ComposerModel()
     first.composerInputs.bind(scopedDraft, input: creationInput)
     wait { first.composerInputs.pendingBinding(scopedDraft) == nil && first.composerInputs.inputID(for: scopedDraft) == creationInput.id }

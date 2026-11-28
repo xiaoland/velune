@@ -12,6 +12,8 @@ mod migration;
 pub(crate) use migration::prepare_migration;
 
 const CURRENT_SCHEMA: u32 = 2;
+/// The single new-conversation draft that field-specific legacy commands
+/// address. It predates per-tab `draft:<tab identity>` identities.
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -82,12 +84,12 @@ impl ComposerInputs {
             .iter()
             .filter_map(|binding| {
                 let conversation_id = match &binding.context {
-                    ComposerContextKey::NewConversation => "draft:new-conversation".to_owned(),
-                    ComposerContextKey::Conversation {
-                        owner_id,
-                        conversation_id,
-                    } if owner_id == &self.stored.state.owner_id => conversation_id.clone(),
-                    _ => return None,
+                    ComposerContextKey::Conversation { owner_id, .. }
+                        if owner_id != &self.stored.state.owner_id =>
+                    {
+                        return None;
+                    }
+                    context => context.conversation_id().to_owned(),
                 };
                 self.stored
                     .state
@@ -108,12 +110,12 @@ impl ComposerInputs {
             .iter()
             .filter_map(|target| {
                 let conversation_id = match &target.context {
-                    ComposerContextKey::NewConversation => "draft:new-conversation".into(),
-                    ComposerContextKey::Conversation {
-                        owner_id,
-                        conversation_id,
-                    } if owner_id == &self.owner_id() => conversation_id.clone(),
-                    _ => return None,
+                    ComposerContextKey::Conversation { owner_id, .. }
+                        if owner_id != &self.owner_id() =>
+                    {
+                        return None;
+                    }
+                    context => context.conversation_id().to_owned(),
                 };
                 Some(NextTurnIntent {
                     conversation_id,
@@ -133,7 +135,7 @@ impl ComposerInputs {
             .collect()
     }
     fn legacy_context(&self, id: &str) -> ComposerContextKey {
-        if id.is_empty() || id == "draft:new-conversation" {
+        if id.is_empty() || id == LocalConversation::LEGACY_NEW_CONVERSATION_ID {
             ComposerContextKey::NewConversation
         } else {
             ComposerContextKey::Conversation {

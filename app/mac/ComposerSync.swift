@@ -152,9 +152,9 @@ private final class ComposerInputWorker: @unchecked Sendable {
     }
 
     func context(_ conversationID: String) -> ComposerContextKey? {
-        if conversationID == ConversationStore.draftConversationPrefix + "new-conversation" { return .newConversation }
-        guard !conversationID.hasPrefix("tab:"), !conversationID.hasPrefix("side-chat:"), let ownerID else { return nil }
-        return .conversation(ownerId: ownerID, conversationId: conversationID)
+        // `tab:` names a window tab with nothing loaded; it never reaches the core.
+        guard !conversationID.hasPrefix("tab:") else { return nil }
+        return composerContextKey(ownerId: ownerID, conversationId: conversationID)
     }
     /// Upgrade a restored old blank tab without deleting its global source.
     /// Wait for the authority before deciding whether there is a target to keep.
@@ -166,7 +166,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             return
         }
         guard targetChoices(for: conversationID)?.choiceEdited != true,
-              let choices = targetChoices(for: ConversationStore.draftConversationPrefix + "new-conversation") else { return }
+              let choices = targetChoices(for: ConversationStore.legacyNewConversationID) else { return }
         saveTarget(conversationID, choices: choices)
     }
     func targetChoices(for conversationID: String) -> ComposerTargetChoices? {
@@ -212,7 +212,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     var pendingTargets: [String: SavedComposerTarget] {
         targetDirty.reduce(into: [:]) { values, item in
             switch item.key {
-            case .newConversation: values[ConversationStore.draftConversationPrefix + "new-conversation"] = item.value
+            case .newConversation: values[ConversationStore.legacyNewConversationID] = item.value
             case .conversation(let owner, let id): if owner == ownerID { values[id] = item.value }
             }
         }
@@ -295,7 +295,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         func isDraft(_ context: ComposerContextKey) -> Bool {
             switch context {
             case .newConversation: true
-            case .conversation(_, let id): id.hasPrefix(ConversationStore.draftConversationPrefix)
+            case .conversation(_, let id): ConversationStore.isDraftConversation(id)
             }
         }
         func isCreated(_ context: ComposerContextKey) -> Bool {
@@ -384,9 +384,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             if normalizeComposerTargetChoices(choices: received.choices) == normalizeComposerTargetChoices(choices: pending.choices) { targetDirty[context] = nil; targetFailures.remove(context); changes.send() }
             else if received.revision == pending.revision {
                 targetFailures.remove(context)
-                let id: String
-                switch context { case .newConversation: id = ConversationStore.draftConversationPrefix + "new-conversation"; case .conversation(_, let conversation): id = conversation }
-                saveTarget(id, choices: pending.choices)
+                saveTarget(composerContextConversationId(context: context), choices: pending.choices)
             }
         }
         retryAssociations()
@@ -408,7 +406,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             return
         }
         if legacyBlankContexts.remove(conversationID) != nil, model.savedDraft.text.isEmpty, model.attachments.isEmpty,
-           let previous = inputID(for: ConversationStore.draftConversationPrefix + "new-conversation"),
+           let previous = inputID(for: ConversationStore.legacyNewConversationID),
            let saved = draft(previous) {
             model.restoreSavedDraft(saved)
         }
@@ -490,7 +488,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
     /// Nothing happens when the entry does not point at `sent` (a borrowed
     /// input leaves the global new entry alone).
     func consumeNewConversationInput(_ sent: ComposerModel) {
-        let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
+        let draftID = ConversationStore.legacyNewConversationID
         guard inputID(for: draftID) == sent.id else { return }
         let fresh = ComposerModel()
         bind(draftID, input: fresh)
@@ -503,7 +501,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         // A closed/navigated Store may still look unsent. The operation's
         // created receipt, not that view, owns first-send failure recovery.
         guard createdConversationID == nil, store.isUnsentConversation else { return }
-        let draftID = ConversationStore.draftConversationPrefix + "new-conversation"
+        let draftID = ConversationStore.legacyNewConversationID
         guard let current = inputID(for: draftID), current != consumed.id else { return }
         if let currentDraft = draft(current), !currentDraft.text.isEmpty || !currentDraft.attachments.isEmpty { return }
         bind(draftID, input: consumed)

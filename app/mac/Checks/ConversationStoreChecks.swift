@@ -391,7 +391,7 @@ extension ConversationStore {
         creating.checkAccess.modelCatalogs["synthetic-codex"] = .ready([RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])])
         guard let seedSnapshot = seed.snapshot else { throw TransportError.rejected("synthetic seed omitted its projection") }
         var creationDraft = BindingMapping.snapshot(seedSnapshot)
-        creationDraft.conversation = Conversation(id: "draft:real-create-gate", title: "Synthetic creation", updatedAtUnixMs: nil, runtimeID: "synthetic-codex", cwd: home.path)
+        creationDraft.conversation = Conversation(id: draftConversationId(tabIdentity: "real-create-gate"), title: "Synthetic creation", updatedAtUnixMs: nil, runtimeID: "synthetic-codex", cwd: home.path)
         creationDraft.messages = []; creationDraft.transcriptTurns = []; creationDraft.transcriptItems = []
         creationDraft.transcriptOutline = []; creationDraft.transcriptMessageIdentities = []
         creating.checkAccess.isDraft = true
@@ -434,7 +434,7 @@ extension ConversationStore {
         note("real createAndSend: onCreated identity → completed Core poll → exactly one Send wire/receipt")
 
         let client = device.composerInputs
-        let newEntry = Self.draftConversationPrefix + "new-conversation"
+        let newEntry = Self.legacyNewConversationID
         let submittedChoices = ComposerTargetChoices(runtimeId: "synthetic-codex", runtimeOwnerId: client.ownerID, choices: [], choiceEdited: true)
         let closedInput = ComposerModel()
         closedInput.restoreSavedDraft(.init(text: "closed-create", attachments: []))
@@ -553,7 +553,7 @@ extension ConversationStore {
         note("full/delta ordering, stale nil, opaque-generation CAS, logical-source versus tail context")
 
         var draft = base
-        draft.conversation = Conversation(id: "draft:synthetic-two-phase", title: "Synthetic draft", updatedAtUnixMs: nil, runtimeID: base.conversation.runtimeID, cwd: nil)
+        draft.conversation = Conversation(id: draftConversationId(tabIdentity: "synthetic-two-phase"), title: "Synthetic draft", updatedAtUnixMs: nil, runtimeID: base.conversation.runtimeID, cwd: nil)
         fixture.checkAccess.isDraft = true
         fixture.checkAccess.apply(draft)
         let ticket = SendProjectionTicket(scope: fixture.checkAccess.projectionScope())
@@ -1139,7 +1139,7 @@ extension ConversationStore {
             store.composerEvents.send(isDraft ? .newConversation : .conversation(id))
         }
         for isDraft in [false, true] {
-            let id = isDraft ? draftConversationPrefix + "new-conversation" : "missing:source"
+            let id = isDraft ? legacyNewConversationID : "missing:source"
             source(id, isDraft: isDraft)
             let input = window.composer(for: tab)
             input.restoreSavedDraft(.init(text: isDraft ? "unsent source" : "existing source", attachments: []))

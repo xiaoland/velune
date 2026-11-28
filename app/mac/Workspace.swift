@@ -57,7 +57,7 @@ import VeluneBindings
     var isBlank: Bool {
         guard !store.isSideChat else { return false }
         let destination = store.reachingConversationID ?? store.selectedConversationID ?? store.loadedConversationID
-        return store.isUnsentConversation || destination == nil || destination?.hasPrefix(ConversationStore.draftConversationPrefix) == true
+        return store.isUnsentConversation || destination == nil || destination.map(ConversationStore.isDraftConversation) == true
     }
 
     override func close() {
@@ -737,7 +737,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
             }
             guard !tabs.isEmpty else { return }
             for tab in tabs {
-                let previous = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation"
+                let previous = tab.store.selectedConversationID ?? tab.store.loadedConversationID ?? ConversationStore.legacyNewConversationID
                 drafts.reassociate(input, from: previous, to: creation.conversationId, targetTab: tab, publish: false)
             }
             tabs.forEach { $0.store.followComposerCreation(creation) }
@@ -896,7 +896,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
             store.start(loadFirstConversation: false, newConversation: false)
         })
         insertTab(tab, at: afterShownTab)
-        navigateComposer(to: tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation", tab: tab)
+        navigateComposer(to: tab.store.loadedConversationID ?? ConversationStore.legacyNewConversationID, tab: tab)
         objectWillChange.send()
         noteSelected(tab)
         return tab
@@ -1173,7 +1173,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
                     let draft = saved.creationTargets?[tabID] ?? conversationID.flatMap({ saved.unsentConversations?[$0] })
                     // A restored tab shows its conversation's title before it
                     // is first shown; only reading waits for activation.
-                    if draft == nil, let conversationID, !conversationID.hasPrefix(ConversationStore.draftConversationPrefix) {
+                    if draft == nil, let conversationID, !ConversationStore.isDraftConversation(conversationID) {
                         store.noteRestoredConversation(conversationID)
                     }
                     return ConversationTab(id: tabID, store: store, start: {
@@ -1707,7 +1707,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
         let conversation = tab as? ConversationTab
         guard conversation?.store.isSideChat != true else { return }
         var target = conversation?.store.isUnsentConversation == true ? nil : conversation?.store.selectedConversationID ?? tabConversations[tab.id]
-        if target?.hasPrefix(ConversationStore.draftConversationPrefix) == true { target = nil }
+        if target.map(ConversationStore.isDraftConversation) == true { target = nil }
         recentlyClosed.append(ClosedTarget(device: conversation?.store.device.peerID, conversation: target,
                                           tabID: tab.id, paneID: pane.id, index: pane.tabs.firstIndex { $0.id == tab.id }!,
                                           layout: layout, creation: conversation?.store.unsentConversation,
@@ -2072,7 +2072,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
             let id: String
             switch navigation {
             case .conversation(let conversation): id = conversation
-            case .newConversation: id = tab.store.loadedConversationID ?? ConversationStore.draftConversationPrefix + "new-conversation"
+            case .newConversation: id = tab.store.loadedConversationID ?? ConversationStore.legacyNewConversationID
             case .created, .creationTargetChanged: return
             }
             self.navigateComposer(to: id, tab: tab)

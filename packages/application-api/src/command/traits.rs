@@ -300,7 +300,7 @@ impl Command {
                 let address = request
                     .conversation_id
                     .as_deref()
-                    .filter(|id| !id.starts_with("draft:") && !id.starts_with("side-chat:"))
+                    .filter(|id| crate::LocalConversation::of(id).is_none())
                     .map(|conversation_id| ConversationAddress {
                         runtime_id: &request.runtime_id,
                         conversation_id,

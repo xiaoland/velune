@@ -14,6 +14,7 @@ import app.velune.bindings.application.PreparedComposerTarget
 import app.velune.bindings.application.NextTurn
 import app.velune.bindings.application.resolveComposerTarget
 import app.velune.bindings.application.normalizeComposerTargetChoices
+import app.velune.bindings.application.draftConversationId
 import app.velune.bindings.application.ComposerRuntimeChoice
 import app.velune.bindings.application.TurnChoice
 import java.util.UUID
@@ -490,7 +491,7 @@ class ConversationModel(
     private fun cacheComposer() { if (composerCacheBlocked) return; composer?.let { hub.saveComposer(composerKey, SavedComposerInput(it.copy(content = content()), composerPending, composerBaseline, composerUnbound, composerRevision, pendingCreation, composerBindingRevision, composerBindingBaseline, targetChoices, targetRevision, targetPending, targetBaseline)) } }
     private fun composerConversationId(): String? = when (val current = target) {
         is ConversationTarget.Existing -> current.conversationId
-        is ConversationTarget.New -> current.draftId?.let { "draft:$it" }
+        is ConversationTarget.New -> current.draftId?.let { draftConversationId(it) }
     }
 
     private fun composerTargetRequest() = ComposerTargetRequest(snapshot?.conversation?.runtimeId ?: target.runtimeId, composerConversationId())
@@ -568,10 +569,10 @@ class ConversationModel(
         }
         preparedComposerTarget = null
         io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Promote(creation.inputId, creation.ownerId, creation.conversationId, creation.runtimeId)) }
-        val draftContext = creation.draftId?.let { ComposerContextKey.Conversation(creation.ownerId, "draft:$it") }
+        val draftContext = creation.draftId?.let { ComposerContextKey.Conversation(creation.ownerId, draftConversationId(it)) }
         if (draftContext != null) io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Forget(draftContext)) }
         pendingCreation = null; cacheComposer()
-        val newKey = peer + "/" + (creation.draftId?.let { "draft:$it" } ?: "new")
+        val newKey = peer + "/" + (creation.draftId?.let { draftConversationId(it) } ?: "new")
         if (hub.readComposer(newKey)?.creation?.inputId == creation.inputId) hub.removeComposer(newKey)
         if (oldKey != composerKey && hub.readComposer(oldKey)?.input?.id == creation.inputId) hub.removeComposer(oldKey)
     }

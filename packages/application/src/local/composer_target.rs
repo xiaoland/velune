@@ -2,7 +2,7 @@
 use super::*;
 use velune_application_api::{
     ComposerContextKey, ComposerTargetBasis, ComposerTargetChoices, ComposerTargetIdentity,
-    ComposerTargetRequest, NextTurnInput, normalize_composer_target_choices,
+    ComposerTargetRequest, LocalConversation, NextTurnInput, normalize_composer_target_choices,
 };
 
 impl CoreRuntime {
@@ -11,23 +11,25 @@ impl CoreRuntime {
         request: &ComposerTargetRequest,
     ) -> Result<Option<crate::conversation::ConversationSnapshot>, RuntimeError> {
         match &request.conversation_id {
-            // A stable unsent-tab identity owns choices before a native
-            // conversation exists. It must never query a runtime transcript.
-            Some(id) if id.starts_with("draft:") => Ok(None),
-            Some(id) => {
-                if id.starts_with("side-chat:") {
-                    return Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"));
+            Some(id) => match LocalConversation::of(id) {
+                // A stable unsent-tab identity owns choices before a native
+                // conversation exists. It must never query a runtime transcript.
+                Some(LocalConversation::Draft) => Ok(None),
+                Some(LocalConversation::SideChat) => {
+                    Err(RuntimeError::invalid("侧聊使用自己的临时执行选择"))
                 }
-                // The request names the logical source, while snapshots are
-                // addressed in the runtime of the current native segment.
-                let context_runtime_id = self
-                    .conversation_source_address(&request.runtime_id, id)?
-                    .context_runtime_id;
-                Ok(Some(
-                    self.queried_snapshot(&context_runtime_id, id)?
-                        .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
-                ))
-            }
+                None => {
+                    // The request names the logical source, while snapshots are
+                    // addressed in the runtime of the current native segment.
+                    let context_runtime_id = self
+                        .conversation_source_address(&request.runtime_id, id)?
+                        .context_runtime_id;
+                    Ok(Some(
+                        self.queried_snapshot(&context_runtime_id, id)?
+                            .ok_or_else(|| RuntimeError::invalid("目标会话尚不可用"))?,
+                    ))
+                }
+            },
             None => Ok(None),
         }
     }

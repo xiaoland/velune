@@ -122,9 +122,8 @@ impl CoreRuntime {
             .native_snapshot()
             .ok_or_else(|| RuntimeError::invalid("此会话不可用"))?;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = format!(
-            "side-chat:{}",
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let id = velune_application_api::LocalConversation::side_chat_id(
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         self.focus_new();
         self.session.side = Some(SideChat {

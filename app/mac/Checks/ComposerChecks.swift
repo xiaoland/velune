@@ -73,7 +73,7 @@ extension ConversationWindowModel {
     precondition(window.tabCount == tabsBeforeFailure, "不可用的运行时不新建标签、不改变窗口")
     note("step: invalid runtime ok")
     let reuse = ConversationWindowModel(application: device, kind: .workspace)
-    reuse.focused.store.restoreUnsentConversation(Conversation(id: ConversationStore.draftConversationPrefix + "new-conversation", title: "新会话", updatedAtUnixMs: nil, runtimeID: runtime.id, cwd: nil, canRename: false, canDelete: false))
+    reuse.focused.store.restoreUnsentConversation(Conversation(id: ConversationStore.legacyNewConversationID, title: "新会话", updatedAtUnixMs: nil, runtimeID: runtime.id, cwd: nil, canRename: false, canDelete: false))
     let reuseTab = reuse.focused
     precondition(reuse.createConversation() === reuseTab && reuse.tabCount == 1, "未发送的新会话原地恢复，不叠加空标签")
     note("step: reuse ok")
@@ -112,13 +112,13 @@ extension ConversationWindowModel {
     _ = try! raceTransport.upsertRuntime(RuntimeInstance(id: "synthetic-runtime", name: "合成", typeId: .pi, gatewayId: "default", settings: ["binary": "/usr/bin/false", "nodeBinary": "/usr/bin/false", "agentDir": agentDirectory.path]))
     let raceDevice = DeviceStore(transport: raceTransport)
     let raceWindow = ConversationWindowModel(application: raceDevice, kind: .workspace)
-    raceWindow.focused.store.restoreUnsentConversation(Conversation(id: ConversationStore.draftConversationPrefix + "new-conversation", title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false))
+    raceWindow.focused.store.restoreUnsentConversation(Conversation(id: ConversationStore.legacyNewConversationID, title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false))
     raceWindow.tools.move(.composer, to: .docked(.bottom))
     let sending = raceWindow.focused
     let sentInput = raceWindow.composer(for: sending)
     sentInput.restore("FIRST MESSAGE IN FLIGHT", attachments: [])
-    raceDevice.composerInputs.saveTarget(ConversationStore.draftConversationPrefix + "new-conversation", choices: .init(runtimeId: "synthetic-runtime", runtimeOwnerId: raceDevice.composerInputs.ownerID, choices: [], choiceEdited: true))
-    wait { raceDevice.composerInputs.inputID(for: ConversationStore.draftConversationPrefix + "new-conversation") == sentInput.id }
+    raceDevice.composerInputs.saveTarget(ConversationStore.legacyNewConversationID, choices: .init(runtimeId: "synthetic-runtime", runtimeOwnerId: raceDevice.composerInputs.ownerID, choices: [], choiceEdited: true))
+    wait { raceDevice.composerInputs.inputID(for: ConversationStore.legacyNewConversationID) == sentInput.id }
     // The send consumes the input; the global new entry takes the next one.
     sentInput.clear(submitted: sentInput.submission, attachments: [])
     raceDevice.composerInputs.consumeNewConversationInput(sentInput)
@@ -140,10 +140,10 @@ extension ConversationWindowModel {
     wait { blank.store.isUnsentConversation }
     wait { raceWindow.composer(for: blank).id != sentInput.id }
     let freshInput = raceWindow.composer(for: blank)
-    precondition(freshInput.submission.isEmpty && raceDevice.composerInputs.targetChoices(for: ConversationStore.draftConversationPrefix + "new-conversation")?.runtimeId == "synthetic-runtime", "发送期间新建的标签应取到下一份空输入并保留选择")
+    precondition(freshInput.submission.isEmpty && raceDevice.composerInputs.targetChoices(for: ConversationStore.legacyNewConversationID)?.runtimeId == "synthetic-runtime", "发送期间新建的标签应取到下一份空输入并保留选择")
     // A failure before native creation can return the consumed input while
     // the replacement is still empty.
-    let entryID = ConversationStore.draftConversationPrefix + "new-conversation"
+    let entryID = ConversationStore.legacyNewConversationID
     raceDevice.composerInputs.restoreConsumedNewConversationInput(sentInput, whileCreating: sending.store)
     precondition(raceDevice.composerInputs.inputID(for: entryID) == sentInput.id, "原生创建前失败应换回原输入")
     raceDevice.composerInputs.consumeNewConversationInput(sentInput)
@@ -156,7 +156,7 @@ extension ConversationWindowModel {
     _ = try! raceTransport.composerInputs(.promote(inputId: sentInput.id.uuidString.lowercased(), ownerId: raceDevice.composerInputs.ownerID!, conversationId: "synthetic-created-race", runtimeId: "synthetic-runtime"))
     raceDevice.composerInputs.poll(force: true)
     wait { raceDevice.composerInputs.state?.creations.contains(where: { $0.conversationId == "synthetic-created-race" }) == true }
-    precondition(blank.store.isUnsentConversation && blank.store.loadedConversationID == ConversationStore.draftConversationPrefix + "new-conversation", "发送期间新建的空白标签不得变成刚创建的会话")
+    precondition(blank.store.isUnsentConversation && blank.store.loadedConversationID == ConversationStore.legacyNewConversationID, "发送期间新建的空白标签不得变成刚创建的会话")
     // Native creation commits ownership even when its first dispatch fails.
     // Test an empty replacement too, so content protection cannot hide it.
     let afterCreation = ComposerModel()
@@ -231,7 +231,7 @@ extension ConversationWindowModel {
     if CommandLine.arguments.contains("--composer-check-targets") {
         let device = firstDevice
         let window = ConversationWindowModel(application: device, kind: .workspace)
-        let unsent = Conversation(id: ConversationStore.draftConversationPrefix + "new-conversation", title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: "/tmp/creation-a", canRename: false, canDelete: false)
+        let unsent = Conversation(id: ConversationStore.legacyNewConversationID, title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: "/tmp/creation-a", canRename: false, canDelete: false)
         window.focused.store.restoreUnsentConversation(unsent)
         window.tools.move(.composer, to: .docked(.bottom))
         let firstTab = window.focused
@@ -259,7 +259,7 @@ extension ConversationWindowModel {
     if CommandLine.arguments.contains("--composer-check-lifecycle") {
         let origin = ConversationWindowModel(application: firstDevice, kind: .workspace)
         let mirror = ConversationWindowModel(application: secondDevice, kind: .workspace)
-        let unsent = Conversation(id: ConversationStore.draftConversationPrefix + "new-conversation", title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false)
+        let unsent = Conversation(id: ConversationStore.legacyNewConversationID, title: "新会话", updatedAtUnixMs: nil, runtimeID: "synthetic-runtime", cwd: nil, canRename: false, canDelete: false)
         origin.focused.store.restoreUnsentConversation(unsent); mirror.focused.store.restoreUnsentConversation(unsent)
         origin.tools.move(.composer, to: .docked(.bottom)); mirror.tools.move(.composer, to: .docked(.bottom))
         let persistence = UUID().uuidString
