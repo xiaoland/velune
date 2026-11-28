@@ -583,8 +583,19 @@ mod tests {
 
     #[test]
     fn only_canonical_ed25519_spki_is_accepted() {
-        let peer = key(1).public();
-        let encoded = spki(&peer).as_ref().to_vec();
+        // RFC 8410 Ed25519 SubjectPublicKeyInfo with the RFC 8032 test-1 key.
+        // Neither the expected DER nor the public key is made by our encoder.
+        let bytes = [
+            0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
+            0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
+            0xf7, 0x07, 0x51, 0x1a,
+        ];
+        let peer = PublicKey::from_bytes(&bytes).unwrap();
+        let mut encoded = vec![
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ];
+        encoded.extend_from_slice(&bytes);
+        assert_eq!(spki(&peer).as_ref(), encoded);
         assert_eq!(
             public_key(&CertificateDer::from(encoded.clone())).unwrap(),
             peer

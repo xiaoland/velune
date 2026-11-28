@@ -28,7 +28,7 @@ impl CoreRuntime {
                 false,
             )
         });
-        if let Some(runner) = &self.session.gateway_runner {
+        if let Some(runner) = self.session.gateway().map(|gateway| gateway.runner()) {
             // A shared runner cannot distinguish a previous turn's background requests from a new turn.
             let unique = !self.session.work_pending();
             let parent = unique

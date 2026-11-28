@@ -9,6 +9,20 @@ pub use velune_ai::Protocol;
 use velune_ai_provider::config::HttpEndpoint;
 pub use velune_ai_provider::config::RequestProfile;
 
+pub(crate) const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
+pub(crate) const GEMINI_STATE_FIELDS: [&str; 4] = [
+    "cachedContent",
+    "cached_content",
+    "continuationToken",
+    "continuation_token",
+];
+
+fn is_route_owned_request_field(key: &str) -> bool {
+    matches!(key, "model" | "stream")
+        || RESPONSES_STATE_FIELDS.contains(&key)
+        || GEMINI_STATE_FIELDS.contains(&key)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModel {
@@ -19,8 +33,8 @@ pub struct ProviderModel {
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub reasoning_levels: Option<Vec<String>>,
-    /// Extra fields merged into every upstream request body for this model,
-    /// overriding what the adapter sets; unknown fields fail upstream.
+    /// Extra fields merged into every upstream request body for this model.
+    /// Routing identity, transport mode, and continuation state belong to the request.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub request_parameters: BTreeMap<String, String>,
 }
@@ -188,6 +202,15 @@ impl GatewayConfig {
                         .any(|value| value.chars().any(char::is_control))
                 {
                     return Err("invalid request parameter declaration");
+                }
+                if binding
+                    .request_parameters
+                    .keys()
+                    .any(|key| is_route_owned_request_field(key))
+                {
+                    return Err(
+                        "model request parameters cannot set routing, streaming, or continuation fields",
+                    );
                 }
                 if !binding.request_parameters.is_empty()
                     && !matches!(provider.execution_backend, ExecutionBackend::Http)

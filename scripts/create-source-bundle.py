@@ -21,8 +21,11 @@ import tomllib
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from release_assets import artifact_name  # noqa: E402
+
+
 RELAYKIT_GO_MOD = Path("packages/ai-provider/relaykit-bridge/go.mod")
 RELAYKIT_MODULE = "github.com/QuantumNous/new-api/relaykit"
 TUNWG_PIN = Path("app/mac/Licenses/Tunwg/UPSTREAM.json")
@@ -941,7 +944,7 @@ def main() -> int:
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    archive_name = f"velune-{args.tag}-source.tar.gz"
+    archive_name = artifact_name("source", "all", args.tag)
     output = output_dir / archive_name
     root_name = f"velune-{args.tag}"
     environment = os.environ.copy()

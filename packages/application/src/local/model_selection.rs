@@ -528,9 +528,7 @@ impl CoreRuntime {
                 return Err(error);
             }
         }
-        if let Some(configuration) = &mut self.session.execution_configuration {
-            configuration.native_project |= project.is_some();
-        }
+        self.session.mark_native_project(project.is_some());
         self.session.model_selection = Some(selection.cloned());
         self.session.model_record_key = match selection {
             Some(ModelSelection::Managed { model_record_key }) => Some(model_record_key.clone()),
@@ -590,8 +588,6 @@ impl CoreRuntime {
         })
         .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
         self.shutdown_active()?;
-        self.capture_execution_configuration(&runtime, None);
-        self.session.execution_runtime_id = Some(runtime.id.clone());
         if runtime.type_id == RuntimeKind::Pi {
             let servers = self.collaboration_servers();
             let mut config = self.pi_history_config(&runtime)?;
@@ -602,8 +598,11 @@ impl CoreRuntime {
             config.model = native.as_ref().map(|(_, model)| (*model).to_owned());
             config.rpc_entry = Some(context.resources.join("pi_rpc.mjs"));
             config.extension = Some(context.resources.join("pi_virtual_model.mjs"));
-            self.session.active_state = ActiveState::Pi(Box::new(pi::PiSession::new(config)));
-            self.start_pi_for_session(cwd, (!is_new).then_some(snapshot), None, None)?;
+            self.session.install_execution(
+                ActiveState::Pi(Box::new(pi::PiSession::new(config))),
+                execution::SessionExecution::native(runtime),
+            );
+            self.start_pi_for_session(cwd, (!is_new).then_some(snapshot), None)?;
             let side = self.session.side.is_some();
             let session = self.session.pi()?;
             if side {
@@ -712,7 +711,10 @@ impl CoreRuntime {
                 };
                 session.set_auto_compaction(auto_compaction);
             }
-            self.session.active_state = ActiveState::Native(Box::new(session));
+            self.session.install_execution(
+                ActiveState::Native(Box::new(session)),
+                execution::SessionExecution::native(runtime),
+            );
         }
         Ok(())
     }
@@ -754,7 +756,7 @@ impl CoreRuntime {
             // only while one runs; the Agent's own default is no selection.
             let mut models = Vec::new();
             if let ActiveState::Acp(session) = &self.session.active_state
-                && self.session.execution_runtime_id.as_deref() == Some(&runtime.id)
+                && self.session.execution_runtime_id() == Some(&runtime.id)
                 && session.snapshot().is_some()
             {
                 let native = session

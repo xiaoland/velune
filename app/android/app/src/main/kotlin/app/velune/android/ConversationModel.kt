@@ -38,6 +38,9 @@ import app.velune.bindings.application.RuntimeModel
 import app.velune.bindings.application.SnapshotResult
 import app.velune.bindings.application.SnapshotUpdate
 import app.velune.bindings.application.SendQueueOperation
+import app.velune.bindings.application.TranscriptDeliveryDisposition
+import app.velune.bindings.application.TranscriptDeliveryPosition
+import app.velune.bindings.application.classifyTranscriptDelivery
 import app.velune.bindings.conversation.BackgroundTaskList
 import app.velune.bindings.conversation.BackgroundTaskOutput
 import app.velune.bindings.conversation.BackgroundTaskOutputStatus
@@ -172,6 +175,7 @@ class ConversationModel(
     private var composerSave: Job? = null
     private val composerKey: String get() = peer + "/" + (composerConversationId() ?: "new")
     private var snapshot: DeliveredSnapshot? = null
+    private var transcriptNeedsFullSnapshot = false
     private var pollFailure: String? = null
     private val backgroundTaskLock = Mutex()
     private var messages: Map<String, DeliveredMessage> = emptyMap()
@@ -247,18 +251,17 @@ class ConversationModel(
         val runtime = current.contextRuntimeId
         val id = current.conversation.id
         try {
-            val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }
-            if (snapshot !== current || _state.value.busy || _state.value.refreshing) return
-            when (update) {
-                is SnapshotUpdate.Changed -> merge(update.snapshot)
-                SnapshotUpdate.Unchanged -> {}
-                // The device let the conversation go (it restarted, for one); read it again.
-                SnapshotUpdate.Absent -> {
-                    val result = io(NativeOperation.CONVERSATION_READ) { it.readConversation(runtime, id) }
-                    if (snapshot !== current || _state.value.busy || _state.value.refreshing) return
-                    apply(result)
+            val next = if (transcriptNeedsFullSnapshot) readFullTranscript(current) else {
+                val update = io(NativeOperation.CONVERSATION_READ) { it.snapshotUpdate(runtime, id, current.cursor) }
+                if (snapshot !== current || _state.value.busy || _state.value.refreshing) return
+                when (update) {
+                    is SnapshotUpdate.Changed -> update.snapshot
+                    SnapshotUpdate.Unchanged -> null
+                    SnapshotUpdate.Absent -> readFullTranscript(current)
                 }
             }
+            if (snapshot !== current || _state.value.busy || _state.value.refreshing) return
+            next?.let { merge(it, current) }
             val previousFailure = pollFailure
             if (previousFailure != null) {
                 _state.update { if (it.failure == previousFailure) it.copy(failure = null) else it }
@@ -276,6 +279,9 @@ class ConversationModel(
             }
         }
     }
+
+    private suspend fun readFullTranscript(current: DeliveredSnapshot) =
+        io(NativeOperation.CONVERSATION_READ) { it.readConversation(current.conversation.runtimeId, current.conversation.id) }.snapshot
 
     fun refresh() {
         val existing = target as? ConversationTarget.Existing ?: return
@@ -299,7 +305,7 @@ class ConversationModel(
                 it.readConversation(runtime, existing.conversationId)
             }
             if (snapshot === before && !_state.value.busy) {
-                merge(result.snapshot ?: error("设备没有返回会话"))
+                merge(result.snapshot ?: error("设备没有返回会话"), before)
             }
         } catch (error: CancellationException) {
             throw error
@@ -314,18 +320,47 @@ class ConversationModel(
         }
     }
 
-    private fun apply(result: SnapshotResult) {
-        result.snapshot?.let(::merge)
+    private fun apply(result: SnapshotResult, requestedFrom: DeliveredSnapshot?) {
+        result.snapshot?.let { merge(it, requestedFrom) }
     }
 
-    /** A snapshot with a base holds only changed messages; `messageIds` gives the whole order. */
-    private fun merge(next: DeliveredSnapshot) {
+    private suspend fun receiveTranscript(work: suspend () -> SnapshotResult) {
+        val requestedFrom = snapshot
+        apply(work(), requestedFrom)
+    }
+
+    private fun DeliveredSnapshot.deliveryPosition() =
+        TranscriptDeliveryPosition(contextRuntimeId, conversation.id, cursor)
+
+    private fun DeliveredSnapshot.sharesDeliveryGeneration(other: DeliveredSnapshot) =
+        contextRuntimeId == other.contextRuntimeId && conversation.id == other.conversation.id &&
+            cursor.generation == other.cursor.generation
+
+    private fun merge(next: DeliveredSnapshot, requestedFrom: DeliveredSnapshot?) {
         val previous = snapshot
+        val disposition = classifyTranscriptDelivery(previous?.deliveryPosition(), next.deliveryPosition(), next.base, previous === requestedFrom)
+        when (disposition) {
+            TranscriptDeliveryDisposition.IGNORE -> return
+            TranscriptDeliveryDisposition.READ_FULL -> {
+                transcriptNeedsFullSnapshot = true
+                return
+            }
+            TranscriptDeliveryDisposition.APPLY_DELTA, TranscriptDeliveryDisposition.REPLACE -> Unit
+        }
         val fresh = next.messages.associateBy { it.id }
         val order = next.messageIds.toSet()
-        messages = if (next.base == null) fresh else (messages + fresh).filterKeys { it in order }
-        // A loaded payload goes stale once its message changes again.
-        payloads = payloads.filter { (id, loaded) -> fresh[id]?.let { it.stamp == loaded.stamp } ?: (id in order) }
+        val nextMessages = if (disposition == TranscriptDeliveryDisposition.REPLACE) fresh else (messages + fresh).filterKeys { it in order }
+        if (order.size != next.messageIds.size || fresh.size != next.messages.size ||
+            !order.containsAll(fresh.keys) || nextMessages.size != order.size
+        ) {
+            transcriptNeedsFullSnapshot = true
+            return
+        }
+        payloads = if (previous?.sharesDeliveryGeneration(next) == true) {
+            payloads.filter { (id, loaded) -> nextMessages[id]?.stamp == loaded.stamp }
+        } else emptyMap()
+        transcriptNeedsFullSnapshot = false
+        messages = nextMessages
         snapshot = next
         _state.update { state ->
             state.copy(
@@ -555,8 +590,9 @@ class ConversationModel(
         check(creation.ownerId == composerOwner) { "新会话的执行来源不可用，输入已保留" }
         val oldKey = composerKey
         if (snapshot == null) {
-            val created = io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) }
-            apply(created); target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
+            receiveTranscript { io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) } }
+            if (snapshot?.conversation?.id != creation.conversationId) return
+            target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
         }
         creation.choices?.let { choices ->
             val context = ComposerContextKey.Conversation(creation.ownerId, creation.conversationId)
@@ -609,8 +645,9 @@ class ConversationModel(
                     composerLoaded = false
                     _state.update { it.copy(composerReady = false) }
                     val oldKey = composerKey
-                    val created = io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) }
-                    apply(created); target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
+                    receiveTranscript { io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) } }
+                    if (snapshot?.conversation?.id != creation.conversationId) return
+                    target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
                     preparedComposerTarget = null
                     cacheComposer(); hub.removeComposer(oldKey)
                     return
@@ -782,7 +819,7 @@ class ConversationModel(
         val current = snapshot ?: return@act
         if (!current.followUp.canStopSubAgents) return@act
         _state.update { it.copy(collaborationFailure = null) }
-        apply(io(NativeOperation.CANCEL) { it.stopSubAgents(current.contextRuntimeId, current.conversation.id) })
+        receiveTranscript { io(NativeOperation.CANCEL) { it.stopSubAgents(current.contextRuntimeId, current.conversation.id) } }
     }
 
     suspend fun findLinkedConversation(conversationId: String): ConversationTarget.Existing {
@@ -811,6 +848,7 @@ class ConversationModel(
                 }
             } else {
                 val submittedTarget = choicesForExecution()
+                val requestedFrom = snapshot
                 val created = io(NativeOperation.CONVERSATION_WRITE) { it.createConversation(runtime, (target as? ConversationTarget.New)?.cwd, next.model) }
                 val oldKey = composerKey
                 val snapshot = created.snapshot ?: error("设备没有返回新会话")
@@ -818,7 +856,7 @@ class ConversationModel(
                 pendingCreation = PendingComposerCreation(input.id, owner, snapshot.conversation.runtimeId, snapshot.conversation.id, submittedTarget, (target as? ConversationTarget.New)?.draftId)
                 _state.update { it.copy(composerReady = false) }
                 cacheComposer()
-                apply(created)
+                apply(created, requestedFrom)
                 cacheComposer()
                 completeCreation()
                 if (hub.readComposer(oldKey)?.input?.id == input.id) hub.removeComposer(oldKey)
@@ -845,9 +883,11 @@ class ConversationModel(
         if (!current.followUp.canResume || _state.value.running || !_state.value.composerReady ||
             _state.value.switchingRuntime || next.runtimeId != current.contextRuntimeId
         ) return@act
-        apply(io(NativeOperation.SEND) {
-            it.resumeTurn(current.contextRuntimeId, current.conversation.id, next.model, next.effort, next.permissionMode?.id)
-        })
+        receiveTranscript {
+            io(NativeOperation.SEND) {
+                it.resumeTurn(current.contextRuntimeId, current.conversation.id, next.model, next.effort, next.permissionMode?.id)
+            }
+        }
     }
 
     private fun submitDraft(
@@ -868,7 +908,7 @@ class ConversationModel(
             val input = composer ?: return@act
             val turn = ComposedTurn(text = text, effort = next.effort, permissionMode = next.permissionMode?.id, attachments = submitted.attachments.map { "composer:" + it.id })
             try {
-                apply(submit(next, turn, input))
+                receiveTranscript { submit(next, turn, input) }
             } catch (error: BindingException.RemoteRequest) {
                 if (error.code != "message_delivery_accepted") throw error
             }
@@ -885,12 +925,12 @@ class ConversationModel(
         val current = snapshot ?: return@act
         if (!current.followUp.canCompact) return@act
         val selection = state.value.selection
-        apply(io(NativeOperation.COMPACT) { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) })
+        receiveTranscript { io(NativeOperation.COMPACT) { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) } }
     }
 
     fun stop() = act {
         val current = snapshot ?: return@act
-        apply(io(NativeOperation.CANCEL) { it.cancel(current.contextRuntimeId, current.conversation.id) })
+        receiveTranscript { io(NativeOperation.CANCEL) { it.cancel(current.contextRuntimeId, current.conversation.id) } }
     }
 
     fun setConversationHandoff(release: Boolean) = act {
@@ -898,19 +938,19 @@ class ConversationModel(
         val handoff = current.followUp.controlHandoff
         val available = if (release) handoff == ControlHandoff.CAN_RELEASE else handoff == ControlHandoff.RELEASING || handoff == ControlHandoff.RELEASED
         if (!available) return@act
-        apply(io(NativeOperation.CONVERSATION_WRITE) { it.setConversationHandoff(current.contextRuntimeId, current.conversation.id, release) })
+        receiveTranscript { io(NativeOperation.CONVERSATION_WRITE) { it.setConversationHandoff(current.contextRuntimeId, current.conversation.id, release) } }
     }
 
     fun reply(interactionId: String, reply: RuntimeInteractionReply) = act {
         val current = snapshot ?: return@act
-        apply(io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) })
+        receiveTranscript { io(NativeOperation.REPLY) { it.replyRuntimeInteraction(current.contextRuntimeId, current.conversation.id, interactionId, reply) } }
     }
 
     fun editMessage(
         messageId: String,
         text: String,
         placement: EditPlacement,
-        expectedRevision: String?,
+        expectedRevision: String,
         onDone: () -> Unit,
         onForked: (ConversationTarget.Existing) -> Unit,
     ) = act {
@@ -929,7 +969,7 @@ class ConversationModel(
                 onForked(ConversationTarget.Existing(created.conversation.runtimeId, created.conversation.id, created.conversation.title.displayText()))
             }
         } else {
-            apply(result)
+            apply(result, current)
         }
     }
 
@@ -996,8 +1036,9 @@ class ConversationModel(
         val current = snapshot ?: return@launch
         try {
             val loaded = io(NativeOperation.CONVERSATION_READ) { it.messagePayloads(current.contextRuntimeId, current.conversation.id, listOf(messageId)) }
-            payloads = payloads + loaded.associateBy { it.id }
-            snapshot?.let { shown -> _state.update { it.copy(entries = entries(shown)) } }
+            val shown = snapshot?.takeIf { it.sharesDeliveryGeneration(current) } ?: return@launch
+            payloads = payloads + loaded.filter { messages[it.id]?.stamp == it.stamp }.associateBy { it.id }
+            _state.update { it.copy(entries = entries(shown)) }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {

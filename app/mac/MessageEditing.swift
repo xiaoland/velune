@@ -369,6 +369,7 @@ enum MessageEditPresentation: String, CaseIterable, Identifiable {
             }
             acceptedRevision = revision
         }
+        guard let acceptedRevision else { return }
         confirmationRevision = nil
         failure = nil
         submitting = true

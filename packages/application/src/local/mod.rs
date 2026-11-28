@@ -20,7 +20,6 @@ use std::{
 use velune_agent_runtime::history::{self, HistoryConfig};
 use velune_agent_runtime::native::{GatewayInjection, NativeConfig, NativeKind, NativeSession};
 use velune_agent_runtime::{self as pi, Config as PiConfig, LiveConversation, PiProjection};
-use velune_gateway::Runner;
 
 /// The runtime setting holding ACP launch arguments and environment.
 pub(crate) const ACP_LAUNCH_SETTING: &str = "acpLaunch";
@@ -451,9 +450,8 @@ impl CoreRuntime {
             .any(|session| {
                 session.executing()
                     && session
-                        .execution_configuration
-                        .as_ref()
-                        .and_then(|configuration| configuration.gateway.as_ref())
+                        .gateway()
+                        .map(|gateway| gateway.config())
                         .is_some_and(|captured| {
                             previous.iter().any(|old| {
                                 old.id == captured.id
@@ -627,15 +625,12 @@ impl CoreRuntime {
     }
 
     fn execution_source_is_current(&self) -> bool {
-        self.session
-            .execution_configuration
-            .as_ref()
-            .is_none_or(|execution| {
-                self.runtime_instance(&execution.runtime.id)
-                    .is_ok_and(|runtime| {
-                        runtime.enabled && self.same_runtime_source(&execution.runtime, runtime)
-                    })
-            })
+        self.session.execution().is_none_or(|execution| {
+            self.runtime_instance(&execution.runtime.id)
+                .is_ok_and(|runtime| {
+                    runtime.enabled && self.same_runtime_source(&execution.runtime, runtime)
+                })
+        })
     }
     fn native_snapshot(&self) -> Option<crate::conversation::ConversationSnapshot> {
         self.session.projected().cloned().map(|mut snapshot| {
@@ -930,14 +925,14 @@ impl CoreRuntime {
             let (ticket, error) = pending.discard_changed_initialization();
             // Abandonment leaves adapter destruction and capacity on its worker.
             self.session.active_state = ActiveState::Empty;
-            self.session.execution_runtime_id = None;
-            self.session.execution_configuration = None;
+            self.session.clear_execution();
             self.session.model_selection = None;
-            self.session.configuration_changed = false;
             self.execution_results.insert(ticket, Err(error));
             return Ok(());
         }
+        let mut released_observation = None;
         if let ActiveState::Pending(pending) = &mut self.session.active_state {
+            let initializing = pending.initialization_source().is_some();
             let Some((ticket, mut state, outcome)) = pending.complete() else {
                 return Ok(());
             };
@@ -960,7 +955,18 @@ impl CoreRuntime {
                         && self.execution_source_is_current());
                 history.detach_execution(can_continue);
             }
+            if outcome.cleanup && self.session.gateway().is_some() {
+                released_observation =
+                    Some(if self.session.cancel_requested && outcome.result.is_ok() {
+                        velune_telemetry::Outcome::Cancelled
+                    } else {
+                        velune_telemetry::Outcome::Unknown
+                    });
+            }
             self.session.active_state = state;
+            if initializing && self.session.active_state.live().is_none() && !outcome.cleanup {
+                self.session.clear_execution();
+            }
             let result = self.apply_execution_outcome(outcome);
             self.execution_results
                 .insert(ticket, result.map(|()| Default::default()));
@@ -1007,7 +1013,7 @@ impl CoreRuntime {
         if compacting && self.session.cancel_requested {
             self.session.send_queue.pause_after_stop();
         }
-        let managed_pi = self.session.gateway_runner.is_some()
+        let managed_pi = self.session.gateway().is_some()
             && self.session.side.is_none()
             && matches!(self.session.active_state, ActiveState::Pi(_));
         // Pi startup also consumes a work lease while discovering background
@@ -1037,9 +1043,14 @@ impl CoreRuntime {
         } else {
             None
         };
+        // A known native terminal settles first. Worker destruction also
+        // closes an observation when the native projection has no terminal.
+        if let Some(fallback) = released_observation {
+            self.complete_turn_observation(fallback);
+        }
         // A turn's gateway lasts until the turn and the work it started have ended.
         if !managed_pi
-            && self.session.gateway_runner.is_some()
+            && self.session.gateway().is_some()
             && ((was_executing && !self.session.executing()) || result.is_err())
         {
             self.finish_managed_turn()?;
@@ -1068,9 +1079,8 @@ impl CoreRuntime {
     }
 
     fn finish_managed_backend_turn(&self) {
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .finish_user_turn(&gateway_id, &session);
+        if let Some(gateway) = self.session.gateway() {
+            gateway.finish_user_turn();
         }
     }
 

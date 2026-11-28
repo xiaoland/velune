@@ -627,8 +627,10 @@ for line in sys.stdin:
                 gateway_id: String::new(),
                 settings: Default::default(),
             }];
-            core.session.active_state = ActiveState::Pi(Box::new(pi));
-            core.session.execution_runtime_id = Some("pi".into());
+            core.session.install_execution(
+                ActiveState::Pi(Box::new(pi)),
+                execution::SessionExecution::native(core.runtime_instance("pi").unwrap().clone()),
+            );
             // This test addresses the owned adapter's state, not external processes.
             core.elsewhere = ElsewhereScan {
                 at: Some(Instant::now()),
@@ -745,11 +747,6 @@ for line in sys.stdin:
         let client = pi::Client::spawn(config.clone()).unwrap();
         let mut pi = pi::PiSession::new(config);
         pi.start(client, PiProjection::new(summary(parent_id.clone(), None)));
-        let parent = Session {
-            active_state: ActiveState::Pi(Box::new(pi)),
-            execution_runtime_id: Some("pi".into()),
-            ..Default::default()
-        };
         let mut child = PiProjection::new(summary(child_id.clone(), Some(parent_id)))
             .snapshot
             .unwrap();
@@ -764,9 +761,13 @@ for line in sys.stdin:
             gateway_id: String::new(),
             settings: Default::default(),
         }];
+        let mut parent = Session::default();
+        parent.install_execution(
+            ActiveState::Pi(Box::new(pi)),
+            execution::SessionExecution::native(core.runtime_instance("pi").unwrap().clone()),
+        );
         core.parked.push(parent);
-        core.session.active_state = ActiveState::History(Box::new(child.into()));
-        core.session.execution_runtime_id = Some("pi".into());
+        core.session.set_history(child);
         let later = Instant::now() + Duration::from_secs(60);
         core.session.source = Some(SourceWatch {
             conversation_id: child_id.clone(),

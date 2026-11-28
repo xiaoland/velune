@@ -226,7 +226,12 @@ mod tests {
             reply(&params, RuntimeInteractionReply::Cancel).unwrap()["action"],
             "cancel"
         );
-        assert!(questions(&json!({"mode":"url"})).is_err());
+        let mut unsupported = params.clone();
+        unsupported["mode"] = json!("url");
+        assert_eq!(
+            questions(&unsupported).unwrap_err().to_string(),
+            "此 MCP 提问需要尚未支持的专用界面（URL、验证或非对象表单）"
+        );
         let optional = json!({"mode":"form","requestedSchema":{"type":"object","properties":{"note":{"type":"string"}}}});
         let answer = |value: String| InteractionAnswer {
             question_id: "note".into(),

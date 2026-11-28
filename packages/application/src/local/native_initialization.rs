@@ -35,11 +35,12 @@ impl CoreRuntime {
             mcp_servers: self.collaboration_servers(),
             session_agents: Vec::new(),
         };
-        self.capture_execution_configuration(&runtime, None);
-        self.session.execution_runtime_id = Some(runtime.id.clone());
+        let state = std::mem::take(&mut self.session.active_state);
+        self.session
+            .install_execution(state, execution::SessionExecution::native(runtime.clone()));
         self.session.model_selection = Some(selection.clone());
         let owner = self.telemetry.clone();
-        self.start_live_operation_with_outcome("native_create", move |state| {
+        let creation = self.start_live_operation_with_outcome("native_create", move |state| {
             let create = || -> Result<(NativeSession, Option<String>), RuntimeError> {
                 let prepared = preparation.prepare()?;
                 if let Some(cwd) = &cwd
@@ -85,7 +86,11 @@ impl CoreRuntime {
                 }
                 Err(error) => Err(error).into(),
             }
-        })?;
+        });
+        if let Err(error) = creation {
+            self.session.clear_execution();
+            return Err(error);
+        }
         if let ActiveState::Pending(pending) = &mut self.session.active_state {
             pending.mark_initialization(source);
         }

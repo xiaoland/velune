@@ -496,7 +496,7 @@ final class Transport: @unchecked Sendable {
     func deleteUserMessage(runtimeID: String, conversationID: String, messageID: String, truncate: Bool, expectedRevision: String) throws -> SnapshotResult {
         try withApplication("deleteUserMessage", .writes, .conversationWrite) { try $0.deleteUserMessage(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID, truncate: truncate, expectedRevision: expectedRevision) }
     }
-    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String? = nil) throws -> SnapshotResult {
+    func editMessage(runtimeID: String, conversationID: String, messageID: String, placement: EditPlacement, targetRuntimeID: String? = nil, selection: ModelSelection?, turn: ComposedTurn, expectedRevision: String) throws -> SnapshotResult {
         try withApplication("editMessage", .writes, .conversationWrite) { application in
             let message = BindingMessageReference(runtimeId: runtimeID, conversationId: conversationID, messageId: messageID)
             return try application.editMessageWithRuntime(message: message, placement: placement,

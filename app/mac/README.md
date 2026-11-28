@@ -94,7 +94,7 @@ ARK Coding Plan 沿既有订阅模板创建，连接页分为模型认证和独�
 
 新会话的工作目录菜单直接消费 core 的 `workingDirectoryProjects`（按目标运行时返回的完整项目文件夹），按项目显示主文件夹及附加文件夹，不再从侧栏会话反推或截取 5 项。本机可“选择目录…”或“输入路径…”（支持 `~/`）；SSH 与远程设备仅输入执行机器的路径。已有选择可恢复默认，创建失败在 composer 就近说明并保留草稿和路径。
 
-会话列表组菜单的“新建会话”调用窗口的 `createConversation(in:)`，与菜单和工具栏的 `createConversation()` 一样新开标签（当前标签已是未发送的新会话时原地改目标），草稿创建复用 `ConversationStore.createConversation(runtimeID:cwd:)`：运行时组指定实例，项目组取 `ConversationProject.primaryFolder`，原生项目另取 `nativeRuntimeId`；项目的不透明身份不当成路径。组显式指定的运行时同步到新标签的 composer，保证共享输入区的明确选择与新目标一致；正文和附件继续按既有草稿归属保留，首发前不创建原生会话。`--check-group-creation` 使用合成配置直接检查同一窗口动作的运行时、主目录和共享输入结果，不发送全局鼠标／键盘事件；配合 `--check-split-panes --check-dock-areas`，以后台隔离副本运行。
+会话列表组菜单的“新建会话”调用窗口的 `createConversation(in:)`，与菜单和工具栏的 `createConversation()` 一样新开标签（当前标签已是未发送的新会话时原地改目标），草稿创建复用 `ConversationStore.createConversation(runtimeID:cwd:)`：运行时组指定实例，项目组取 `ConversationProject.primaryFolder`，原生项目另取 `nativeRuntimeId`；项目的不透明身份不当成路径。组显式指定的运行时同步到新标签的 composer，保证共享输入区的明确选择与新目标一致；正文和附件继续按既有草稿归属保留，首发前不创建原生会话。`--check-group-creation` 使用合成配置直接检查同一窗口动作的运行时、主目录和共享输入结果，不发送全局鼠标／键盘事件。用 `python3 scripts/check-macos-composer.py group-creation` 在后台隔离副本运行。
 
 “会话 → 选择工作目录…”、命令面板与 `/cwd` 共用可搜索的目录候选及当前选择，命令可配置快捷键、默认不占用按键；仅未首发的新会话可用。原生目录面板与路径输入由窗口的 `WorkingDirectorySelection.swift` 共用呈现，不依赖 composer 是否挂载；异步确认时复核原会话和运行时，避免改到后来切换的目标。
 
@@ -126,7 +126,7 @@ iPad 构建要求见 [iOS README](../ios/README.md#构建)。
 
 `MessageEditorSheet` 复用核心的每条消息编辑资格，不因 composer 暂选其他运行时隐藏入口；重新发送目标明确显示为会话当前上下文的运行时。成功后才关闭编辑窗口，失败保留正文及附件；不能精确原地回退时只提供在新会话中继续并说明上下文参考语义。
 
-锁定原因入口复用操作行；核心提交准入与本地 `draftEditable` 分开，外部控制不禁止草稿文本、粘贴和附件编辑。输入框最低一行，drawer 下限计入操作行及布局标题；低空间时附件／队列收进“输入详情”，展开按实际内容限高，不增加说明带。`--preview --preview-composer-access --check-dock-areas` 提供空闲／外部控制／运行的合成会话；另加 `--check-composer-minimum` 在独立预览中设置最小高度并开启该副本的系统窗口恢复，供关键路径截图与实际退出重启验证。`--check-composer-sharing` 只在预览中运行局部同步／消费／移动不留副本检查，不发运行时请求。
+锁定原因入口复用操作行；核心提交准入与本地 `draftEditable` 分开，外部控制不禁止草稿文本、粘贴和附件编辑。输入框最低一行，drawer 下限计入操作行及布局标题；低空间时附件／队列收进“输入详情”，展开按实际内容限高，不增加说明带。`--preview --preview-composer-access --check-dock-areas` 提供空闲／外部控制／运行的合成会话；另加 `--check-composer-minimum` 在独立预览中设置最小高度并开启该副本的系统窗口恢复，供关键路径截图与实际退出重启验证。后台 `ownership` 检查同时验证同一输入的同步、消费与移动后身份。
 
 侧聊标题来自核心的“侧聊：来源标题”，选择器允许下一轮运行时／模型／推理强度／权限。`SendSideChat` 携带实际下一轮配置；切换配置由核心创建新的临时上下文并保留引用历史和已显示问答，原会话与原生持久会话文件不改写。
 
@@ -167,7 +167,7 @@ Mermaid 11.12.0 与许可随 bundle 本地分发，使用固定版本和本地 W
 
 通用设置中的外观区控制整体缩放、独立 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。缩放命令与设置共同读写 `AppearancePreferences`，它原子保存本机 `mac-appearance.json` 并向原生排版发布线程安全的只读快照。字号和间距由同一份值计算。外观变化后，消息布局重新测量，composer 在原对象上更新排版，保留正文、选区和撤销记录。转录 cell 的持久子视图（活动行、附件名、披露标题、代码块标签与按钮、本轮配置摘要）从行布局获取 NSAttributedString／NSFont，和布局缓存一起失效重建。速度由模型目录变体表达，不增加独立的按轮维度。
 
-`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。`scripts/check-macos-composer.py appearance-zoom` 核对快捷键路由、缩放的保存和重载、排版快照与设置一致，以及宽窄窗口的渲染。入口禁止激活，不创建可见窗口或注入全局输入。
+`scripts/check-macos-composer.py experience` 使用独立的两次进程启动，验证编辑器组、标签顺序和选择、创建目录与外观的保存和恢复。`--check-message-experience --experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。`scripts/check-macos-composer.py appearance-zoom` 核对快捷键路由、缩放的保存和重载、排版快照与设置一致，以及宽窄窗口的渲染。入口禁止激活，不创建可见窗口或注入全局输入。
 
 系统通知使用通知专用的窗口路由：已打开的目标聚焦其原有Tab，否则在当前工作窗口新开Tab；保留此前Tab。原生通知回调才激活窗口，隐藏检查只验证模型路由。
 

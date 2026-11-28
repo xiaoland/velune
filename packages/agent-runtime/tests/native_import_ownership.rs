@@ -9,17 +9,10 @@ use velune_agent_runtime::{
     import::*,
     version::RuntimeKind,
 };
-fn root() -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "velune-owned-import-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&path).unwrap();
-    path
+use velune_test_support::TempRoot;
+
+fn root() -> TempRoot {
+    TempRoot::new("owned-import")
 }
 fn config(root: &Path, provider: &str, binary: PathBuf) -> HistoryConfig {
     HistoryConfig {
@@ -59,20 +52,25 @@ fn claude_owned_copy_cleanup_preserves_an_external_change() {
                 .write_all(b"external change\n")
                 .unwrap();
             let before = std::fs::read(&path).unwrap();
-            assert!(cleanup_owned_import(&config, &token).is_err());
+            let error = cleanup_owned_import(&config, &token)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("owned import changed; original copy was retained"),
+                "{error}"
+            );
             assert_eq!(std::fs::read(&path).unwrap(), before);
         } else {
             cleanup_owned_import(&config, &token).unwrap();
             assert!(!path.exists());
         }
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
 fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan() {
-    let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") else {
-        return;
-    };
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
     let root = root();
     let config = config(&root, "codex", binary.into());
     let context: Context = serde_json::from_value(
@@ -100,7 +98,14 @@ fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan()
         };
         let materialized =
             history::materialize_owned_codex_import(&config, &thread_id, provider, &mut token);
-        assert_eq!(materialized.is_ok(), provider != "missing-provider");
+        if provider == "missing-provider" {
+            let error = materialized
+                .expect_err("unknown provider was accepted")
+                .to_string();
+            assert!(error.contains("missing-provider"), "{error}");
+        } else {
+            materialized.unwrap();
+        }
         let path = token.source_path().to_owned();
         cleanup_owned_import(&config, &token).unwrap();
         assert!(!path.exists());
@@ -111,14 +116,13 @@ fn codex_owned_materialization_and_failed_materialization_leave_no_list_orphan()
                 .any(|session| session.id.ends_with(&thread_id))
         );
     }
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
+#[ignore = "requires VELUNE_TEST_CODEX_BINARY pointing to an installed Codex CLI"]
 fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes() {
-    let Some(binary) = std::env::var_os("VELUNE_TEST_CODEX_BINARY") else {
-        return;
-    };
+    let binary = std::env::var_os("VELUNE_TEST_CODEX_BINARY")
+        .expect("enabled native test requires VELUNE_TEST_CODEX_BINARY");
     let root = root();
     let config = config(&root, "codex", binary.into());
     let seed: Context = serde_json::from_value(json!({"messages":[
@@ -235,7 +239,12 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
     cleanup_owned_import(&config, &target).unwrap();
     // The source token predates the appended native records, so cleanup must
     // reject it instead of removing changed history.
-    assert!(cleanup_owned_import(&config, &source).is_err());
+    let error = cleanup_owned_import(&config, &source)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("owned import changed; original copy was retained"),
+        "{error}"
+    );
     assert_eq!(std::fs::read(source.source_path()).unwrap(), original);
-    std::fs::remove_dir_all(root).unwrap();
 }

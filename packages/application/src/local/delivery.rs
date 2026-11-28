@@ -2,7 +2,10 @@
 //! messages and answers cursor polls and payload reads.
 use crate::transcript_delivery::*;
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{BuildHasher, RandomState};
 use std::io::Write;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use velune_conversation::{ConversationSnapshot, ImageSource, Message, MessageBlock, MessageRole};
 
 /// Reasoning and tool output longer than this many UTF-8 bytes are read on demand.
@@ -12,6 +15,11 @@ const RETAINED_VIEWS: usize = 8;
 /// Delivery keeps full messages for cursor comparison and deferred payload
 /// reads. Bound that duplicate cache independently from parked session views.
 const RETAINED_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+// Share stamps across delivery owners in this process. A random starting value
+// makes reuse negligible when a client reconnects to a restarted host.
+static NEXT_PAYLOAD_STAMP: LazyLock<AtomicU64> =
+    LazyLock::new(|| AtomicU64::new(RandomState::new().hash_one(())));
 
 #[derive(Default)]
 struct ByteCounter(usize);
@@ -52,8 +60,15 @@ struct View {
     /// The delivered snapshot without messages, for change detection.
     header: ConversationSnapshot,
     order: Vec<String>,
-    messages: HashMap<String, (u64, Message, usize)>,
+    messages: HashMap<String, RetainedMessage>,
     message_bytes: usize,
+}
+
+struct RetainedMessage {
+    changed_at: u64,
+    stamp: u64,
+    message: Message,
+    bytes: usize,
 }
 
 impl TranscriptDelivery {
@@ -114,7 +129,7 @@ impl TranscriptDelivery {
     }
 
     /// Complete payloads of messages as last delivered in a view. Unknown
-    /// identifiers are omitted; a newer delivery carries a newer stamp.
+    /// identifiers are omitted; new content or a rebuilt view uses a different stamp.
     pub(super) fn payloads(
         &self,
         context_runtime_id: &str,
@@ -129,7 +144,7 @@ impl TranscriptDelivery {
         message_ids
             .iter()
             .filter_map(|id| view.messages.get(id))
-            .map(|(stamp, message, _)| delivered(*stamp, message, usize::MAX))
+            .map(|entry| delivered(entry.stamp, &entry.message, usize::MAX))
             .collect()
     }
 
@@ -174,6 +189,7 @@ impl TranscriptDelivery {
         let mut changed = view.sequence == 0 || view.header != snapshot || view.order != order;
         let mut retained = HashMap::with_capacity(messages.len());
         let mut message_bytes = 0usize;
+        let mut next_stamp = None;
         for mut message in messages {
             // Use the same native classification as transcript grouping. The
             // authoritative role and blocks remain available to history checks.
@@ -183,15 +199,21 @@ impl TranscriptDelivery {
                 message.role = MessageRole::Tool;
             }
             let entry = match view.messages.remove(&message.id) {
-                Some((stamp, previous, bytes)) if previous == message => (stamp, previous, bytes),
+                Some(entry) if entry.message == message => entry,
                 _ => {
                     changed = true;
-                    let bytes = message_size_estimate(&message);
-                    (next, message, bytes)
+                    RetainedMessage {
+                        changed_at: next,
+                        stamp: *next_stamp.get_or_insert_with(|| {
+                            NEXT_PAYLOAD_STAMP.fetch_add(1, Ordering::Relaxed)
+                        }),
+                        bytes: message_size_estimate(&message),
+                        message,
+                    }
                 }
             };
-            message_bytes = message_bytes.saturating_add(entry.2);
-            retained.insert(entry.1.id.clone(), entry);
+            message_bytes = message_bytes.saturating_add(entry.bytes);
+            retained.insert(entry.message.id.clone(), entry);
         }
         if changed {
             view.sequence = next;
@@ -267,8 +289,8 @@ impl View {
                 .order
                 .iter()
                 .map(|id| &self.messages[id])
-                .filter(|(stamp, _, _)| base.is_none() || *stamp > after)
-                .map(|(stamp, message, _)| delivered(*stamp, message, INLINE_PAYLOAD_LIMIT))
+                .filter(|entry| base.is_none() || entry.changed_at > after)
+                .map(|entry| delivered(entry.stamp, &entry.message, INLINE_PAYLOAD_LIMIT))
                 .collect(),
             revision: header.revision,
             conversation: header.conversation.clone(),
@@ -448,6 +470,76 @@ mod quota_tests {
             turn_usage: None,
             branch_point: None,
         }
+    }
+
+    #[test]
+    fn rebuilding_a_view_at_the_same_sequence_changes_its_payload_stamp() {
+        let tool_message = |output: &str| Message {
+            blocks: vec![MessageBlock::Tool {
+                tool_id: Some("tool".into()),
+                title: "Generate a report".into(),
+                state: velune_conversation::ToolState::Completed,
+                output: Some(output.into()),
+                conversation_id: None,
+            }],
+            ..text_message("message", "")
+        };
+        let mut snapshot = header("runtime");
+        let old_output = "a".repeat(INLINE_PAYLOAD_LIMIT + 1);
+        let new_output = "b".repeat(old_output.len());
+        snapshot.messages = vec![
+            tool_message(&old_output),
+            text_message("unchanged", "reply"),
+        ];
+        let mut delivery = TranscriptDelivery::new();
+        let observed = BTreeSet::new();
+        let message_ids = ["message".into(), "unchanged".into()];
+        let first = delivery.snapshot(snapshot.clone(), &observed);
+        assert!(matches!(
+            first.messages[0].blocks.as_slice(),
+            [DeliveredBlock::Tool {
+                output: Some(MessagePayload::Deferred { .. }),
+                ..
+            }]
+        ));
+        assert!(matches!(
+            delivery.update(Some(snapshot.clone()), first.cursor, &observed),
+            SnapshotUpdate::Unchanged
+        ));
+        let first_payload = delivery.payloads("runtime", "conversation", &message_ids);
+        assert_eq!(first_payload[0].stamp, first.messages[0].stamp);
+
+        delivery.trim_to(0, &observed, false);
+        snapshot.messages[0] = tool_message(&new_output);
+        let SnapshotUpdate::Changed { snapshot: rebuilt } =
+            delivery.update(Some(snapshot.clone()), first.cursor, &observed)
+        else {
+            panic!("a cursor from an evicted view must receive a complete replacement");
+        };
+        assert_eq!(rebuilt.base, None);
+        assert_eq!(rebuilt.cursor.sequence, first.cursor.sequence);
+        assert_ne!(rebuilt.cursor.generation, first.cursor.generation);
+        assert_eq!(rebuilt.messages[0].id, first.messages[0].id);
+        assert_eq!(rebuilt.messages[0].blocks, first.messages[0].blocks);
+        let latest_payload = delivery.payloads("runtime", "conversation", &message_ids);
+        assert_eq!(latest_payload[0].stamp, rebuilt.messages[0].stamp);
+        assert_ne!(latest_payload[0].stamp, first.messages[0].stamp);
+        assert_ne!(latest_payload[0].blocks, first_payload[0].blocks);
+
+        snapshot.messages[0] = tool_message(&old_output);
+        let SnapshotUpdate::Changed { snapshot: delta } =
+            delivery.update(Some(snapshot), rebuilt.cursor, &observed)
+        else {
+            panic!("a subsequent edit must be delivered as an incremental change");
+        };
+        assert_eq!(delta.base, Some(rebuilt.cursor));
+        assert_eq!(delta.message_ids, message_ids);
+        assert_eq!(delta.messages.len(), 1);
+        assert_eq!(delta.messages[0].id, rebuilt.messages[0].id);
+        assert_ne!(delta.messages[0].stamp, rebuilt.messages[0].stamp);
+        let final_payload = delivery.payloads("runtime", "conversation", &message_ids);
+        assert_eq!(final_payload[0].stamp, delta.messages[0].stamp);
+        assert_eq!(final_payload[1].stamp, rebuilt.messages[1].stamp);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 use velune_test_support::TempRoot;
 
 struct Fixture {
@@ -370,6 +371,144 @@ fn pi_port_pending_and_unconsumed_evidence_reserve_replies_and_count_encoded_byt
     assert!(
         matches!(&exhausted, Err(Error::Transport(detail)) if detail == "Pi sequence exhausted"),
         "expected checked sequence exhaustion: {exhausted:?}"
+    );
+}
+
+#[test]
+fn pi_reserved_writer_backpressure_keeps_frames_and_cancellation_order() {
+    let mut fixture = Fixture::with_script(
+        r#"
+import json,pathlib,sys,time
+root=pathlib.Path(__file__).parent
+first=sys.stdin.buffer.read(1)
+(root/'entered').write_text('actual first byte')
+while not (root/'release').exists(): time.sleep(.001)
+count=0
+for line in iter(sys.stdin.buffer.readline,b''):
+    if first:
+        line=first+line
+        first=b''
+    value=json.loads(line)
+    with (root/'wire').open('a') as output:
+        output.write(json.dumps({'type':value['type'],'id':value['id']})+'\n')
+    count+=1
+    (root/'count').write_text(str(count))
+"#,
+    );
+    let mut input = match prompt() {
+        PiOperation::Prompt(input) => input,
+        _ => unreachable!(),
+    };
+    input.text = "x".repeat(256 * 1024);
+    let prompt = fixture
+        .client
+        .enqueue_pi(PiOperation::Prompt(input), None)
+        .unwrap();
+    fixture.client.poll_pi();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !fixture.root.join("entered").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "helper did not enter the actual pipe"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    let mut controls = Vec::new();
+    for index in 0..RESERVED - 2 {
+        controls.push(fixture.client.enqueue_pi(PiOperation::DialogReply(json!({
+            "type":"extension_ui_response","id":format!("reply-{index}"),"value":"answer"
+        })), None).unwrap());
+    }
+    controls.push(
+        fixture
+            .client
+            .enqueue_pi(PiOperation::ClearQueue, None)
+            .unwrap(),
+    );
+    controls.push(fixture.client.enqueue_pi(PiOperation::Abort, None).unwrap());
+    let last = *controls.last().unwrap();
+    let original_deadline =
+        fixture.client.port.as_ref().unwrap().operations[&last.sequence].write_deadline;
+    let items = fixture.client.poll_pi();
+    assert!(
+        !fixture.client.pi_cleanup_required(),
+        "temporary writer backpressure failed the connection: {items:?}"
+    );
+    assert!(
+        items.is_empty(),
+        "blocked input cannot publish delivery: {items:?}"
+    );
+    let port = fixture.client.port.as_ref().unwrap();
+    assert!(
+        controls
+            .iter()
+            .all(|ticket| port.operations.contains_key(&ticket.sequence))
+    );
+    assert!(port.operations[&last.sequence].bytes.is_some());
+    assert_eq!(
+        port.operations[&last.sequence].write_deadline,
+        original_deadline
+    );
+
+    std::fs::write(fixture.root.join("release"), []).unwrap();
+    let mut written = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while written.len() < controls.len() + 1
+        || std::fs::read_to_string(fixture.root.join("count"))
+            .ok()
+            .as_deref()
+            != Some("9")
+    {
+        for item in fixture.client.poll_pi() {
+            if let PiPortItem::Receipt(receipt) = item {
+                assert_eq!(receipt.phase, PiReceiptPhase::Written);
+                assert!(receipt.ticket == prompt || controls.contains(&receipt.ticket));
+                assert!(
+                    !written.contains(&receipt.ticket),
+                    "physical write was reported twice"
+                );
+                written.push(receipt.ticket);
+            }
+        }
+        assert!(!fixture.client.pi_cleanup_required());
+        assert!(
+            Instant::now() < deadline,
+            "queued frames did not drain: {written:?}"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    let wire: Vec<Value> = std::fs::read_to_string(fixture.root.join("wire"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let commands: Vec<_> = wire
+        .iter()
+        .map(|item| item["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "prompt",
+            "extension_ui_response",
+            "extension_ui_response",
+            "extension_ui_response",
+            "extension_ui_response",
+            "extension_ui_response",
+            "extension_ui_response",
+            "clear_queue",
+            "abort"
+        ]
+    );
+    let replies: Vec<_> = wire[1..7]
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        replies,
+        [
+            "reply-0", "reply-1", "reply-2", "reply-3", "reply-4", "reply-5"
+        ]
     );
 }
 
@@ -833,46 +972,6 @@ fn pi_integration_late_physical_write_survives_observation_timeout() {
     let items = fixture.client.poll_pi();
     assert!(items.iter().any(|i| matches!(i, PiPortItem::Receipt(r) if r.ticket == ticket && matches!(r.physical_write, Some(crate::WriteFact::Written(c)) if !c.met_deadline()))));
     assert!(fixture.client.pi_cleanup_required());
-}
-
-#[test]
-fn pi_integration_reserved_reply_admits_while_ordinary_receipt_is_pending() {
-    let mut fixture = Fixture::new();
-    let ticket = fixture.client.enqueue_pi(prompt(), None).unwrap();
-    let d = Instant::now() + Duration::from_secs(30);
-    let (_sender, write) = WriteReceipt::test_pending(d);
-    let op = fixture
-        .client
-        .port
-        .as_mut()
-        .unwrap()
-        .operations
-        .get_mut(&ticket.sequence)
-        .unwrap();
-    op.bytes = None;
-    op.write = Some(write);
-    op.write_deadline = d;
-    let reply = fixture
-        .client
-        .enqueue_pi(
-            PiOperation::DialogReply(
-                json!({"type":"extension_ui_response","id":"permission","cancelled":true}),
-            ),
-            None,
-        )
-        .unwrap();
-    fixture.client.poll_pi();
-    assert!(
-        fixture
-            .client
-            .port
-            .as_ref()
-            .unwrap()
-            .operations
-            .get(&reply.sequence)
-            .is_none_or(|op| op.bytes.is_none()),
-        "protocol frame must reach the same physical FIFO without waiting for an ordinary receipt"
-    );
 }
 
 #[test]

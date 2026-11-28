@@ -1902,22 +1902,21 @@ impl VeluneApplication {
         )
     }
 
-    /// Send `turn` in place of an editable user message; a fork answers
-    /// with the new conversation's snapshot.
-    #[uniffi::method(default(expected_revision = None))]
+    /// Replace an editable message using its conversation's source runtime
+    /// and the revision offered when the message was opened for editing.
+    /// A fork returns the new conversation's snapshot.
     pub fn edit_message(
         &self,
         message: BindingMessageReference,
         placement: EditPlacement,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
-        expected_revision: Option<String>,
+        expected_revision: String,
     ) -> Result<SnapshotResult, BindingError> {
         self.edit_message_with_runtime(message, placement, None, selection, turn, expected_revision)
     }
 
     /// Editing with a different runtime creates a translated branch.
-    #[uniffi::method(default(expected_revision = None))]
     pub fn edit_message_with_runtime(
         &self,
         message: BindingMessageReference,
@@ -1925,13 +1924,14 @@ impl VeluneApplication {
         target_runtime_id: Option<String>,
         selection: Option<ModelSelection>,
         turn: ComposedTurn,
-        expected_revision: Option<String>,
+        expected_revision: String,
     ) -> Result<SnapshotResult, BindingError> {
         let BindingMessageReference {
             runtime_id,
             conversation_id,
             message_id,
         } = message;
+        let expected_revision = Some(expected_revision);
         request!(
             self,
             "edit_message",

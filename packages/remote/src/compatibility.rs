@@ -194,8 +194,10 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use velune_application_api::{
-        ApplicationReply, ConfigurationSnapshot, ConversationBrowserLimits, ProtocolDescriptor,
-        Revision,
+        ApplicationReply, AuthenticationEdit, AuthenticationMethod, ComposedTurn,
+        ConfigurationSnapshot, ConversationBrowserLimits, ModelRoute, ModelSelection,
+        ProtocolDescriptor, ProviderAuthenticationDescription, ProviderDraft, ProviderModel,
+        QuotaAuthenticationDescription, RequestProfile, Revision, RoutingStrategy,
     };
 
     // The shipped alpha.1 tags. Keep the old decoder independent of today's
@@ -212,6 +214,61 @@ mod tests {
         id: LegacyProtocol,
     }
 
+    fn provider(id: &str) -> ProviderSummary {
+        ProviderSummary {
+            id: id.into(),
+            name: id.into(),
+            protocol: Protocol::Responses,
+            endpoint: "https://provider.invalid/v1".into(),
+            execution_backend: ExecutionBackend::Http,
+            request_profile: RequestProfile::Native,
+            authentication_source: ProviderAuthenticationSource::ApiKey,
+            quota_source: ProviderQuotaSource::None,
+            authentication: ProviderAuthenticationDescription {
+                method: AuthenticationMethod::ApiKey,
+                configured: true,
+                account_label: None,
+                provenance: None,
+                actions: Vec::new(),
+                disclosure: None,
+                linked_login: None,
+            },
+            quota_authentication: QuotaAuthenticationDescription {
+                configured: false,
+                binding_confirmed: false,
+            },
+            quota_limits: Vec::new(),
+            codex_client_version: None,
+            models: vec![ProviderModel {
+                record_key: id.into(),
+                provider_model_id: "model".into(),
+                nickname: String::new(),
+                icon: None,
+                context_window: None,
+                max_output_tokens: None,
+                reasoning_levels: None,
+                request_parameters: None,
+            }],
+        }
+    }
+
+    fn newer_providers() -> Vec<ProviderSummary> {
+        let mut gemini = provider("gemini");
+        gemini.protocol = Protocol::Gemini;
+        let mut backend = provider("backend");
+        backend.execution_backend = ExecutionBackend::AntigravityCli {
+            binary: "antigravity".into(),
+            ssh_destination: None,
+        };
+        let mut authentication = provider("authentication");
+        authentication.authentication_source = ProviderAuthenticationSource::AntigravityCli;
+        let mut quota = provider("quota");
+        quota.quota_source = ProviderQuotaSource::AntigravityCliUsage;
+        let mut codex = provider("codex-version");
+        codex.codex_client_version = Some("0.159.3".into());
+        vec![gemini, backend, authentication, quota, codex]
+    }
+
     #[test]
     fn v3_configuration_hides_unknown_protocols_without_changing_modern_results() {
         let snapshot = ConfigurationSnapshot {
@@ -221,7 +278,28 @@ mod tests {
             working_directory_projects: Default::default(),
             shows_archived: false,
             history_failures: Vec::new(),
-            gateways: Vec::new(),
+            gateways: vec![GatewaySummary {
+                id: "gateway".into(),
+                name: "Gateway".into(),
+                providers: std::iter::once(provider("visible"))
+                    .chain(newer_providers())
+                    .collect(),
+                routes: [
+                    ("visible-route", vec!["visible"]),
+                    ("mixed-route", vec!["visible", "gemini"]),
+                    ("hidden-route", vec!["backend", "authentication"]),
+                ]
+                .into_iter()
+                .map(|(key, members)| ModelRoute {
+                    record_key: key.into(),
+                    name: key.into(),
+                    members: members.into_iter().map(str::to_owned).collect(),
+                    strategy: RoutingStrategy::Order,
+                    weights: Default::default(),
+                    sticky: false,
+                })
+                .collect(),
+            }],
             runtime_instances: Vec::new(),
             runtime_types: Vec::new(),
             model_templates: Vec::new(),
@@ -262,15 +340,32 @@ mod tests {
             let Response::ReadConfiguration(configuration) = application.response else {
                 panic!("expected a configuration snapshot")
             };
-            serde_json::to_value(configuration.protocols).unwrap()
+            serde_json::to_value(configuration).unwrap()
         };
         let modern = encoded(APPLICATION_WIRE_VERSION);
-        assert!(serde_json::from_value::<Vec<LegacyDescriptor>>(modern.clone()).is_err());
-        assert_eq!(modern[1]["id"], "geminiGenerateContent");
-        let legacy: Vec<LegacyDescriptor> =
-            serde_json::from_value(encoded(PROTOCOL_VERSION)).unwrap();
-        assert_eq!(legacy.len(), 1);
-        assert_eq!(legacy[0].id, LegacyProtocol::ResponsesV1);
+        assert_eq!(
+            modern,
+            serde_json::to_value(&snapshot).unwrap(),
+            "modern observations are untouched"
+        );
+        assert!(
+            serde_json::from_value::<Vec<LegacyDescriptor>>(modern["protocols"].clone()).is_err()
+        );
+        assert_eq!(modern["protocols"][1]["id"], "geminiGenerateContent");
+        let legacy = encoded(PROTOCOL_VERSION);
+        let protocols: Vec<LegacyDescriptor> =
+            serde_json::from_value(legacy["protocols"].clone()).unwrap();
+        assert_eq!(protocols.len(), 1);
+        assert_eq!(protocols[0].id, LegacyProtocol::ResponsesV1);
+        assert_eq!(
+            legacy["gateways"][0]["providers"],
+            json!([provider("visible")])
+        );
+        assert_eq!(
+            legacy["gateways"][0]["routes"],
+            json!([snapshot.gateways[0].routes[0]]),
+            "a mixed route must not become a partial editable route"
+        );
     }
 
     #[test]
@@ -290,21 +385,77 @@ mod tests {
             })
         );
 
-        let mut write = Command::EditSendQueue {
-            submission_id: None,
+        let steer = |target_runtime_id, permission_mode| Command::SteerTurn {
             runtime_id: "runtime".into(),
             conversation_id: "session".into(),
-            operation: SendQueueOperation::Withdraw {
-                id: "item".into(),
-                expected_revision: 1,
+            target_runtime_id,
+            turn: ComposedTurn {
+                text: "follow up".into(),
+                effort: None,
+                permission_mode,
+                attachments: Vec::new(),
             },
         };
-        assert_eq!(
-            prepare_command(PROTOCOL_VERSION, &mut write)
-                .unwrap_err()
-                .kind,
-            FailureKind::Unsupported
-        );
-        prepare_command(APPLICATION_WIRE_VERSION, &mut write).unwrap();
+        let save = |value: ProviderSummary| Command::SaveProvider {
+            gateway_id: "gateway".into(),
+            authentication_edit: AuthenticationEdit::Keep,
+            quota_authentication_edit: None,
+            provider: ProviderDraft {
+                id: value.id,
+                name: value.name,
+                protocol: value.protocol,
+                endpoint: value.endpoint,
+                execution_backend: value.execution_backend,
+                request_profile: value.request_profile,
+                authentication_source: value.authentication_source,
+                quota_source: value.quota_source,
+                models: value.models,
+                quota_limits: value.quota_limits,
+                codex_client_version: value.codex_client_version,
+            },
+        };
+        for mut command in [steer(None, None), save(provider("visible"))] {
+            let before = serde_json::to_value(&command).unwrap();
+            prepare_command(PROTOCOL_VERSION, &mut command).unwrap();
+            assert_eq!(serde_json::to_value(command).unwrap(), before);
+        }
+        let mut newer = vec![
+            Command::EditSendQueue {
+                submission_id: None,
+                runtime_id: "runtime".into(),
+                conversation_id: "session".into(),
+                operation: SendQueueOperation::Withdraw {
+                    id: "item".into(),
+                    expected_revision: 1,
+                },
+            },
+            Command::SetRuntimeModelAutoCompaction {
+                runtime_id: "runtime".into(),
+                model: ModelSelection::Managed {
+                    model_record_key: "model".into(),
+                },
+                setting: None,
+            },
+            steer(Some("target".into()), None),
+            steer(None, Some("allowEdits".into())),
+        ];
+        newer.extend(newer_providers().into_iter().map(save));
+        for mut command in newer {
+            let before = serde_json::to_value(&command).unwrap();
+            assert_eq!(
+                prepare_command(PROTOCOL_VERSION, &mut command)
+                    .unwrap_err()
+                    .kind,
+                FailureKind::Unsupported,
+                "v3 guard for {before}"
+            );
+            assert_eq!(
+                serde_json::to_value(&command).unwrap(),
+                before,
+                "rejection must not partially rewrite a command"
+            );
+            prepare_command(APPLICATION_WIRE_VERSION, &mut command).unwrap();
+            assert_eq!(serde_json::to_value(command).unwrap(), before);
+        }
     }
 }

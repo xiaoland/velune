@@ -281,3 +281,203 @@ pub enum ComposerInputOperation {
         context: ComposerContextKey,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ModelSelection, NextTurn, NextTurnInput, RuntimeModel, TurnChoiceChange};
+
+    fn model(id: &str) -> ModelSelection {
+        ModelSelection::Native {
+            provider_id: None,
+            model_id: id.into(),
+        }
+    }
+
+    fn catalog() -> Vec<RuntimeModel> {
+        ["current", "selected"]
+            .into_iter()
+            .map(|id| RuntimeModel {
+                selection: model(id),
+                name: id.into(),
+                reasoning_efforts: vec!["low".into(), "high".into()],
+            })
+            .collect()
+    }
+
+    fn next() -> NextTurn {
+        NextTurn {
+            runtime_id: "runtime".into(),
+            runtime_type: Some(crate::RuntimeKind::Codex166),
+            choice: TurnChoice {
+                model: Some(model("current")),
+                effort: Some("low".into()),
+                permission_mode: None,
+            },
+            has_current: true,
+            models: catalog(),
+            model: Some(model("current")),
+            model_name: Some("current".into()),
+            chosen_model_unavailable: false,
+            efforts: vec!["low".into(), "high".into()],
+            effort: Some("low".into()),
+            current_effort: Some("low".into()),
+            permission_modes: vec![],
+            permission_mode: None,
+            current_permission_mode: None,
+        }
+    }
+
+    fn prepared() -> PreparedComposerTarget {
+        PreparedComposerTarget {
+            request: ComposerTargetRequest {
+                runtime_id: "runtime".into(),
+                conversation_id: Some("conversation".into()),
+            },
+            owner_id: "owner".into(),
+            context: ComposerContextKey::NewConversation,
+            target: ComposerTarget {
+                context: ComposerContextKey::NewConversation,
+                revision: 7,
+                choices: Default::default(),
+            },
+            default_runtime_id: "runtime".into(),
+            next_turn: next(),
+            basis: NextTurnInput {
+                runtime_id: "runtime".into(),
+                runtime_type: None,
+                providers: vec![],
+                catalog: None,
+                turn_settings: vec![],
+                conversation_runtime_id: None,
+                model_record_key: None,
+                kept: None,
+                runtime_choices: None,
+                new_conversation: crate::config::NewConversationChoice::Chosen {
+                    choice: TurnChoice {
+                        model: Some(model("current")),
+                        effort: Some("low".into()),
+                        permission_mode: None,
+                    },
+                },
+            },
+        }
+    }
+
+    fn scoped(owner: &str, runtime: &str) -> ComposerRuntimeChoice {
+        ComposerRuntimeChoice {
+            owner_id: owner.into(),
+            runtime_id: runtime.into(),
+            choice: TurnChoice {
+                model: Some(model("selected")),
+                effort: Some("high".into()),
+                permission_mode: None,
+            },
+        }
+    }
+
+    #[test]
+    fn unedited_target_ignores_stale_observed_owner_runtime_and_choices() {
+        let stale = ComposerTargetChoices {
+            runtime_id: Some("old-runtime".into()),
+            runtime_owner_id: Some("old-owner".into()),
+            choices: vec![scoped("owner", "runtime")],
+            choice_edited: false,
+        };
+        assert_eq!(
+            normalize_composer_target_choices(stale.clone()),
+            ComposerTargetChoices::default()
+        );
+        let resolved = resolve_composer_target(prepared(), Some(stale), Some(catalog())).unwrap();
+        assert_eq!(resolved.model, Some(model("current")));
+        assert_eq!(resolved.effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn target_resolution_requires_the_prepared_owner_runtime_and_scoped_choice() {
+        let valid = ComposerTargetChoices {
+            runtime_id: Some("runtime".into()),
+            runtime_owner_id: Some("owner".into()),
+            choices: vec![
+                scoped("another-owner", "runtime"),
+                scoped("owner", "runtime"),
+            ],
+            choice_edited: true,
+        };
+        assert_eq!(normalize_composer_target_choices(valid.clone()), valid);
+        let resolved =
+            resolve_composer_target(prepared(), Some(valid.clone()), Some(catalog())).unwrap();
+        assert_eq!(resolved.model, Some(model("selected")));
+        assert_eq!(resolved.effort.as_deref(), Some("high"));
+        for wrong_owner in [false, true] {
+            let mut stale = valid.clone();
+            if wrong_owner {
+                stale.runtime_owner_id = Some("another-owner".into());
+            } else {
+                stale.runtime_id = Some("another-runtime".into());
+            }
+            assert!(resolve_composer_target(prepared(), Some(stale), Some(catalog())).is_none());
+        }
+        for row in [
+            scoped("another-owner", "runtime"),
+            scoped("owner", "another-runtime"),
+        ] {
+            let mut choices = valid.clone();
+            choices.choices = vec![row];
+            let resolved =
+                resolve_composer_target(prepared(), Some(choices), Some(catalog())).unwrap();
+            assert_eq!(resolved.model, Some(model("current")));
+            assert_eq!(resolved.effort.as_deref(), Some("low"));
+        }
+    }
+
+    #[test]
+    fn target_changes_keep_other_scopes_without_freezing_observed_defaults() {
+        let other = vec![
+            scoped("another-owner", "runtime"),
+            scoped("owner", "another-runtime"),
+        ];
+        let choices = ComposerTargetChoices {
+            runtime_id: Some("runtime".into()),
+            runtime_owner_id: Some("owner".into()),
+            choices: other.clone(),
+            choice_edited: true,
+        };
+        let update = change_composer_target(
+            next(),
+            choices,
+            "owner".into(),
+            None,
+            TurnChoiceChange::Effort {
+                level: Some("high".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(&update.choices.choices[..2], &other);
+        assert_eq!(
+            update.choices.choices[2],
+            ComposerRuntimeChoice {
+                owner_id: "owner".into(),
+                runtime_id: "runtime".into(),
+                choice: TurnChoice {
+                    model: None,
+                    effort: Some("high".into()),
+                    permission_mode: None,
+                },
+            }
+        );
+        assert_eq!(update.runtime_choices.unwrap().last_chosen.model, None);
+        assert!(update.choices.choice_edited);
+        let cleared = change_composer_target(
+            next(),
+            update.choices,
+            "owner".into(),
+            None,
+            TurnChoiceChange::Effort { level: None },
+        )
+        .unwrap();
+        assert_eq!(cleared.choices.choices, other);
+        assert_eq!(cleared.choices.runtime_id.as_deref(), Some("runtime"));
+        assert_eq!(cleared.choices.runtime_owner_id.as_deref(), Some("owner"));
+    }
+}

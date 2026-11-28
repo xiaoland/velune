@@ -618,7 +618,7 @@ fn pi_review_owner_reader_failure_keeps_late_handled_and_rejected_prompts_termin
 
 #[test]
 fn pi_review_scope_transition_fences_old_prompt_until_owner_confirmation() {
-    for command in ["fork", "clone", "new_session"] {
+    for command in ["fork", "new_session"] {
         for buffered in [true, false] {
             let mut fixture = Fixture::new(
                 r#"
@@ -639,14 +639,16 @@ while True:
   line,buffer=buffer.split(b'\n',1)
   r=json.loads(line); c=r['type']
   with open(os.path.join(root,'requests'),'a') as f: f.write(json.dumps(r)+'\n')
-  if c in ['fork','clone','new_session']:
+  if c in ['fork','new_session']:
    pending=r;open(os.path.join(root,'transition-seen'),'w').close();continue
   emit({'type':'response','id':r['id'],'command':c,'success':True,'data':{'commands':[],'disposition':'handled'}})
 "#,
             );
             match command {
-                "fork" => fixture.session.fork_at(Some("entry")).unwrap(),
-                "clone" => fixture.session.fork_at(None).unwrap(),
+                "fork" => fixture
+                    .session
+                    .branch("entry", EditPlacement::Fork)
+                    .unwrap(),
                 _ => fixture.session.new_session().unwrap(),
             }
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -808,19 +810,21 @@ for line in sys.stdin:
 
 #[test]
 fn pi_review_owner_rejected_scope_transition_preserves_original_leaf_and_prompt() {
-    for command in ["fork", "clone", "new_session"] {
+    for command in ["fork", "new_session"] {
         let mut fixture = Fixture::new(
             r#"
 import sys,json,os
 for line in sys.stdin:
  r=json.loads(line);c=r['type']
  with open(os.path.join(os.path.dirname(__file__),'requests'),'a') as f:f.write(json.dumps(r)+'\n')
- print(json.dumps({'type':'response','command':c,'id':r['id'],'success':c not in ['fork','clone','new_session'],'error':'scope rejected','data':{'commands':[],'disposition':'handled'}}),flush=True)
+ print(json.dumps({'type':'response','command':c,'id':r['id'],'success':c not in ['fork','new_session'],'error':'scope rejected','data':{'commands':[],'disposition':'handled'}}),flush=True)
 "#,
         );
         match command {
-            "fork" => fixture.session.fork_at(Some("entry")).unwrap(),
-            "clone" => fixture.session.fork_at(None).unwrap(),
+            "fork" => fixture
+                .session
+                .branch("entry", EditPlacement::Fork)
+                .unwrap(),
             _ => fixture.session.new_session().unwrap(),
         }
         let ticket = fixture
@@ -921,7 +925,10 @@ for line in sys.stdin:
     running
         .pending
         .insert(old, PendingAction::Rename("old-query-title".into()));
-    fixture.session.fork_at(Some("entry")).unwrap();
+    fixture
+        .session
+        .branch("entry", EditPlacement::Fork)
+        .unwrap();
     let branch = *fixture
         .session
         .running
@@ -1133,36 +1140,28 @@ fn pi_review_old_scope_operation_event_deadline_does_not_poison_new_owner() {
 }
 
 #[test]
-fn pi_integration_history_install_rechecks_receipt_deadline() {
+fn expired_history_snapshot_cannot_replace_the_current_projection() {
     let mut fixture = Fixture::new("import sys\nfor line in sys.stdin: pass\n");
-    let previous = fixture.session.snapshot().unwrap().conversation.id.clone();
     let request = HistoryRequest {
         runtime_id: "pi".into(),
         model_record_key: None,
         snapshot: HistorySnapshot::Awaiting,
         deadline: None,
     };
-    assert!(
-        fixture
-            .session
-            .install_history(
-                request,
-                json!({"data":{"messages":[]}}),
-                Some(Instant::now() - Duration::from_millis(1)),
-            )
-            .is_err()
-    );
+    let error = fixture
+        .session
+        .install_history(
+            request,
+            json!({"nativeSession":{"sessionFile":"late.jsonl"},"data":{"messages":[]}}),
+            Some(Instant::now() - Duration::from_millis(1)),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Transport(detail) if detail.contains("deadline expired before owner installation")
+    ));
     assert_eq!(
         fixture.session.snapshot().unwrap().conversation.id,
-        previous
-    );
-    assert!(
-        fixture
-            .session
-            .running
-            .as_ref()
-            .unwrap()
-            .client
-            .pi_cleanup_required()
+        "pi:synthetic"
     );
 }

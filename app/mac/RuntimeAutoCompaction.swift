@@ -135,7 +135,6 @@ extension DeviceStore {
 struct ModelAutoCompactionLink: View {
     @ObservedObject var store: DeviceStore
     let target: ModelAutoCompactionTarget?
-    var observeForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
     @State private var editing: ModelAutoCompactionTarget?
 
     var body: some View {
@@ -148,22 +147,25 @@ struct ModelAutoCompactionLink: View {
                 Text("保存后可设置自动压缩。").foregroundStyle(.secondary)
             }
         }
-        .onAppear { observeForCheck?(target) }
         .sheet(item: $editing) { ModelAutoCompactionEditor(store: store, target: $0) }
     }
 }
 
+#if VELUNE_DEV_CHECKS
 struct ModelAutoCompactionCheckAccess {
     let runtime: Binding<String?>
     let value: Binding<String>
     let save: () -> Void
     let resetAcp: () -> Void
 }
+#endif
 
 struct ModelAutoCompactionEditor: View {
     @ObservedObject var store: DeviceStore
     let target: ModelAutoCompactionTarget
+#if VELUNE_DEV_CHECKS
     var observeForCheck: ((ModelAutoCompactionCheckAccess) -> Void)? = nil
+#endif
     @Environment(\.dismiss) private var dismiss
     @State private var runtimeID: String?
     @State private var editedValue: String?
@@ -268,7 +270,9 @@ struct ModelAutoCompactionEditor: View {
             runtimeID = runtimes.first { instance in
                 (try? runtimeModelAutoCompactions(runtime: instance).contains { $0.model == target.model }) == true
             }?.id ?? runtimes.first?.id
+#if VELUNE_DEV_CHECKS
             observeForCheck?(ModelAutoCompactionCheckAccess(runtime: runtime, value: value, save: commit, resetAcp: resetAcp))
+#endif
         }
     }
 

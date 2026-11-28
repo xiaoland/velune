@@ -1,10 +1,11 @@
 //! Durable definitions and run ledger. The application-home lock elects the
 //! only scheduler; a trigger is committed before any runtime can accept input.
 use crate::{
-    Error, ScheduledRun, ScheduledRunPhase, ScheduledTask, ScheduledTaskStatus, ScheduledTasksState,
+    Error, ScheduledRun, ScheduledRunPhase, ScheduledTask, ScheduledTaskStatus,
+    ScheduledTasksState, TurnOutcome,
 };
-use rusqlite::{Connection, params};
-use std::path::Path;
+use rusqlite::{Connection, OptionalExtension, params};
+use std::{collections::BTreeMap, path::Path};
 mod import;
 mod migration;
 mod schedule;
@@ -91,8 +92,23 @@ pub(crate) fn anchor(task: &mut ScheduledTask) -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) enum DispatchReceipt {
+    Admitted,
+    WaitingForControl,
+    Unconfirmed(String),
+}
+
+enum RunUpdate {
+    Dispatch(DispatchReceipt),
+    Turn {
+        outcome: TurnOutcome,
+        work_pending: bool,
+    },
+}
+
 pub(crate) struct Store {
     connection: Connection,
+    pending_updates: BTreeMap<String, RunUpdate>,
 }
 impl Store {
     pub(crate) fn open(home: &Path) -> Result<Self, Error> {
@@ -105,14 +121,19 @@ impl Store {
         connection
             .execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(db)?;
-        let mut store = Self { connection };
+        let mut store = Self {
+            connection,
+            pending_updates: BTreeMap::new(),
+        };
         // A prior owner may have crossed the native acceptance boundary. Never
         // replay it, even when the process died before recording its reply.
         for mut run in store.runs()? {
             match run.phase {
                 ScheduledRunPhase::Dispatching | ScheduledRunPhase::Running => {
-                    run.phase = ScheduledRunPhase::OutcomeUnknown;
-                    run.detail = Some("上次退出时运行尚未结算；请查看会话，未自动重发".into());
+                    Self::finalize_phase(
+                        &mut run,
+                        Some("上次退出时运行尚未结算；请查看会话，未自动重发"),
+                    );
                 }
                 ScheduledRunPhase::Waiting => {
                     run.phase = ScheduledRunPhase::Skipped;
@@ -236,6 +257,136 @@ impl Store {
         }
         Ok(())
     }
+    pub(crate) fn run(&self, id: &str) -> Result<Option<ScheduledRun>, Error> {
+        self.connection
+            .query_row("SELECT body FROM runs WHERE id=?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+            .map_err(db)?
+            .map(|body| serde_json::from_str(&body).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Accept a fact once from the turn owner. Storage retries only the ledger write.
+    pub(crate) fn note_turn_result(
+        &mut self,
+        id: String,
+        outcome: TurnOutcome,
+        work_pending: bool,
+    ) {
+        if let Err(error) = self.record_update(
+            id,
+            RunUpdate::Turn {
+                outcome,
+                work_pending,
+            },
+        ) {
+            tracing::warn!(target: "velune_application", event="scheduled_run_settlement_failed", detail=%error);
+        }
+    }
+
+    pub(crate) fn retry_run_updates(&mut self) {
+        for (id, update) in std::mem::take(&mut self.pending_updates) {
+            if let Err(error) = self.record_update(id, update) {
+                tracing::warn!(target: "velune_application", event="scheduled_run_update_failed", detail=%error);
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_run_update(&self, id: &str) -> bool {
+        self.pending_updates.contains_key(id)
+    }
+
+    fn record_update(&mut self, id: String, update: RunUpdate) -> Result<(), Error> {
+        if matches!(update, RunUpdate::Dispatch(_))
+            && matches!(self.pending_updates.get(&id), Some(RunUpdate::Turn { .. }))
+        {
+            return Ok(());
+        }
+        let result = self.persist_update(&id, &update);
+        if result.is_ok() {
+            self.pending_updates.remove(&id);
+        } else {
+            self.pending_updates.insert(id, update);
+        }
+        result
+    }
+
+    fn persist_update(&mut self, id: &str, update: &RunUpdate) -> Result<(), Error> {
+        let Some(mut run) = self.run(id)? else {
+            return Ok(());
+        };
+        match update {
+            RunUpdate::Dispatch(receipt) => {
+                // A short turn may have already stored its result during send.
+                if run.turn_outcome.is_some() {
+                    return Ok(());
+                }
+                let (phase, detail) = match receipt {
+                    DispatchReceipt::Admitted => (ScheduledRunPhase::Running, None),
+                    DispatchReceipt::WaitingForControl => (
+                        ScheduledRunPhase::Waiting,
+                        Some("等待外部客户端释放控制权；尚未发送".into()),
+                    ),
+                    DispatchReceipt::Unconfirmed(detail) => {
+                        (ScheduledRunPhase::OutcomeUnknown, Some(detail.clone()))
+                    }
+                };
+                if run.phase == phase && run.detail == detail {
+                    return Ok(());
+                }
+                run.phase = phase;
+                run.detail = detail;
+            }
+            RunUpdate::Turn {
+                outcome,
+                work_pending,
+            } => {
+                run.turn_outcome = Some(*outcome);
+                if *outcome == TurnOutcome::Cancelled {
+                    run.detail = Some("运行已由用户停止".into());
+                }
+                if *work_pending {
+                    run.phase = ScheduledRunPhase::Running;
+                } else {
+                    Self::finalize_phase(&mut run, None);
+                }
+            }
+        }
+        self.put_run(&run)
+    }
+
+    fn finalize_phase(run: &mut ScheduledRun, unknown_detail: Option<&str>) {
+        run.phase = match run.turn_outcome {
+            Some(TurnOutcome::Completed) => ScheduledRunPhase::Completed,
+            Some(TurnOutcome::Failed | TurnOutcome::Cancelled) => ScheduledRunPhase::Failed,
+            None => {
+                if let Some(detail) = unknown_detail {
+                    run.detail = Some(detail.into());
+                }
+                ScheduledRunPhase::OutcomeUnknown
+            }
+        };
+    }
+
+    pub(crate) fn settle_inactive_run(
+        &mut self,
+        run: &mut ScheduledRun,
+        unknown_detail: Option<&str>,
+    ) -> Result<(), Error> {
+        Self::finalize_phase(run, unknown_detail);
+        self.put_run(run)
+    }
+
+    pub(crate) fn put_dispatch_result(
+        &mut self,
+        id: &str,
+        receipt: DispatchReceipt,
+    ) -> Result<(), Error> {
+        self.record_update(id.to_owned(), RunUpdate::Dispatch(receipt))
+    }
+
     pub(crate) fn put_run(&mut self, run: &ScheduledRun) -> Result<(), Error> {
         self.connection
             .execute(

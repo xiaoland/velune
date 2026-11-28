@@ -14,6 +14,8 @@ svc run build-macos
 svc run reinstall-macos
 ```
 
+Mac 与 Windows 的 xURL 安装入口共用 [xURL 安装脚本](../../scripts/install-xurl.py)。安装器从同一固定 Git 提交编译 CLI、复制许可证并写入版本记录。
+
 构建脚本先生成 UniFFI 模块，再用 SwiftPM 的 Xcode 后端构建本机架构产品，固定 macOS 15 部署底线。swift-markdown 0.9.0 的 manifest 需要 Swift 6.2 或以上工具链。应用与生成绑定目标各自启用 warnings-as-errors，依赖保持其声明的 Swift 语言模式；不构建或执行依赖的测试 targets。生成文件只放在 `target/` 下，未变化的文件保留mtime；开发使用Swift debug，发布显式release。
 
 RelayKit 接入还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定，Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。bundle 的 `ThirdParty/RelayKit` 保留上游、Go runtime 和传递依赖许可证以及模块锁文件；构建 manifest 记录 Go 版本、两个模块文件的摘要、源码提交、UniFFI 版本、类型接口和配置 schema。
@@ -48,7 +50,7 @@ python3 scripts/macos-dev.py start --home /absolute/path/to/new-isolated-home
 
 Windows 使用 MSVC 目标（`x86_64-pc-windows-msvc`，工具链版本同 `rust-toolchain.toml`），默认dev／.NET Debug，release显式选择。需要 Visual Studio Build Tools、.NET 10 SDK、Go、Python 3（收集随应用分发的 Rust 许可全文）和 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)。RelayKit 桥依赖 cgo；MinGW 静态库无法可靠链接进 MSVC 产物，所以 Windows 把它构建为 `velune_relaykit.dll`，Rust 以 `raw-dylib` 绑定，无需导入库。构建脚本把 DLL 复制到 `target/host-rust/<profile>/`，应用分发时须放在可执行文件旁。cgo 编译器默认为 `<arch>-w64-mingw32-clang`，可由 `VELUNE_RELAYKIT_CC` 指定绝对路径；PATH 没有传递给 build script 时，同时用 `GO` 指定 Go 的绝对路径。
 
-先安装 runtime-support，并执行 `powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1` 准备官方 xURL CLI。`scripts/build-windows.ps1` 先构建 `velune_bindings.dll`，再由固定提交且已核实SHA的 `uniffi-bindgen-cs` 从中增量生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`。界面、运行与已知限制见 [Windows README](../../app/windows/README.md)。
+[仓库 SDK 声明](../../global.json)在共存多代 SDK 时选择已安装的最新稳定 .NET 10。先安装 runtime-support，并执行 `powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1` 准备官方 xURL CLI。`scripts/build-windows.ps1` 先构建 `velune_bindings.dll`，再由固定提交且已核实SHA的 `uniffi-bindgen-cs` 从中增量生成 C# 绑定，最后 `dotnet publish` 出自包含的 `Velune.exe`。界面、运行与已知限制见 [Windows README](../../app/windows/README.md)。
 
 开发用 Windows 机（SSH 别名 `win-ws.localhost`）上只有一个仓库 `F:\CODING\Velune`：main 的普通克隆，origin 指向 GitHub。未推送的提交以 bundle 送达：Mac 上 `git bundle create <文件> <对方 main>..main`，复制过去后在该仓库 `git pull --ff-only <文件> main`，再删除 bundle。runtime-support、xURL 与 `uniffi-bindgen-cs` 在被忽略的 `target\` 中，新克隆或 worktree 需从已有的 `target\runtime-support`、`target\tools` 复制。并行或临时的验证副本用 `git worktree add F:\CODING\.worktrees\<任务>\velune`，用完即 `git worktree remove`。日常使用的版本先退出正在运行的 Velune，再 `robocopy target\windows\Velune %LOCALAPPDATA%\Programs\Velune /MIR` 安装，桌面快捷方式指向那里，因此重新构建不受运行中的应用影响。
 

@@ -258,23 +258,22 @@ sealed partial class Conversation
     // Edit replaces a sent user message: in place, dropping it and all after
     // it, or in a new conversation from what precedes it. It returns the
     // conversation that continues, or null when it did not.
-    public async Task<string?> Edit(string messageID, EditPlacement placement, string text)
+    public async Task<string?> Edit(BindingMessageReference message, string expectedRevision, EditPlacement placement, string text, Action<Exception> failed)
     {
-        if (Snapshot is not { } snapshot)
+        if (Snapshot is not { } snapshot || snapshot.Conversation.Id != message.ConversationId ||
+            snapshot.Conversation.RuntimeId != message.RuntimeId)
         {
             return null;
         }
-        var turn = new ComposedTurn(Text: text.Trim(), Effort: NextTurn.Effort, Attachments: [], PermissionMode: NextTurn.PermissionMode?.Id);
-        var selection = NextTurn.Model;
+        var turn = new ComposedTurn(Text: text.Trim(), Effort: null, Attachments: [], PermissionMode: null);
         DeliveredSnapshot? result = null;
         var done = await Change("编辑消息", NativeOperation.ConversationWrite, application =>
         {
-            var message = new BindingMessageReference(snapshot.ContextRuntimeId, snapshot.Conversation.Id, messageID);
-            var edited = application.EditMessage(message, placement, selection, turn);
+            var edited = application.EditMessage(message, placement, null, turn, expectedRevision);
             result = edited.Snapshot;
             // A fork's snapshot is the new conversation's, which this one does not take.
             return placement == EditPlacement.Fork ? new SnapshotResult(null) : edited;
-        });
+        }, failed);
         return !done ? null : placement == EditPlacement.Fork ? result?.Conversation.Id : snapshot.Conversation.Id;
     }
 
@@ -295,9 +294,10 @@ sealed partial class Conversation
         }
         Busy = true;
         Notify();
+        var requestedFrom = Snapshot;
         try
         {
-            Apply((await Call(operation, work)).Snapshot);
+            Apply((await Call(operation, work)).Snapshot, requestedFrom);
             return true;
         }
         catch (Exception failure)
@@ -384,7 +384,7 @@ sealed partial class Conversation
         var update = await Call(NativeOperation.ConfigurationWrite,
             application => application.SetRuntimeModelAutoCompaction(runtimeId, model, setting));
         if (closed) return;
-        Configuration = Configuration with { Runtimes = [.. update.RuntimeInstances.Where(instance => instance.Enabled)] };
+        Configuration = Configuration with { Runtimes = update.RuntimeInstances.Where(instance => instance.Enabled).ToArray() };
         Notify();
     }
 

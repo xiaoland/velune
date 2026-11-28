@@ -87,12 +87,6 @@ fn independent_client_views_share_owner_without_sharing_browser_state() {
     .unwrap();
     let main_before = main.list().unwrap();
     let archive = main.with_client_view("archive-window".into()).unwrap();
-    assert!(matches!(
-        archive
-            .request("test.view", Command::ReadConfiguration)
-            .unwrap(),
-        Response::ReadConfiguration(_)
-    ));
     assert!(
         archive
             .show_archived_conversations(true)

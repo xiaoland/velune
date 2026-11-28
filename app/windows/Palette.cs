@@ -185,7 +185,8 @@ sealed class CommandPalette
     {
         var text = query.Text.Trim();
         shown = text.Length == 0 ? all : all
-            .Select((item, index) => (Item: item, Index: index, Score: FuzzyMatch.Score(text, [item.Title, .. item.Aliases ?? [], item.Detail])))
+            .Select((item, index) => (Item: item, Index: index,
+                Score: FuzzyMatch.Score(text, (string?[])[item.Title, .. item.Aliases ?? Array.Empty<string>(), item.Detail])))
             .Where(entry => entry.Score != null)
             .OrderByDescending(entry => entry.Score).ThenBy(entry => entry.Index)
             .Select(entry => entry.Item)

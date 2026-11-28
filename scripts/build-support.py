@@ -105,6 +105,19 @@ def sync(source, destination, prune=False, includes=()):
                     path.rmdir()
 
 
+def stage_runtime_scripts(destination, prune=False):
+    package = ROOT / "packages/agent-runtime"
+    names = (package / "resource-scripts.txt").read_text().splitlines()
+    destination = Path(destination)
+    for name in names:
+        copy(package / "resources" / name, destination / name)
+    if prune:
+        staged_names = {os.path.normcase(name) for name in names}
+        for old in destination.glob("*.mjs"):
+            if os.path.normcase(old.name) not in staged_names and (old.is_file() or old.is_symlink()):
+                old.unlink()
+
+
 def ensure_bindgen():
     subprocess.run(["cargo", "build", "--locked", "--target-dir", "target/build-tools", "-p", "velune-build-tools", "--bin", "velune-bindgen", "-j", os.environ.get("CARGO_BUILD_JOBS", "2")], cwd=ROOT, check=True)
     return ROOT / "target/build-tools/debug" / ("velune-bindgen.exe" if os.name == "nt" else "velune-bindgen")
@@ -184,19 +197,34 @@ def bindings(args, verify=False):
         print(f"绑定已更新：{directory}")
 
 
-def source_snapshot(platform):
-    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
+def source_inputs(platform):
+    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", "LICENSE", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
              "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
+    if platform in ("macos", "windows"):
+        paths += ["THIRD_PARTY_NOTICES.md", "scripts/install-runtime-support.sh", "scripts/install-xurl.py"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
         paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
-                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c"]
+                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c", "scripts/install-xurl.sh"]
     elif platform == "windows":
-        paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
+        paths += ["global.json", ".gitattributes", "assets", "app/mac/Licenses", "scripts/build-windows.ps1", "scripts/render-windows-icon.ps1",
+                  "scripts/dotnet-licenses.py", "scripts/install-xurl.ps1"]
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
+    return paths
+
+
+def is_build_input(relative):
+    return (
+        relative.rsplit("/", 1)[-1] not in ("README.md", "AGENTS.md", "AGENTS.local.md")
+        and relative not in ("app/windows/PARITY.md", "app/windows/TDD.md")
+    )
+
+
+def source_snapshot(platform):
+    paths = source_inputs(platform)
     if is_git_checkout():
         output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
         selected = [os.fsdecode(name) for name in sorted(set(output.split(b"\0")) - {b""})]
@@ -219,7 +247,7 @@ def source_snapshot(platform):
     snapshot = {}
     for key in sorted(set(selected)):
         path = ROOT / key
-        if path.name in ("README.md", "AGENTS.md", "AGENTS.local.md"):
+        if not is_build_input(key):
             continue
         if path.is_symlink():
             info = path.lstat()
@@ -320,6 +348,7 @@ def artifact_identity(platform, profile, command, purpose="development"):
         info_path = bundle / "Contents/Info.plist"
         paths = [f"target/host-rust/{native_profile}/libvelune_bindings.dylib",
                  str(info_path.relative_to(ROOT)),
+                 str((bundle / "Contents/Frameworks/libvelune_bindings.dylib").relative_to(ROOT)),
                  str((bundle / "Contents/Resources/build-manifest.json").relative_to(ROOT))]
         if info_path.is_file():
             executable = plistlib.loads(info_path.read_bytes()).get("CFBundleExecutable")
@@ -328,12 +357,45 @@ def artifact_identity(platform, profile, command, purpose="development"):
     elif platform == "android":
         apk, output_metadata = android_apk_output(profile)
         paths = ["target/android-native/arm64-v8a/libvelune_bindings.so", str(apk.relative_to(ROOT)), str(output_metadata.relative_to(ROOT))]
+    elif platform == "windows":
+        app = "target/windows-dev/Velune" if profile == "dev" else "target/windows/Velune"
+        paths = [f"target/host-rust/{native_profile}/velune_bindings.dll",
+                 f"{app}/Velune.exe", f"{app}/Velune.dll"]
     else:
-        paths = {
-            "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
-        }[platform]
+        # Xcode Debug's launcher can be unchanged while the Swift library changes.
+        bundle = f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app"
+        paths = [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
+                 f"{bundle}/Velune", f"{bundle}/Velune.debug.dylib"]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
+
+
+def verify_macos_build(profile):
+    from macos_identity import app_bundle_path, identity, validate_bundle
+
+    bundle = app_bundle_path(ROOT, profile)
+    context = validate_bundle(bundle, purpose="development")
+    if context != identity(ROOT, "development")["context"]:
+        raise ValueError("Mac 开发包属于其他工作树")
+
+    receipt_path = STATE / "results" / f"macos-{profile}-development-success.json"
+    receipt = json.loads(receipt_path.read_text())
+    if receipt["exit_code"] != 0 or not receipt["current"] or receipt["input_after"] != source_identity("macos"):
+        raise ValueError("Mac 构建回执与当前输入不符，请重新请求构建")
+
+    artifacts = artifact_identity("macos", profile, receipt["command"])
+    executable = str((bundle / "Contents/MacOS" / context["executable"]).relative_to(ROOT))
+    bindings = str((bundle / "Contents/Frameworks/libvelune_bindings.dylib").relative_to(ROOT))
+    manifest = bundle / "Contents/Resources/build-manifest.json"
+    if not {executable, bindings, str(manifest.relative_to(ROOT))} <= artifacts.keys() or artifacts != receipt["artifacts"]:
+        raise ValueError("Mac 开发包产物与构建回执不符，请重新请求构建")
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(bundle)], check=True)
+    return {
+        "app": str(bundle),
+        "buildReceipt": str(receipt_path),
+        "source": json.loads(manifest.read_text())["source_commit"],
+        "executableSHA256": artifacts[executable],
+        "bindingsSHA256": artifacts[bindings],
+    }
 
 
 def android_apk_output(profile, root=None, require_signing=None):
@@ -414,8 +476,12 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     p = actions.add_parser("copy"); p.add_argument("source"); p.add_argument("destination")
     p = actions.add_parser("sync"); p.add_argument("source"); p.add_argument("destination"); p.add_argument("--prune", action="store_true"); p.add_argument("--include", action="append", default=[])
+    p = actions.add_parser("stage-runtime-scripts")
+    p.add_argument("destination")
+    p.add_argument("--prune", action="store_true")
     p = actions.add_parser("write"); p.add_argument("path")
     actions.add_parser("source-provenance")
+    p = actions.add_parser("verify-macos-build"); p.add_argument("--profile", choices=("dev", "release"), default="dev")
     for name in ("bindgen", "verify-bindings"):
         p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "python", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
     p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("command", nargs=argparse.REMAINDER)
@@ -423,15 +489,20 @@ def main():
     try:
         if args.action == "copy": copy(args.source, args.destination)
         elif args.action == "sync": sync(args.source, args.destination, args.prune, args.include)
+        elif args.action == "stage-runtime-scripts": stage_runtime_scripts(args.destination, args.prune)
         elif args.action == "write": write(args.path, sys.stdin.buffer.read())
         elif args.action == "source-provenance": print(json.dumps(source_provenance(), sort_keys=True))
+        elif args.action == "verify-macos-build": print(json.dumps(verify_macos_build(args.profile)))
         elif args.action in ("bindgen", "verify-bindings"): bindings(args, args.action == "verify-bindings")
         elif args.action == "run": return run(args)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"构建失败：{error}", file=sys.stderr)
         return 1
     return 0
 
 
 if __name__ == "__main__":
+    # Redirected Windows streams can otherwise use a legacy code page.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     sys.exit(main())

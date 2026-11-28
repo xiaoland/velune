@@ -1,5 +1,73 @@
 #if VELUNE_DEV_CHECKS
 import AppKit
+
+/// AppKit supplies the coder and later presents the returned window. Only the
+/// restoration delegate is exercised here, using windows that stay unordered.
+@MainActor func checkWorkspaceWindowRestoration(home: URL) {
+    let manager = WorkspaceWindows.shared
+    precondition(manager.controllers.isEmpty)
+    let directory = home.appendingPathComponent("restoration-core", isDirectory: true)
+    let transport = Transport(stateDirectory: directory, resourcesDirectory: Bundle.main.resourceURL!)
+    let application = DeviceStore(transport: transport)
+    MacNativePersistenceGate.open()
+    defer { MacNativePersistenceGate.close(); try! transport.close(stoppingWork: true) }
+    manager.start(.init(store: application, previewEmpty: false, previewSettings: false))
+    func restore(_ bytes: Data) -> (NSWindow?, Error?) {
+        let archive = try! NSKeyedUnarchiver(forReadingFrom: bytes)
+        defer { archive.finishDecoding() }
+        var calls = 0
+        var result: (NSWindow?, Error?) = (nil, nil)
+        WorkspaceWindowRestoration.restoreWindow(withIdentifier: .init("restored-window"), state: archive) { window, error in
+            calls += 1
+            result = (window, error)
+        }
+        precondition(calls == 1)
+        return result
+    }
+    for (kind, device): (ConversationWindowKind, String?) in [(.workspace, nil), (.single, "fork-peer")] {
+        let id = UUID().uuidString
+        let saved = ConversationWindowModel(application: application, kind: kind, device: device).savedLayout
+        application.windowWorkspaceJournal.save(saved, id: id)
+        application.windowWorkspaceJournal.flush()
+        let original = manager.restore(kind, id: id, device: device)!
+        let controller = manager.controllers.first { $0.window === original }!
+        precondition(original.isRestorable && original.restorationClass === WorkspaceWindowRestoration.self
+                     && original.delegate === controller, "AppKit must register this window's state writer and restorer")
+        let archive = NSKeyedArchiver(requiringSecureCoding: true)
+        original.delegate?.window?(original, willEncodeRestorableState: archive)
+        archive.finishEncoding()
+        original.close()
+        precondition(manager.controllers.isEmpty)
+        let (restored, error) = restore(archive.encodedData)
+        guard let restored, let reopened = manager.controllers.first(where: { $0.window === restored }) else {
+            preconditionFailure("窗口恢复回执缺失：\(String(describing: error))")
+        }
+        precondition(error == nil && restored !== original && reopened.id == id && reopened.kind == kind && reopened.device == device
+                     && restored.identifier?.rawValue == "velune.window.\(id)" && !restored.isVisible)
+        restored.contentView?.layoutSubtreeIfNeeded()
+        let deadline = Date().addingTimeInterval(3)
+        while !reopened.model.acceptsWorkspacePersistence, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(reopened.model.acceptsWorkspacePersistence && reopened.model.focusedPaneID == saved.focused
+                     && reopened.model.savedLayout.panes == saved.panes,
+                     "隐藏窗口内容必须经真实 onAppear 找回自身 journal 的 pane 和 tab")
+        let (same, secondError) = restore(archive.encodedData)
+        precondition(same === restored && secondError == nil && manager.controllers.count == 1)
+        restored.close()
+    }
+    // Change one field in an otherwise admissible archived record.
+    for (id, kind) in [("broken-uuid", "conversation"), (UUID().uuidString, "broken-kind")] {
+        let archive = NSKeyedArchiver(requiringSecureCoding: true)
+        archive.encode(id as NSString, forKey: "veluneWindowID")
+        archive.encode(kind as NSString, forKey: "veluneWindowKind")
+        archive.finishEncoding()
+        let (window, error) = restore(archive.encodedData)
+        let failure = error as NSError?
+        precondition(window == nil && failure?.domain == NSCocoaErrorDomain && failure?.code == CocoaError.coderReadCorrupt.rawValue
+                     && manager.controllers.isEmpty, "损坏的恢复标识或类型必须拒绝，不能创建窗口")
+    }
+}
 import Combine
 import VeluneBindings
 
@@ -7,7 +75,10 @@ extension ConversationTab {
     /// Development check of the send queue without driving the interface:
     /// send a turn, then queue messages while it runs.
     func checkSendQueue(step: Int = 0, attempts: Int = 0) {
-        guard attempts < 120 else { return }
+        guard attempts < 120 else {
+            FileHandle.standardError.write(Data("FAIL send-queue: step \(step) did not reach its required sending state\n".utf8))
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let texts = ["第一条排队消息", "第二条排队消息：比较长的一段文字，用来看两行截断在窄面板里是否得体，以及悬停时删除按钮的位置。", "第三条"]
             let ready = step == 0 ? store.canSend : store.canQueue
@@ -21,7 +92,10 @@ extension ConversationTab {
     /// Development check of message editing without driving the interface:
     /// open the editor on the conversation's second user message.
     func checkEditMessage(attempts: Int = 0) {
-        guard attempts < 120 else { return }
+        guard attempts < 120 else {
+            FileHandle.standardError.write(Data("FAIL edit-message: no editable second user message appeared\n".utf8))
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let users = transcript(of: store).filter { $0.role == .user }
             guard users.count > 1, store.editability(of: users[1].id) != nil else { return checkEditMessage(attempts: attempts + 1) }
@@ -36,7 +110,7 @@ extension ConversationWindowModel {
     /// interface: on the first listed conversation, send from the composer
     /// sheet, stop from the list, then continue from the list.
     func checkListActions(step: Int = 0, attempts: Int = 0) {
-        guard attempts < 240 else { return Self.checkLog("CHECK list-actions: step \(step) timed out") }
+        guard attempts < 240 else { return Self.checkLog("FAIL list-actions: step \(step) timed out") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             let next = { (step: Int) in self.checkListActions(step: step) }
             let retry = { self.checkListActions(step: step, attempts: attempts + 1) }

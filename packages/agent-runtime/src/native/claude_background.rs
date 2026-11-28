@@ -14,8 +14,6 @@ impl NativeSession {
         if self.failed
             || self.process_ended
             || self.side
-            || self.claude.commands.barrier
-            || self.claude.commands.cleanup_required
             || self.native_id.is_none()
             || self.claude.bound_session_id != self.native_id
             || self.claude.task_refresh.is_some()
@@ -437,7 +435,6 @@ impl NativeSession {
         if self.config.kind == NativeKind::Codex166 {
             return self.codex_stop_background_task(task);
         }
-        self.ensure_claude_sync_mutation()?;
         let native = self.claude_stop_target(task)?;
         self.claude.task_sequence = self
             .claude

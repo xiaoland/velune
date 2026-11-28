@@ -1,9 +1,6 @@
-"""Claude background Bash survives a foreground result, a follow-up reuses the
-live child, and the native task callback arrives as its own reply. Real Claude
-Code CLI under sandbox-exec, loopback model, private HOME; native credentials.
-
-The managed variant (claude_background_follow_up_managed) routes the same
-turns through the Velune gateway.
+"""Check native Claude routing, then keep a managed gateway lease across a
+background Bash, follow-up and native task callback on one real CLI child.
+Private HOME and a sandbox limited to loopback.
 """
 from __future__ import annotations
 
@@ -24,9 +21,11 @@ RUNTIME = "acceptance-claude"
 MODEL = "claude-sonnet-4-6"
 NATIVE_TOKEN = "synthetic-claude-native-token"
 MANAGED_TOKEN = "synthetic-claude-managed-token"
+NATIVE_PROMPT = "SYNTHETIC-NATIVE-ROUTE"
 FIRST = "SYNTHETIC-BASH-FIRST-INPUT"
 SECOND = "SYNTHETIC-BASH-SECOND-INPUT"
-REPLY = {"first": "SYNTHETIC-BASH-FIRST-REPLY",
+REPLY = {"native": "SYNTHETIC-NATIVE-REPLY",
+         "first": "SYNTHETIC-BASH-FIRST-REPLY",
          "second": "SYNTHETIC-BASH-SECOND-REPLY",
          "callback": "SYNTHETIC-BASH-CALLBACK-REPLY"}
 TASK_TITLE = "Controlled background Bash"
@@ -83,7 +82,9 @@ class MessagesProvider:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 last_user = next(item for item in reversed(body["messages"]) if item["role"] == "user")
                 content = json.dumps(last_user["content"])
-                if "<task-notification>" in content and TOOL_USE_ID in content:
+                if NATIVE_PROMPT in content:
+                    stage = "native"
+                elif "<task-notification>" in content and TOOL_USE_ID in content:
                     stage = "callback"
                 elif SECOND in content:
                     stage = "second"
@@ -97,7 +98,9 @@ class MessagesProvider:
                     self.send_error(400, "no recognized fixture input")
                     return
                 fixture.requests.append({"stage": stage, "model": body["model"],
-                    "managed": path.startswith("/managed/") and self.headers.get("x-api-key") == MANAGED_TOKEN,
+                    "route": path,
+                    "authenticated": (self.headers.get("authorization") == f"Bearer {NATIVE_TOKEN}"
+                                      if path == "/v1/messages" else self.headers.get("x-api-key") == MANAGED_TOKEN),
                     "bash_started": (project / "started").exists(),
                     "bash_completed": (project / "completed").exists()})
                 gate = None
@@ -133,10 +136,10 @@ class MessagesProvider:
         self.thread.join()
 
 
-def wrapper(binary, root, port):
+def wrapper(binary, root):
     """Record the exact child PID and exec Claude with network limited to the
-    fixture, so the CLI owns that PID while stream-json stays connected."""
-    sandbox = f'(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:{port}"))'
+    loopback interface, so the CLI owns that PID while stream-json stays connected."""
+    sandbox = '(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:*"))'
     path = root / "claude"
     path.write_text(f"""#!/bin/sh
 printf '%s %s\\n' "$$" "$*" >> {shlex.quote(str(root / "launches"))}
@@ -161,22 +164,24 @@ def managed_selection(app, api, conversation, port):
     return conversation.ModelSelection.MANAGED(model_record_key=saved.models[0].record_key)
 
 
-def run(ctx: Context, managed: bool = False) -> None:
+def run(ctx: Context) -> None:
     if sys.platform != "darwin":
         raise Skip("needs sandbox-exec to confine the real Claude CLI to the fixture")
     b = ctx.bindings
     api, conversation = b.application_api, b.conversation
     project = ctx.isolated.project
     provider = MessagesProvider(project, ctx.timeout)
+    shell = ctx.isolated.root / "bash"
+    shell.write_text('#!/bin/sh\nexec /bin/bash --noprofile --norc "$@"\n')
+    shell.chmod(0o700)
+    # Claude invokes a login shell. Inherit only the fixture environment.
     os.environ.update(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", DISABLE_AUTOUPDATER="1",
-                      SHELL="/bin/bash", TERM="dumb")
-    if not managed:
-        os.environ.update(ANTHROPIC_BASE_URL=f"http://127.0.0.1:{provider.port}",
-                          ANTHROPIC_AUTH_TOKEN=NATIVE_TOKEN)
+                      SHELL=str(shell), TERM="dumb")
+    os.environ.update(ANTHROPIC_BASE_URL=f"http://127.0.0.1:{provider.port}",
+                      ANTHROPIC_AUTH_TOKEN=NATIVE_TOKEN)
     # Velune allocates its gateway port independently of the provider.
-    binary = wrapper(ctx.tool("claude"), ctx.isolated.root, "*" if managed else provider.port)
+    binary = wrapper(ctx.tool("claude"), ctx.isolated.root)
     ctx.facts["claude"] = subprocess.check_output([str(binary), "--version"], text=True).strip()
-    ctx.facts["managed"] = managed
 
     options = b.bindings.BindingOptions(home_directory=str(ctx.isolated.state),
                                         resources_directory=str(ctx.isolated.resources))
@@ -239,15 +244,24 @@ def run(ctx: Context, managed: bool = False) -> None:
 
     try:
         app.upsert_runtime_with_execution(runtime, execution)
-        if managed:
-            model = managed_selection(app, api, conversation, provider.port)
+        driver.key = app.create_conversation(RUNTIME, str(project), model).snapshot.conversation.id
+        submit(NATIVE_PROMPT)
+        driver.wait("native credentials did not deliver a reply",
+                    lambda s: REPLY["native"] in texts(s) and s.run_state.name == "IDLE", requests)
+        native_request, = provider.requests
+        assert native_request["route"] == "/v1/messages" and native_request["authenticated"], native_request
+        assert native_request["model"] == MODEL, native_request
+        ctx.passed("native_endpoint_and_credentials_deliver_the_selected_model")
+
+        model = managed_selection(app, api, conversation, provider.port)
         driver.key = app.create_conversation(RUNTIME, str(project), model).snapshot.conversation.id
         submit(FIRST)
         driver.wait("first foreground result missing",
                     lambda s: REPLY["first"] in texts(s) and finished(), requests)
         first_sequence = check_finished(1)
-        running = until("Bash should survive the first foreground result", lambda: background("RUNNING"))
-        assert (project / "started").exists() and not (project / "completed").exists()
+        running = until("Bash should begin and survive the first foreground result",
+                        lambda: (project / "started").is_file() and background("RUNNING"))
+        assert not (project / "completed").exists()
         first_pid, = launches()
         ctx.passed("background_bash_outlives_foreground_result")
 
@@ -285,8 +299,9 @@ def run(ctx: Context, managed: bool = False) -> None:
                 for block in message.blocks if block.is_text()] == [FIRST, SECOND]
         check_finished(2)
         assert launches() == [first_pid], launches()
-        assert [request["stage"] for request in provider.requests] == ["bash", "first", "second", "callback"]
-        assert all(request["managed"] == managed and request["model"] == MODEL for request in provider.requests)
+        assert [request["stage"] for request in provider.requests] == ["native", "bash", "first", "second", "callback"]
+        assert all(request["route"] == "/managed/v1/messages" and request["authenticated"]
+                   and request["model"] == MODEL for request in provider.requests[1:])
         ctx.passed("callback_is_a_separate_reply_on_the_same_child")
         driver.close_when_idle()
     except BaseException:

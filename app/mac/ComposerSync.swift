@@ -8,6 +8,12 @@ struct SavedComposerPromotion: Codable, Equatable { var inputID: UUID; var runti
 struct SavedComposerTarget: Codable, Equatable { var choices: ComposerTargetChoices; var revision: UInt64? }
 
 
+// A normal local edit may follow its own preceding write. An accepted edit
+// keeps its captured revision, while a fork seeds a new continuing target.
+private enum TargetWritePolicy {
+    case followLocalEdits, capturedRevision, initializeFork
+}
+
 /// Serial I/O for a shared directory. A window never becomes its storage owner.
 private final class ComposerInputWorker: @unchecked Sendable {
     let transport: Transport
@@ -105,9 +111,17 @@ private final class ComposerInputWorker: @unchecked Sendable {
         lastWrites[key] = result.0.inputs.first { $0.id.caseInsensitiveCompare(key) == .orderedSame }?.revision
         return result
     }
-    func saveTarget(context: ComposerContextKey, observed: UInt64?, choices: ComposerTargetChoices, chainOwnWrites: Bool) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
+    func saveTarget(context: ComposerContextKey, observed: UInt64?, choices: ComposerTargetChoices, policy: TargetWritePolicy) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
+        if policy == .initializeFork {
+            // Showing the new fork can have already prepared its revision-one
+            // default. Core seeds that default and preserves any real choice.
+            let seeded = try perform(.ensureTarget(context: context, seed: choices))
+            if seeded.0.targets.first(where: { $0.context == context })?.choices == choices { return seeded }
+            // A competing choice still goes through the original missing-record
+            // CAS; it must remain a visible conflict and retain the local edit.
+        }
         let current = state?.targets.first { $0.context == context }?.revision
-        let expected = chainOwnWrites && current != nil && lastTargetWrites[context] == current ? current : observed
+        let expected = policy == .followLocalEdits && current != nil && lastTargetWrites[context] == current ? current : observed
         let result = try perform(.saveTarget(context: context, expectedRevision: expected, choices: choices))
         lastTargetWrites[context] = result.0.targets.first { $0.context == context }?.revision
         return result
@@ -238,22 +252,23 @@ private final class ComposerInputWorker: @unchecked Sendable {
         if userEdit { baseline = latest }
         else if let pending = targetDirty[context] { baseline = pending.revision }
         else { baseline = latest }
-        saveTarget(context: context, choices: choices, baseline: baseline, chainOwnWrites: userEdit, worker: worker)
+        saveTarget(context: context, choices: choices, baseline: baseline, policy: userEdit ? .followLocalEdits : .capturedRevision, worker: worker)
     }
     /// Editing has already sent its turn. Preserve the pre-send CAS baseline:
     /// a concurrent choice must remain a visible configuration conflict, never
     /// turn a successful message into an apparent failed send.
-    func saveEditedTarget(_ conversationID: String, choices: ComposerTargetChoices, expectedRevision: UInt64?) {
+    func saveEditedTarget(_ conversationID: String, choices: ComposerTargetChoices, expectedRevision: UInt64?, placement: EditPlacement = .inPlace) {
         guard let context = context(conversationID) else { return }
         let choices = normalizeComposerTargetChoices(choices: choices)
         guard let worker else { previewTargets[context] = choices; changes.send(); return }
-        saveTarget(context: context, choices: choices, baseline: expectedRevision, chainOwnWrites: false, worker: worker)
+        saveTarget(context: context, choices: choices, baseline: placement == .fork ? nil : expectedRevision,
+                   policy: placement == .fork ? .initializeFork : .capturedRevision, worker: worker)
     }
-    private func saveTarget(context: ComposerContextKey, choices: ComposerTargetChoices, baseline: UInt64?, chainOwnWrites: Bool, worker: ComposerInputWorker) {
+    private func saveTarget(context: ComposerContextKey, choices: ComposerTargetChoices, baseline: UInt64?, policy: TargetWritePolicy, worker: ComposerInputWorker) {
         targetDirty[context] = .init(choices: choices, revision: baseline)
         changes.send()
         worker.queue.async { [weak self] in
-            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, chainOwnWrites: chainOwnWrites) }
+            let result = Result { try worker.saveTarget(context: context, observed: baseline, choices: choices, policy: policy) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {

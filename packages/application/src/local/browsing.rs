@@ -1158,20 +1158,7 @@ impl CoreRuntime {
                 }
                 return Ok(());
             }
-            let gateway = self
-                .gateways
-                .iter()
-                .find(|g| g.id == runtime.gateway_id)
-                .expect("prepared gateway");
-            let physical = gateway
-                .pi_binding_id(key, gateway.authentication_revision(key))
-                .map_err(RuntimeError::invalid)?;
-            self.start_pi_for_session(
-                cwd.as_deref(),
-                (!is_new).then_some(&snapshot),
-                Some(key),
-                Some(&physical),
-            )?;
+            self.start_pi_for_session(cwd.as_deref(), (!is_new).then_some(&snapshot), Some(key))?;
             if self.session.side.is_some() {
                 self.session.pi()?.restore_context(&snapshot);
             }

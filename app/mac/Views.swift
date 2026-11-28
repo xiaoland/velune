@@ -645,8 +645,10 @@ struct ProviderEditor: View {
     let provider: ProviderSummary?
     /// What a new provider starts from; `nil` when editing.
     var template: ProviderTemplate? = nil
+#if VELUNE_DEV_CHECKS
     var observeModelCompactionForCheck: ((ModelAutoCompactionTarget?) -> Void)? = nil
     var observeModelSelectionForCheck: ((@escaping (String?) -> Void) -> Void)? = nil
+#endif
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var protocolID: ApiProtocol = .chatCompletions
@@ -775,8 +777,11 @@ struct ProviderEditor: View {
                             ProviderModelFields(draft: $models[index], modelIDFocused: $modelIDFocused, showsRequestParameters: !usesAntigravityCLI)
                                 .id(models[index].id)
                             Section {
-                                ModelAutoCompactionLink(store: store, target: modelAutoCompactionTarget(models[index]),
-                                                        observeForCheck: observeModelCompactionForCheck)
+                                let link = ModelAutoCompactionLink(store: store, target: modelAutoCompactionTarget(models[index]))
+                                link
+#if VELUNE_DEV_CHECKS
+                                    .onAppear { observeModelCompactionForCheck?(link.target) }
+#endif
                                     .id(models[index].id)
                             }
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
@@ -799,10 +804,12 @@ struct ProviderEditor: View {
                 name = template.kind == .subscription ? template.name : ""; protocolID = template.protocol; endpoint = template.endpoint; composition = template.composition
             }
             linkedLogin = provider?.authentication.linkedLogin
+#if VELUNE_DEV_CHECKS
             observeModelSelectionForCheck? { key in
                 if let key, let draft = models.first(where: { $0.recordKey == key }) { selection = .model(draft.id) }
                 else if key == nil { addModel(ProviderModelDraft()) }
             }
+#endif
             editingAPIKey = (!usesSubscription || usesAPIKey) && authentication.method == .unconfigured; readAPIKeyIfNeeded()
             if let providerID { store.readProviderQuotas([providerID]) }
             discoverExecutables()

@@ -36,11 +36,11 @@ svc run build-windows
 
 合并版本 PR 前，核对目标版本、`version.txt`、Release Please manifest 和生成的 `CHANGELOG.md`。需要显式选定版本时，在进入 `main` 的 Conventional Commit 正文中单独放一行 `Release-As: <目标版本>`。上次 Alpha 通过该方式指定版本。 [上游版本规则](https://github.com/googleapis/release-please/blob/main/src/versioning-strategies/prerelease.ts)
 
-release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，让 `PR checks / validate` 对该 PR head SHA 运行并通过后再合并。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
+release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，等待 `PR checks / validate` 对 GitHub 为该次 `pull_request` 事件生成的合并候选运行并通过。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
 
 PR 检查先验证版本、Release Please manifest、脚本语法和差异空白，再运行合成脚本检查。涉及 Rust 构建输入时，Linux CI 还会检查 Rust 格式、Clippy 和依赖边界，构建 `velune-bindings` 以核对共享 core 与 RelayKit 的链接，并运行默认测试。门禁范围与本地入口见[静态检查与 CI](validation.md#静态检查与-ci)。
 
-[Release workflow](../../.github/workflows/release.yml) 配置 macOS arm64、macOS x86_64 与 Android arm64 构建，以及对应的 runner 镜像、Xcode 和 Node 版本。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。
+[Release workflow](../../.github/workflows/release.yml) 从[发行资产定义](../../scripts/release_assets.py)取得目标架构、runner 镜像和对应源码的平台范围，并指定 Xcode 与 Node 版本。缓存只复用 Rust／Swift／Gradle 的构建输入产物。最终资产从固定 tag 的干净 checkout 生产。
 
 Android 发行采用固定 keystore，由以下 GitHub repository secrets 提供材料。 `ANDROID_RELEASE_KEYSTORE_BASE64`、`ANDROID_RELEASE_STORE_PASSWORD`、`ANDROID_RELEASE_KEY_ALIAS`、`ANDROID_RELEASE_KEY_PASSWORD`。CI 要求四项齐全、APK 签名验证通过，且证书 SHA-256 与已保管发行公钥相符。不提供无签名发布回退。不要打印或提交密钥材料。
 
@@ -50,7 +50,7 @@ Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed�
 
 正式包封装会读取实际二进制版本：macOS 核对 Info.plist 的 SemVer／数字核心／构建号及 daily manifest，并用 `lipo` 核对架构；Android 用 SDK `aapt` 核对 APK 的 applicationId、versionName、versionCode 与 arm64 ABI；Windows 从 `Velune.dll` 读取 ProductVersion。任一值和根 `version.txt` 或发布身份不符，封装失败。Android 构建回执根据 Gradle `output-metadata.json` 选择当前签名模式的 APK，不依赖旧文件路径猜测。
 
-发布前核对 macOS 双架构、Android APK 和 `velune-<tag>-source.tar.gz` 及其四份 `.build.json`，确认源码 SHA、完整 SemVer、构建号、架构、签名状态和包摘要与本次发行一致。源码包包含 vendored RelayKit 源码与 macOS、Android 对应源码，`SHA256SUMS.txt` 覆盖资产清单。暂时性失败可重跑原 run 的失败 job。需要新 run 时使用同一草稿 tag 补跑。全部资产成功后解除草稿状态并建立回流 PR。
+发布检查核对 macOS 双架构、Android APK、对应源码包和四份构建记录的源码 SHA、完整 SemVer、构建号、架构和摘要，同时核对 Android 发行证书及源码覆盖平台。检查拒绝多余文件，按通过核对的清单生成 `SHA256SUMS.txt` 并上传。草稿上的资产名称回读一致后才公开并建立回流 PR。暂时性失败可重跑原 run 的失败 job。需要新 run 时使用同一草稿 tag 补跑。
 
 ## 并行构建与结果来源
 

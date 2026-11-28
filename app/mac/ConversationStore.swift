@@ -102,6 +102,10 @@ final class ConversationStore: ObservableObject {
     /// Same-conversation refresh invalidates requests, not viewport demand.
     private var navigationID = UUID()
     private var timer: Timer?
+#if VELUNE_DEV_CHECKS
+    // The event-only check has a real peer and intentionally no timer or visible window.
+    var receivesOffscreenNativeWakesForCheck = false
+#endif
     private var pollPending = false
     private var nativeUserMessageWakePending = false
     private var needsResync = false
@@ -639,16 +643,13 @@ final class ConversationStore: ObservableObject {
                            directory: isDraft ? nil : snapshot?.conversation.cwd,
                            usage: snapshot?.usage ?? ConversationUsage())
     }
-    var composerQuotaRequest: ComposerQuotaRequest { quotaRequest(next: nextTurn) }
     func quotaRequest(next: NextTurn?) -> ComposerQuotaRequest {
         ComposerQuotaRequest(runtimeID: next?.runtimeId ?? "", selection: next?.model,
             conversationID: isDraft ? nil : snapshot?.conversation.id,
             conversationRevision: snapshot?.revision, configurationRevision: device.configurationRevision,
             providerReportRevision: device.providerReportRevision)
     }
-    var composerAccountQuotas: [ComposerQuotaEntry] { quotaEntries(for: composerQuotaRequest) }
     func quotaEntries(for request: ComposerQuotaRequest) -> [ComposerQuotaEntry] { composerQuotaResults.first { $0.request == request }?.entries ?? [] }
-    var composerQuotaError: String? { quotaError(for: composerQuotaRequest) }
     func quotaError(for request: ComposerQuotaRequest) -> String? { composerQuotaResults.first { $0.request == request }?.failure }
     private func quotaTargetMatches(_ request: ComposerQuotaRequest) -> Bool {
         request.conversationID == (isDraft ? nil : snapshot?.conversation.id)
@@ -1677,7 +1678,7 @@ final class ConversationStore: ObservableObject {
 
     /// A fork runs independently; only an in-place replacement stops the
     /// source turn, as the user confirmed in the editor.
-    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String, String?) -> Void)? = nil) {
+    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String, String?) -> Void)? = nil) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else {
             failed?("原消息暂时不能编辑，修改仍保留。", nil)
             return
@@ -1707,7 +1708,7 @@ final class ConversationStore: ObservableObject {
                 // The accepted target survives closing the editing surface or
                 // source tab before its UI completion callback is delivered.
                 let resultID = snapshot.conversation.id
-                DispatchQueue.main.async { inputs.saveEditedTarget(resultID, choices: targetChoices, expectedRevision: targetRevision) }
+                DispatchQueue.main.async { inputs.saveEditedTarget(resultID, choices: targetChoices, expectedRevision: targetRevision, placement: placement) }
             }
             return result
         }, consumeReceipt: { [weak self] result in
@@ -2086,6 +2087,12 @@ final class ConversationStore: ObservableObject {
         scope.epoch == projectionEpoch && scope.conversationID == loadedConversationID
             && scope.source == snapshot?.conversation.runtimeID && scope.context == projectionRuntimeID && scope.cursor == snapshot?.cursor
     }
+    private func deliveryPosition(_ snapshot: ConversationSnapshot) -> TranscriptDeliveryPosition? {
+        snapshot.cursor.map {
+            TranscriptDeliveryPosition(contextRuntimeId: snapshot.contextRuntimeID,
+                conversationId: snapshot.conversation.id, cursor: $0)
+        }
+    }
     @discardableResult
     private func installProjection(_ incoming: ConversationSnapshot?, scope: ProjectionScope, preserveSelection: Bool = false) -> Bool {
         guard !composerTargetClosed, generation == scope.storeGeneration else { return false }
@@ -2097,12 +2104,13 @@ final class ConversationStore: ObservableObject {
         let sameIdentity = incoming.conversation.id == scope.conversationID && incoming.conversation.runtimeID == scope.source
         guard sameIdentity || (scope.destination == incoming.conversation.id && baseCurrent) else { return false }
         guard loadedConversationID == incoming.conversation.id || baseCurrent else { return false }
-        if sameIdentity, incoming.contextRuntimeID == snapshot?.contextRuntimeID,
-           let current = snapshot?.cursor, let next = incoming.cursor, current.generation == next.generation {
-            guard next.sequence >= current.sequence else { return false }
-            // Header-only changes may share a cursor. Without the captured base
-            // there is no delivery order for conflicting equal-cursor headers.
-            if next.sequence == current.sequence, !baseCurrent { requestProjectionResync(); return false }
+        if let position = deliveryPosition(incoming) {
+            switch classifyTranscriptDelivery(installed: snapshot.flatMap(deliveryPosition), incoming: position,
+                deltaBase: nil, requestIsCurrent: baseCurrent) {
+            case .replace: break
+            case .ignore: return false
+            case .applyDelta, .readFull: requestProjectionResync(); return false
+            }
         } else if !baseCurrent {
             requestProjectionResync(); return false
         }
@@ -2140,8 +2148,12 @@ final class ConversationStore: ObservableObject {
     /// A native wake carries only an address. Keep one pending read if a
     /// delivery that began before the native event is already in flight.
     private func readNativeUserMessage(for conversationID: String?) {
-        guard let loadedConversationID, conversationID == nil || conversationID == loadedConversationID,
-              ConversationWindowModel.isConversationStoreVisible(self) else { return }
+        guard let loadedConversationID, conversationID == nil || conversationID == loadedConversationID else { return }
+#if VELUNE_DEV_CHECKS
+        guard receivesOffscreenNativeWakesForCheck || ConversationWindowModel.isConversationStoreVisible(self) else { return }
+#else
+        guard ConversationWindowModel.isConversationStoreVisible(self) else { return }
+#endif
         nativeUserMessageWakePending = true
         pollProjection()
     }
@@ -2193,8 +2205,17 @@ final class ConversationStore: ObservableObject {
         case .absent: installProjection(nil, scope: scope, preserveSelection: true)
         case .complete(let value): installProjection(value, scope: scope, preserveSelection: true)
         case .changes(let base, var header, let order, let changed):
-            guard let current = snapshot, current.conversation.id == scope.conversationID,
-                  current.contextRuntimeID == scope.context, current.cursor == base else { needsResync = true; return }
+            guard let current = snapshot, let position = deliveryPosition(header) else { needsResync = true; return }
+            switch classifyTranscriptDelivery(installed: deliveryPosition(current), incoming: position,
+                deltaBase: base, requestIsCurrent: baseIsCurrent(scope)) {
+            case .applyDelta: break
+            case .ignore: return
+            case .replace, .readFull: needsResync = true; return
+            }
+            let ids = Set(order), changedIDs = Set(changed.map(\.id))
+            guard ids.count == order.count, changedIDs.count == changed.count, ids.isSuperset(of: changedIDs) else {
+                needsResync = true; return
+            }
             var known = Dictionary(current.messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for message in changed { known[message.id] = message }
             let messages = order.compactMap { known[$0] }
@@ -2449,10 +2470,6 @@ extension ConversationStore {
         var composerRequest: ComposerSubmission.Phase? {
             get { store.composerRequest }
             nonmutating set { store.composerRequest = newValue }
-        }
-        var acceptedSubmissions: UInt64 {
-            get { store.acceptedSubmissions }
-            nonmutating set { store.acceptedSubmissions = newValue }
         }
         var stopRequested: Bool {
             get { store.stopRequested }

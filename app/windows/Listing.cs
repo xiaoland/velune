@@ -18,7 +18,7 @@ sealed record Configuration(
     public LinkedConversationOpening LinkedOpening { get; init; } = LinkedConversationOpening.CurrentTab;
     public UsageDisplay Usage { get; init; } = UsageDisplay.Used;
     public UsageDisplay ContextUsage { get; init; } = UsageDisplay.Used;
-    public IReadOnlyList<StatusLineItem> StatusLine { get; init; } = [StatusLineItem.ContextUsage];
+    public IReadOnlyList<StatusLineItem> StatusLine { get; init; } = new[] { StatusLineItem.ContextUsage };
 
     public RuntimeInstance? Runtime(string id) => Runtimes.FirstOrDefault(runtime => runtime.Id == id);
 
@@ -67,7 +67,7 @@ sealed class Listing
             ShowsArchived = list.ShowsArchived,
             Groups = list.ConversationGroups,
             Preferences = list.ConversationBrowserPreferences,
-            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects)
+            Configuration = new Configuration(list.RuntimeInstances.Where(runtime => runtime.Enabled).ToArray(), list.RuntimeTypes, projects)
             {
                 Outline = list.OutlinePresentation,
                 LinkedOpening = list.LinkedConversationOpening,

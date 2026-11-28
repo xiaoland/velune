@@ -221,10 +221,32 @@ mod tests {
         let path = directory.path().join("telemetry/config.json");
         let mut value = Stored::empty().unwrap();
         write(&path, &value).unwrap();
-        value.profile = Some(profile());
+        let mut replacement = profile();
+        replacement
+            .headers
+            .insert("authorization".into(), "synthetic-secret".into());
+        replacement.sample_ratio = 0.5;
+        value.profile = Some(replacement);
+        value.preference = TelemetryPreference::Off;
         value.revision = 1;
         write(&path, &value).unwrap();
-        assert_eq!(read::<Stored>(&path).unwrap().revision, 1);
+        let reopened = read::<Stored>(&path).unwrap();
+        assert_eq!(reopened.revision, 1);
+        assert_eq!(reopened.installation_id, value.installation_id);
+        assert_eq!(reopened.preference, TelemetryPreference::Off);
+        let profile = reopened.profile.unwrap();
+        assert_eq!(profile.endpoint, "http://127.0.0.1:4317");
+        assert_eq!(
+            profile.headers.get("authorization").map(String::as_str),
+            Some("synthetic-secret")
+        );
+        assert_eq!(profile.sample_ratio, 0.5);
+        value.profile = None;
+        value.revision = 2;
+        write(&path, &value).unwrap();
+        let reopened = read::<Stored>(&path).unwrap();
+        assert_eq!(reopened.revision, 2);
+        assert!(reopened.profile.is_none());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

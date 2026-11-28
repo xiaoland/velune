@@ -46,11 +46,12 @@ class MigrationTests(unittest.TestCase):
     def read(self, name):
         return json.loads((self.home / name).read_text())
 
-    def invoke(self, script=MIGRATION, apply=False, success=True):
-        result = subprocess.run([sys.executable, str(script), "--home", str(self.home)] + (["--apply"] if apply else []),
+    def invoke(self, script=MIGRATION, *arguments, apply=False, rejection=None):
+        result = subprocess.run([sys.executable, str(script), "--home", str(self.home), *arguments] + (["--apply"] if apply else []),
                                 text=True, capture_output=True)
-        self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
-        return result
+        self.assertEqual(result.returncode, 2 if rejection else 0, result.stdout + result.stderr)
+        if rejection:
+            self.assertIn(rejection, result.stderr)
 
     def sources(self):
         return {path: path.read_bytes() for path in self.home.rglob("*.json")}
@@ -63,7 +64,7 @@ class MigrationTests(unittest.TestCase):
         original = self.sources()
         self.invoke()
         self.assert_unchanged(original)
-        self.invoke(SCRIPTS / "migrations/composer-state.py", apply=True, success=False)
+        self.invoke(SCRIPTS / "migrations/composer-state.py", apply=True, rejection="旧按轮档位尚未迁移")
         self.assert_unchanged(original)
         self.invoke(apply=True)
         backup = next(self.home.glob("before-service-tier-model-variants-*"))
@@ -120,10 +121,11 @@ class MigrationTests(unittest.TestCase):
 
     def test_ambiguous_or_unknown_choices_refuse_whole_batch(self):
         baseline = self.read("composer-inputs.json")
-        for model, extra in [
-            (None, {}), ({"managed": {"model_record_key": "managed"}}, {}),
-            (choice()["model"], {"unknown": True}),
-            ({"native": {"provider_id": None, "model_id": 'velune:codex-speed:["gpt-test","ultrafast"]'}}, {}),
+        for model, extra, rejection in [
+            (None, {}, "没有明确的原生模型"),
+            ({"managed": {"model_record_key": "managed"}}, {}, "没有明确的原生模型"),
+            (choice()["model"], {"unknown": True}, "不认识的配置结构"),
+            ({"native": {"provider_id": None, "model_id": 'velune:codex-speed:["gpt-test","ultrafast"]'}}, {}, "模型变体与旧档位冲突"),
         ]:
             with self.subTest(model=model, extra=extra):
                 value = copy.deepcopy(baseline)
@@ -131,23 +133,25 @@ class MigrationTests(unittest.TestCase):
                 saved.update(model=model, serviceTier="priority", **extra)
                 self.write("composer-inputs.json", value)
                 original = self.sources()
-                self.invoke(apply=True, success=False)
+                self.invoke(apply=True, rejection=rejection)
                 self.assert_unchanged(original)
 
     def test_duplicate_fields_refuse_whole_batch(self):
         (self.home / "composer-choices.json").write_text('{"schemaVersion":1,"choices":{},"choices":{}}')
         original = self.sources()
-        self.invoke(apply=True, success=False)
+        self.invoke(apply=True, rejection="JSON 含重复字段")
         self.assert_unchanged(original)
 
     def test_future_window_versions_refuse_service_tier_batch(self):
-        for window in ({"schemaVersion": 2, "composerWorkspace": {"schemaVersion": 3}},
-                       {"composerWorkspace": {"schemaVersion": 4}},
-                       {"composerWorkspaceByDevice": {"peer": {"schemaVersion": 4}}}):
+        for window, rejection in (
+            ({"schemaVersion": 2, "composerWorkspace": {"schemaVersion": 3}}, "Mac 窗口恢复点不是已知 schema"),
+            ({"composerWorkspace": {"schemaVersion": 4}}, "Mac 窗口输入不是已知 schema"),
+            ({"composerWorkspaceByDevice": {"peer": {"schemaVersion": 4}}}, "Mac 远端窗口输入不是已知 schema"),
+        ):
             with self.subTest(window=window):
                 self.write("mac-window-workspaces/synthetic.json", window)
                 original = self.sources()
-                self.invoke(apply=True, success=False)
+                self.invoke(apply=True, rejection=rejection)
                 self.assert_unchanged(original)
 
     def test_future_window_versions_refuse_target_intent_batch(self):
@@ -161,7 +165,7 @@ class MigrationTests(unittest.TestCase):
                            "composerWorkspace": {"schemaVersion": inner, "pendingTargets": {
                                "synthetic": {"choices": choice, "revision": None}}}})
                 original = self.sources()
-                self.invoke(script, apply=True, success=False)
+                self.invoke(script, apply=True, rejection="目标记录不是已知格式")
                 self.assert_unchanged(original)
 
     @unittest.skipIf(os.name == "nt", "合成 CLI 使用 POSIX shell")
@@ -177,21 +181,13 @@ class MigrationTests(unittest.TestCase):
             {"runtimeInstanceId": "codex", "runtimeTypeId": "codex-0.159", "nativeConversationId": "codex:original"},
             {"runtimeInstanceId": "removed", "runtimeTypeId": "codex-0.159", "nativeConversationId": "removed:kept"}]}]})
         original = self.sources()
-        import importlib.util
-        from unittest.mock import patch
-        spec = importlib.util.spec_from_file_location("retirement", SCRIPTS / "migrations/codex-166.py")
-        migration = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(migration)
-        command = [str(SCRIPTS / "migrations/codex-166.py"), "--home", str(self.home), "--binary", str(binary)]
-        def migrate(cli_version, apply=False):
-            with patch.object(migration, "version", return_value=cli_version), patch.object(sys, "argv", command + (["--apply"] if apply else [])):
-                migration.main()
-        with self.assertRaises(SystemExit):
-            migrate("codex-cli 0.159.3", apply=True)
+        script = SCRIPTS / "migrations/codex-166.py"
+        self.invoke(script, "--binary", binary, apply=True, rejection="没有可用的 Codex CLI 0.166.x")
         self.assert_unchanged(original)
-        migrate("codex-cli 0.166.0-alpha.6")
+        binary.write_text("#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf 'codex-cli 0.166.0-alpha.6\\n'\n")
+        self.invoke(script, "--binary", binary)
         self.assert_unchanged(original)
-        migrate("codex-cli 0.166.0-alpha.6", apply=True)
+        self.invoke(script, "--binary", binary, apply=True)
         changed = self.read("generic-config.json")
         self.assertEqual(changed["runtimeInstances"][0]["typeId"], "codex-0.166")
         self.assertEqual(changed["runtimeInstances"][0]["id"], "codex")
@@ -203,10 +199,8 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual((backup / "generic-config.json").read_bytes(), original[self.home / "generic-config.json"])
         self.assertEqual((backup / "generic-config.json").stat().st_mode & 0o777, 0o600)
         converted = self.sources()
-        self.invoke(SCRIPTS / "migrations/codex-166.py", apply=True)
+        self.invoke(script, apply=True)
         self.assertEqual(self.sources(), converted)
-        self.invoke(SCRIPTS / "run-migrations.py")
-        self.assertEqual(self.read("composer-inputs.json")["schemaVersion"], 2)
 
     @unittest.skipIf(os.name == "nt", "此锁验证使用 POSIX flock")
     def test_live_runtime_lock_refuses_write(self):
@@ -214,7 +208,7 @@ class MigrationTests(unittest.TestCase):
         original = self.sources()
         with (self.home / "runtime.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.invoke(apply=True, success=False)
+            self.invoke(apply=True, rejection="请先退出使用该状态目录的 Velune")
         self.assert_unchanged(original)
 
 

@@ -251,7 +251,8 @@ sealed partial class Conversation
             }
             // Until the view adopts the native identity, edits belong to the global new target.
             if (Target.Unsent) await FlushComposerTarget(new ComposerContextKey.NewConversation());
-            Merge(snapshot); composerTargetLoaded = false; composerTargetRevision = null;
+            if (!Merge(snapshot, requestedFrom: null) && Snapshot?.Conversation.Id != creation.ConversationId) return;
+            composerTargetLoaded = false; composerTargetRevision = null;
         }
         var targetVersion = composerTargetVersion;
         var context = new ComposerContextKey.Conversation(creation.OwnerId, creation.ConversationId);
@@ -303,10 +304,11 @@ sealed partial class Conversation
                 {
                     composerLoaded = false; Notify();
                     var oldPath = ComposerCachePath;
+                    var requestedFrom = Snapshot;
                     var created = await Call(NativeOperation.ConversationRead, application => application.ReadConversation(creation.RuntimeId, creation.ConversationId));
                     if (closed) return;
                     await FlushComposerTarget(context);
-                    Merge(created.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话"));
+                    if (!Merge(created.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话"), requestedFrom)) return;
                     composerTargetLoaded = false; composerTargetRevision = null; preparedComposerTarget = null;
                     CacheComposer(); if (oldPath != ComposerCachePath && File.Exists(oldPath)) File.Delete(oldPath);
                     return;

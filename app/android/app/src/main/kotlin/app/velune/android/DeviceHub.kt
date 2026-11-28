@@ -21,10 +21,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -52,11 +51,8 @@ class DeviceHub(private val context: Context) {
     /** One view per process: a device tells this phone's windows apart by it. */
     private val view = "android-" + UUID.randomUUID()
     private var network: NetworkMonitor? = null
-    @Volatile private var viewed: Set<String> = emptySet()
-    private var submittedViewed: Set<String> = emptySet()
-    /** Activity reports reach the core in the order the user changed screens. */
-    private val activity = Mutex()
-    @Volatile private var foreground = false
+    private data class Activity(val peers: Set<String> = emptySet(), val foreground: Boolean = false)
+    private val activity = MutableStateFlow(Activity())
 
     fun start() {
         scope.launch {
@@ -87,12 +83,15 @@ class DeviceHub(private val context: Context) {
                 _state.value = opened.readState()
                 withContext(Dispatchers.Main) { startNetwork(opened) }
                 val observer = opened.observeState()
-                while (isActive) {
-                    try {
+                val reports = launch { reportActivity(opened) }
+                try {
+                    while (isActive) {
                         observer.next(5_000uL)?.let { _state.value = it }
-                    } catch (_: BindingException.Closed) {
-                        return@launch
                     }
+                } catch (_: BindingException.Closed) {
+                    return@launch
+                } finally {
+                    reports.cancel()
                 }
             } catch (error: Exception) {
                 _failure.value = "远程控制服务无法启动：${error.describe()}"
@@ -146,29 +145,21 @@ class DeviceHub(private val context: Context) {
      * shows several at once. Each controller recovers on its own.
      */
     fun view(peers: Set<String>) {
-        viewed = peers
-        scope.launch {
-            activity.withLock {
-                val opened = endpoint ?: return@withLock
-                val target = viewed
-                val previous = submittedViewed
-                (previous - target).forEach { runCatching { opened.setControllerActivity(it, false, false) } }
-                target.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
-                submittedViewed = target
-            }
-        }
+        activity.update { it.copy(peers = peers) }
     }
 
     fun setForeground(value: Boolean) {
-        foreground = value
+        activity.update { it.copy(foreground = value) }
         if (value) network?.foreground()
-        scope.launch {
-            activity.withLock {
-                val opened = endpoint ?: return@withLock
-                val target = viewed
-                target.forEach { runCatching { opened.setControllerActivity(it, true, foreground) } }
-                submittedViewed = target
-            }
+    }
+
+    private suspend fun reportActivity(opened: VeluneRemoteEndpoint) {
+        var submitted = emptySet<String>()
+        // The collector diffs from what it last reported even when intermediate updates are coalesced.
+        activity.collect { target ->
+            (submitted - target.peers).forEach { runCatching { opened.setControllerActivity(it, false, false) } }
+            target.peers.forEach { runCatching { opened.setControllerActivity(it, true, target.foreground) } }
+            submitted = target.peers
         }
     }
 }

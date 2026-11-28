@@ -83,7 +83,12 @@ while True:
         elif mode == 'children-malformed':
             sys.stdout.write(json.dumps({'id':request['id'],'result':{'turn':{'id':'accepted'}}}) + '\n{malformed\n')
             sys.stdout.flush()
-            (root / 'malformed-written').touch()
+            # The reader closes its stdout handle after enqueuing the parse error.
+            while True:
+                try: os.write(sys.stdout.fileno(), b'\n')
+                except BrokenPipeError: break
+                time.sleep(0.001)
+            (root / 'reader-closed').touch()
         elif mode == 'background-terminals':
             ack(request, {'turn':{'id':'turn'}})
             emit('turn/started', {'threadId':'thread','turn':{'id':'turn'}})
@@ -175,30 +180,24 @@ while True:
         }
     }
     fn start(&mut self) {
-        self.session
-            .prepare_codex_commands(Some(&self.root))
-            .unwrap();
-        let ticket = self.enqueue(CodexCommand::Start {
-            runtime_id: "codex".into(),
+        let opened = self.session.create(Some(&self.root), "codex").unwrap();
+        assert_eq!(opened.conversation.id, "codex:thread");
+        assert_eq!(opened.conversation.created_at_unix_ms, Some(12_000));
+    }
+    // Status can expose a child in work() before its turn/started frame arrives.
+    fn wait_for_child_turns(&mut self) {
+        self.poll_until(|session| {
+            [("child-a", "turn-child-a"), ("child-b", "turn-child-b")]
+                .iter()
+                .all(|(child, turn)| {
+                    session
+                        .codex
+                        .threads
+                        .get(*child)
+                        .and_then(|entry| entry.turn.as_deref())
+                        == Some(*turn)
+                })
         });
-        self.poll_until(|s| !s.codex.commands.pending());
-        let receipt = self.session.take_codex_receipt().unwrap();
-        assert_eq!(receipt.ticket, *ticket);
-        assert!(matches!(
-            receipt.delivery,
-            CodexDelivery::Accepted {
-                thread_id: Some(_),
-                turn_id: None
-            }
-        ));
-        assert_eq!(
-            self.session
-                .snapshot()
-                .unwrap()
-                .conversation
-                .created_at_unix_ms,
-            Some(12_000)
-        );
     }
     fn wire(&self) -> Vec<Value> {
         std::fs::read_to_string(self.root.join("wire"))
@@ -318,8 +317,15 @@ impl Drop for CommandFixture {
 #[test]
 fn codex_integration_late_reply_fact_survives_consumed_failure_receipt() {
     use std::time::{Duration, Instant};
-    let mut fixture = CommandFixture::new("hold");
+    let mut fixture = CommandFixture::new("reject");
     fixture.start();
+    // Receipt polling is enabled by the first admitted command. Normal synchronous
+    // creation alone leaves the session in its synchronous polling mode.
+    let first = fixture.enqueue(CodexCommand::Send(CommandFixture::input("rejected")));
+    fixture.poll_until(|session| !session.codex.commands.pending());
+    let rejected = fixture.session.take_codex_receipt().unwrap();
+    assert_eq!(rejected.ticket, *first);
+    assert!(matches!(rejected.delivery, CodexDelivery::Rejected { .. }));
     let d = Instant::now() - Duration::from_millis(1);
     let (sender, write) = crate::transport::WriteReceipt::test_pending(d);
     let ticket = fixture.session.codex_install_operation(
@@ -362,7 +368,7 @@ fn codex_commands_child_interrupts_keep_approvals_live_and_preserve_partial_deli
     for mode in ["children-reject", "children-disconnect", "children-hold"] {
         let mut f = CommandFixture::new(mode);
         f.start();
-        f.poll_until(|s| s.work().unwrap().len() == 2);
+        f.wait_for_child_turns();
         let ticket = f
             .session
             .enqueue_codex_command(
@@ -449,7 +455,7 @@ fn codex_commands_child_interrupts_keep_approvals_live_and_preserve_partial_deli
 fn codex_commands_expired_send_blocks_longer_lived_child_interrupts() {
     let mut f = CommandFixture::new("children-deadline");
     f.start();
-    f.poll_until(|s| s.work().unwrap().len() == 2);
+    f.wait_for_child_turns();
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
     let send = f
         .session
@@ -497,21 +503,19 @@ fn codex_commands_valid_ack_before_malformed_record_blocks_child_dispatch_and_ke
     // request triggered while processing its successful send acknowledgement.
     f.session.codex.title.eligible = true;
     f.session.snapshot.as_mut().unwrap().conversation.title = ConversationTitle::Untitled;
-    f.poll_until(|s| s.work().unwrap().len() == 2);
+    f.wait_for_child_turns();
     let send = f.enqueue(CodexCommand::Send(CommandFixture::input("once")));
     let stop = f.enqueue(CodexCommand::StopBackground);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !f.root.join("malformed-written").exists() {
+    while !f.root.join("reader-closed").exists() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    // Let the existing reader queue both lines from this single flushed
-    // write. The helper remains alive and continues reading mutations.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    assert!(
-        f.session.poll().is_err(),
-        "the valid-record batch must expose its detected terminal failure this round"
-    );
+    let error = f
+        .session
+        .poll()
+        .expect_err("queued malformed frame must end this poll");
+    assert_eq!(error.code(), "transport");
     assert!(f.session.failed);
     assert!(!f.session.process_ended);
     let receipts: Vec<_> = std::iter::from_fn(|| f.session.take_codex_receipt()).collect();
@@ -549,49 +553,64 @@ fn codex_commands_valid_ack_before_malformed_record_blocks_child_dispatch_and_ke
 #[cfg(unix)]
 #[test]
 fn codex_commands_stop_child_accepts_only_the_runtime_prefix_published_by_work() {
-    for restore in [false, true] {
+    for context in ["native", "set", "restore"] {
         let mut f = CommandFixture::new("children-reject");
         f.start();
-        f.poll_until(|s| s.work().unwrap().len() == 2);
-        let source = f.session.owned_snapshot().unwrap().map(|mut source| {
-            source.conversation.runtime_id = "source-runtime".into();
-            source
-        });
-        if restore {
-            f.session.restore_context(&source).unwrap();
+        f.wait_for_child_turns();
+        let prefix = if context == "native" {
+            "codex"
         } else {
-            f.session.set_conversation(source.map(|s| s.conversation));
-        }
+            let source = f.session.owned_snapshot().unwrap().map(|mut source| {
+                source.conversation.runtime_id = "source-runtime".into();
+                source
+            });
+            if context == "restore" {
+                f.session.restore_context(&source).unwrap();
+            } else {
+                f.session.set_conversation(source.map(|s| s.conversation));
+            }
+            "source-runtime"
+        };
         assert_eq!(f.session.snapshot().unwrap().context_runtime_id, "codex");
         let work = f.session.work().unwrap();
+        let expected_id = format!("{prefix}:child-a");
         let child = work
             .iter()
-            .find_map(|task| {
-                task.conversation_id
-                    .as_deref()
-                    .filter(|id| *id == "source-runtime:child-a")
-            })
-            .unwrap();
-        for invalid in [
-            "codex:child-a",
-            "other:child-a",
-            "source-runtime:thread",
-            "source-runtime:not-owned",
+            .filter_map(|task| task.conversation_id.as_ref())
+            .find(|id| *id == &expected_id)
+            .expect("work publishes the target's full runtime identity");
+        let foreign = if context == "native" {
+            "other"
+        } else {
+            "codex"
+        };
+        for (invalid, cause) in [
+            (
+                format!("{foreign}:child-a"),
+                "does not belong to this execution",
+            ),
+            (
+                format!("{prefix}:thread"),
+                "does not belong to this execution",
+            ),
+            (
+                format!("{prefix}:not-owned"),
+                "no longer belongs to this live work ledger",
+            ),
         ] {
-            assert!(
-                f.session
-                    .enqueue_codex_command(
-                        CodexCommand::StopChild {
-                            conversation_id: invalid.into(),
-                        },
-                        std::time::Instant::now() + std::time::Duration::from_secs(1)
-                    )
-                    .is_err(),
-                "invalid child {invalid}"
-            );
+            let error = f
+                .session
+                .enqueue_codex_command(
+                    CodexCommand::StopChild {
+                        conversation_id: invalid.clone(),
+                    },
+                    std::time::Instant::now() + std::time::Duration::from_secs(1),
+                )
+                .expect_err("invalid child accepted");
+            assert!(error.to_string().contains(cause), "{invalid}: {error}");
         }
         f.enqueue(CodexCommand::StopChild {
-            conversation_id: child.into(),
+            conversation_id: child.clone(),
         });
         f.poll_until(|s| !s.codex.commands.pending());
         let receipt = f.session.take_codex_receipt().unwrap();
@@ -611,6 +630,11 @@ fn codex_commands_stop_child_accepts_only_the_runtime_prefix_published_by_work()
             .collect();
         assert_eq!(interrupts.len(), 1);
         assert_eq!(interrupts[0]["params"]["threadId"], "child-a");
+        assert_eq!(
+            f.session.codex.threads["child-a"].state,
+            BackgroundState::Stopping
+        );
+        assert_eq!(f.session.work().unwrap().len(), 2);
         assert_eq!(
             f.session.codex.threads["child-b"].state,
             BackgroundState::Running
@@ -669,64 +693,6 @@ fn codex_commands_interrupt_batch_deadline_preserves_undispatched_targets_and_re
             .any(|r| matches!(r.delivery, CodexInterruptDelivery::Indeterminate { .. }))
     );
     assert!(!f.session.process_ended);
-}
-
-#[cfg(unix)]
-#[test]
-fn codex_commands_stop_child_is_exact_and_does_not_stop_parent_or_sibling() {
-    let mut f = CommandFixture::new("children-reject");
-    f.start();
-    f.poll_until(|s| s.work().unwrap().len() == 2);
-    assert!(
-        f.session
-            .enqueue_codex_command(
-                CodexCommand::StopChild {
-                    conversation_id: "other:child-a".into()
-                },
-                std::time::Instant::now() + std::time::Duration::from_secs(1)
-            )
-            .is_err()
-    );
-    assert!(
-        f.session
-            .enqueue_codex_command(
-                CodexCommand::StopChild {
-                    conversation_id: "codex:thread".into()
-                },
-                std::time::Instant::now() + std::time::Duration::from_secs(1)
-            )
-            .is_err()
-    );
-    f.enqueue(CodexCommand::StopChild {
-        conversation_id: "codex:child-a".into(),
-    });
-    f.poll_until(|s| !s.codex.commands.pending());
-    let receipt = f.session.take_codex_receipt().unwrap();
-    let CodexDelivery::Interrupts { children } = &receipt.delivery else {
-        panic!()
-    };
-    assert_eq!(children.len(), 1);
-    assert_eq!(children[0].thread_id, "child-a");
-    assert!(matches!(
-        children[0].delivery,
-        CodexInterruptDelivery::Accepted
-    ));
-    assert_eq!(
-        f.session.codex.threads["child-a"].state,
-        BackgroundState::Stopping
-    );
-    assert_eq!(
-        f.session.codex.threads["child-b"].state,
-        BackgroundState::Running
-    );
-    assert_eq!(f.session.work().unwrap().len(), 2);
-    let wire = f.wire();
-    let interrupts: Vec<_> = wire
-        .iter()
-        .filter(|r| r["method"] == "turn/interrupt")
-        .collect();
-    assert_eq!(interrupts.len(), 1);
-    assert_eq!(interrupts[0]["params"]["threadId"], "child-a");
 }
 
 #[cfg(unix)]
@@ -820,10 +786,10 @@ fn codex_auto_compaction_applies_to_start_and_cold_resume() {
             token_limit: 80_000,
         }));
     assert!(f.session.restart_needed());
-    f.session.prepare_codex_commands(Some(&f.root)).unwrap();
+    f.session.prepare_fork_turn().unwrap();
     f.session.set_auto_compaction(None);
     assert!(f.session.restart_needed());
-    f.session.prepare_codex_commands(Some(&f.root)).unwrap();
+    f.session.prepare_fork_turn().unwrap();
     assert!(!f.session.restart_needed());
 
     let wire = f.wire();
@@ -874,7 +840,7 @@ fn codex_auto_compaction_matches_a_configured_default_by_provider_and_model() {
 
 #[cfg(unix)]
 #[test]
-fn codex_commands_prepare_native_selection_before_async_start() {
+fn native_creation_carries_selection_and_a_changed_gateway_blocks_unprepared_sends() {
     let mut f = CommandFixture::new("hold");
     f.session
         .select_native_model(Retained::from_parts(
@@ -901,16 +867,19 @@ fn codex_commands_prepare_native_selection_before_async_start() {
             reasoning_levels: None,
         })
         .unwrap();
-    let error = changed
-        .session
-        .prepare_codex_commands(Some(&changed.root))
-        .unwrap_err();
-    assert_eq!(
-        error.code(),
-        "needs_preparation",
-        "preparation must not falsely promise an unsupported connection reconfiguration"
+    assert!(matches!(
+        changed.session.enqueue_codex_command(
+            CodexCommand::Send(CommandFixture::input("held")),
+            std::time::Instant::now() + std::time::Duration::from_secs(1)
+        ),
+        Err(CodexAdmissionError::NeedsPreparation)
+    ));
+    assert!(
+        !changed
+            .wire()
+            .iter()
+            .any(|r| matches!(r["method"].as_str(), Some("thread/start" | "turn/start")))
     );
-    assert!(!changed.wire().iter().any(|r| r["method"] == "thread/start"));
 }
 
 #[cfg(unix)]
@@ -956,15 +925,6 @@ fn codex_commands_admission_and_poll_do_not_wait_for_blocked_stdin() {
 #[test]
 fn codex_commands_service_approvals_output_steer_cancel_and_terminal_before_send_ack() {
     let mut f = CommandFixture::new("gated");
-    assert!(matches!(
-        f.session.enqueue_codex_command(
-            CodexCommand::Start {
-                runtime_id: "codex".into()
-            },
-            std::time::Instant::now() + std::time::Duration::from_secs(1)
-        ),
-        Err(CodexAdmissionError::NeedsPreparation)
-    ));
     f.start();
     let send = f.enqueue(CodexCommand::Send(CommandFixture::input("once")));
     f.poll_until(|s| s.interactions.len() == 2 && s.snapshot().unwrap().messages.len() == 2);

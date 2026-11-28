@@ -14,7 +14,7 @@ use crate::{
         AnalyticsOutcome, AnalyticsRecord, RequestAnalytics, SharedAnalyticsSink, TokenUsage,
         now_ms,
     },
-    config::Protocol,
+    config::{GEMINI_STATE_FIELDS, Protocol, RESPONSES_STATE_FIELDS},
     observation::Observation,
     scheduling::{
         AdmissionReason, Candidate, QuotaSource, ScheduleUnavailable, SchedulingState,
@@ -47,7 +47,7 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// The state every request on one Runner shares.
 pub(super) struct Ingress {
     pub(super) telemetry: Arc<RwLock<TelemetryContext>>,
-    pub(super) routes: Arc<RwLock<BTreeMap<String, Route>>>,
+    pub(super) routes: BTreeMap<String, Route>,
     pub(super) token: String,
     pub(super) resolver: Arc<dyn CredentialResolver>,
     pub(super) client: HttpClient,
@@ -367,17 +367,7 @@ async fn ingress_observed(
             None,
         );
     };
-    let route = match state.routes.read() {
-        Ok(routes) => routes.get(model).cloned(),
-        Err(_) => {
-            return admission.reject(
-                observation,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "gateway alias state unavailable",
-                None,
-            );
-        }
-    };
+    let route = state.routes.get(model).cloned();
     let Some(route) = route else {
         return admission.reject(
             observation,
@@ -396,14 +386,7 @@ async fn ingress_observed(
     }
     if protocol == Protocol::Gemini
         && (route[0].aggregate || route[0].protocol != Protocol::Gemini)
-        && [
-            "cachedContent",
-            "cached_content",
-            "continuationToken",
-            "continuation_token",
-        ]
-        .iter()
-        .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
+        && has_upstream_fields(&body, &GEMINI_STATE_FIELDS)
     {
         return admission.reject(
             observation,
@@ -518,7 +501,11 @@ async fn ingress_observed(
 }
 
 fn has_upstream_state(body: &Value) -> bool {
-    ["previous_response_id", "conversation"]
+    has_upstream_fields(body, &RESPONSES_STATE_FIELDS)
+}
+
+fn has_upstream_fields(body: &Value, fields: &[&str]) -> bool {
+    fields
         .iter()
         .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
 }

@@ -542,6 +542,7 @@ async fn pending_hard_cap_waits_before_messages_to_responses_dispatch_and_never_
 
 #[tokio::test]
 async fn quota_admission_reports_the_reason_across_all_protocols() {
+    let mut checks = Vec::new();
     for protocol in Api::ALL {
         let (upstream, address) = Upstream::start().await;
         let now = std::time::SystemTime::now()
@@ -595,47 +596,69 @@ async fn quota_admission_reports_the_reason_across_all_protocols() {
             ),
         ];
         for (snapshot, limited, status, code, retry) in cases {
-            let mut config = gateway_config(protocol, &address);
-            if limited {
-                for provider in &mut config.providers {
-                    provider.quota_limits = vec![QuotaLimit {
-                        window_id: "daily".into(),
-                        max_used_percent: 80,
-                    }];
+            let upstream = upstream.clone();
+            let address = address.clone();
+            checks.push(async move {
+                let mut config = gateway_config(protocol, &address);
+                if limited {
+                    for provider in &mut config.providers {
+                        provider.quota_limits = vec![QuotaLimit {
+                            window_id: "daily".into(),
+                            max_used_percent: 80,
+                        }];
+                    }
                 }
-            }
-            let runner = Runner::start_with_scheduling(
-                config,
-                Arc::new(Keys),
-                BTreeMap::new(),
-                None,
-                SchedulingState::default(),
-                Arc::new(ObservedQuota(snapshot)),
-                None,
-                Default::default(),
-            )
-            .unwrap();
-            for stream in [false, true] {
-                let answer = send(&runner, protocol, "velune/model/route", stream).await;
-                assert_eq!(answer.status, status);
-                let actual_retry = answer
-                    .headers
-                    .get("retry-after")
-                    .map(|h| h.to_str().unwrap());
-                if retry == Some("60") {
-                    // Wall time elapses while previous protocol/case runners
-                    // shut down; the delay must still point at the same reset.
-                    assert!((1..=60).contains(&actual_retry.unwrap().parse::<u64>().unwrap()));
-                } else {
-                    assert_eq!(actual_retry, retry);
+                let runner = Runner::start_with_scheduling(
+                    config,
+                    Arc::new(Keys),
+                    BTreeMap::new(),
+                    None,
+                    SchedulingState::default(),
+                    Arc::new(ObservedQuota(snapshot)),
+                    None,
+                    Default::default(),
+                )
+                .unwrap();
+                // Each row owns its runner and scheduling state. The two request
+                // shapes share only that immutable quota observation, so their
+                // real five-second cold-admission intervals can overlap.
+                let answers = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                    tokio::join!(
+                        send(&runner, protocol, "velune/model/route", false),
+                        send(&runner, protocol, "velune/model/route", true),
+                    )
+                })
+                .await
+                .unwrap_or_else(|_| panic!("{} {code}: admission did not finish", protocol.path()));
+                for (stream, answer) in [(false, answers.0), (true, answers.1)] {
+                    assert_eq!(
+                        answer.status,
+                        status,
+                        "{} {code}, stream={stream}",
+                        protocol.path()
+                    );
+                    let actual_retry = answer
+                        .headers
+                        .get("retry-after")
+                        .map(|h| h.to_str().unwrap());
+                    if retry == Some("60") {
+                        // Wall time elapses while the runners start; the delay
+                        // must still point at the same reset.
+                        assert!((1..=60).contains(&actual_retry.unwrap().parse::<u64>().unwrap()));
+                    } else {
+                        assert_eq!(actual_retry, retry);
+                    }
+                    let body: Value = serde_json::from_str(&answer.body).unwrap();
+                    assert_eq!(body["error"]["code"], code);
+                    assert!(!body["error"]["message"].as_str().unwrap().is_empty());
                 }
-                let body: Value = serde_json::from_str(&answer.body).unwrap();
-                assert_eq!(body["error"]["code"], code);
-                assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-            }
+                assert!(upstream.hits().is_empty());
+            });
         }
-        assert!(upstream.hits().is_empty());
     }
+    // Unknown and stale quota each exhaust the production admission interval;
+    // preserve every protocol/stream row without paying those waits serially.
+    futures_util::future::join_all(checks).await;
 }
 
 #[tokio::test]
@@ -869,6 +892,30 @@ async fn request_parameters_merge_into_the_upstream_body() {
     let requests = upstream.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["service_tier"], "priority");
+}
+
+#[test]
+fn model_parameters_cannot_shadow_route_owned_fields() {
+    for key in [
+        "model",
+        "stream",
+        "previous_response_id",
+        "conversation",
+        "cachedContent",
+        "cached_content",
+        "continuationToken",
+        "continuation_token",
+    ] {
+        let mut config = gateway_config(Api::Responses, "http://127.0.0.1:1");
+        config.providers[0].models[0]
+            .request_parameters
+            .insert(key.into(), "configured override".into());
+        assert_eq!(
+            config.validate(),
+            Err("model request parameters cannot set routing, streaming, or continuation fields"),
+            "{key} must be rejected before any routing begins",
+        );
+    }
 }
 
 #[tokio::test]
@@ -1214,4 +1261,130 @@ async fn messages_metadata_is_preserved_for_standard_responses_api() {
     let requests = upstream.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["metadata"]["user_id"], "synthetic-user");
+}
+
+#[tokio::test]
+async fn recorded_ark_tool_loop_preserves_the_call_and_complete_result_across_rounds() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "fixtures/relaykit/ark-glm-5.3-flash-pi-tool-loop.json"
+    ))
+    .unwrap();
+    let records = fixture["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2);
+    let (upstream, address) = Upstream::start().await;
+    let mut config = gateway_config(Api::Chat, &address);
+    config.providers[0].models[0].provider_model_id = "glm-5.3-flash".into();
+    let runner = Runner::start(config, Arc::new(Keys), BTreeMap::new()).unwrap();
+    let recorded_tool = &records[0]["request"]["tools"][0]["function"];
+    let first = records[0]["request"]["messages"][0].clone();
+    let mut request = json!({
+        "model": "velune/model/a-model", "max_tokens": 2048, "stream": true,
+        "messages": [first],
+        "tools": [{"name": "read", "description": recorded_tool["description"],
+            "input_schema": recorded_tool["parameters"]}]
+    });
+    let call = |body: &Value| {
+        reqwest::Client::new()
+            .post(format!("{}/messages", runner.endpoint()))
+            .timeout(std::time::Duration::from_secs(5))
+            .bearer_auth(runner.token())
+            .header("anthropic-version", "2023-06-01")
+            .json(body)
+    };
+    let events = |body: &str| -> Vec<Value> {
+        body.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    upstream.reply("a", Reply::stream(records[0]["response"].as_str().unwrap()));
+    let response = call(&request).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let first_events = events(&response.text().await.unwrap());
+    let tools: Vec<_> = first_events
+        .iter()
+        .filter(|event| {
+            event["type"] == "content_block_start" && event["content_block"]["type"] == "tool_use"
+        })
+        .collect();
+    assert_eq!(tools.len(), 1, "exactly one read call");
+    let tool = &tools[0]["content_block"];
+    let call_id = "call_236f0e044ca94d77b99c7cf4";
+    assert_eq!(tool["id"], call_id);
+    assert_eq!(tool["name"], "read");
+    let arguments: String = first_events
+        .iter()
+        .filter(|event| {
+            event["type"] == "content_block_delta"
+                && event["index"] == tools[0]["index"]
+                && event["delta"]["type"] == "input_json_delta"
+        })
+        .map(|event| event["delta"]["partial_json"].as_str().unwrap())
+        .collect();
+    let arguments: Value = serde_json::from_str(&arguments).unwrap();
+    assert_eq!(arguments, json!({"path": "fixture.py"}));
+    assert_eq!(
+        first_events
+            .iter()
+            .filter(|event| event["type"] == "message_stop")
+            .count(),
+        1
+    );
+    let stops: Vec<_> = first_events
+        .iter()
+        .filter_map(|event| event["delta"]["stop_reason"].as_str())
+        .collect();
+    assert_eq!(stops, ["tool_use"]);
+
+    let result = "def multiply():\n    return 17 * 23\n\n# RELAYKIT_SYNTHETIC_CODE\n";
+    request["messages"].as_array_mut().unwrap().extend([
+        json!({"role":"assistant","content":[{"type":"tool_use","id":tool["id"],"name":tool["name"],"input":arguments}]}),
+        json!({"role":"user","content":[{"type":"tool_result","tool_use_id":tool["id"],"content":result}]}),
+    ]);
+    upstream.reply("a", Reply::stream(records[1]["response"].as_str().unwrap()));
+    let response = call(&request).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let final_events = events(&response.text().await.unwrap());
+    let text: String = final_events
+        .iter()
+        .filter(|event| event["delta"]["type"] == "text_delta")
+        .map(|event| event["delta"]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(text, "RESULT=391");
+    assert_eq!(
+        final_events
+            .iter()
+            .filter(|event| event["type"] == "message_stop")
+            .count(),
+        1
+    );
+    let stops: Vec<_> = final_events
+        .iter()
+        .filter_map(|event| event["delta"]["stop_reason"].as_str())
+        .collect();
+    assert_eq!(stops, ["end_turn"]);
+    assert_eq!(
+        upstream.hits(),
+        ["/a/v1/chat/completions", "/a/v1/chat/completions"]
+    );
+    let requests = upstream.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for body in requests.iter() {
+        assert_eq!(body["model"], "glm-5.3-flash");
+        assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"],
+            recorded_tool["parameters"]
+        );
+    }
+    let messages = requests[1]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(
+        messages[1]["tool_calls"],
+        records[1]["request"]["messages"][1]["tool_calls"]
+    );
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], call_id);
+    assert_eq!(messages[2]["content"], result);
 }

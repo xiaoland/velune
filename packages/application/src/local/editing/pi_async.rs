@@ -28,7 +28,7 @@ pub(in crate::local) struct PiEdit {
     gateway: Option<GatewayConfig>,
     sources: Vec<runtime_source::RuntimeSourceKey>,
     link: Option<crate::config::ConversationLink>,
-    revision: String,
+    revision: EditRevision,
     conversation_id: String,
     message_id: String,
     native_id: String,
@@ -90,8 +90,7 @@ pub(in crate::local) enum PiEditIoValue {
 }
 
 pub(in crate::local) struct PiEditLaunch {
-    runner: Option<Runner>,
-    tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
+    execution: execution::SessionExecution,
     prepared_resources: Option<String>,
 }
 
@@ -276,9 +275,8 @@ impl CoreRuntime {
         if control.cancel && result.is_ok() {
             self.session.cancel_requested = true;
             self.session.send_queue.pause_after_stop();
-            if let Some((gateway_id, session)) = self.backend_session_identity() {
-                self.session_backends()
-                    .cancel_session(&gateway_id, &session);
+            if let Some(gateway) = self.session.gateway() {
+                gateway.cancel();
             }
         }
         if self
@@ -301,7 +299,7 @@ impl CoreRuntime {
         current: &ConversationSnapshot,
         message_id: &str,
         runtime: &RuntimeInstance,
-        revision: Option<&str>,
+        revision: EditRevision,
         selection: Option<crate::ModelSelection>,
         turn: Option<crate::ComposedTurn>,
         deletion: Option<bool>,
@@ -427,7 +425,7 @@ impl CoreRuntime {
             },
             sources,
             link,
-            revision: revision.unwrap_or_default().into(),
+            revision,
             conversation_id: current.conversation.id.clone(),
             message_id: native_message_id,
             native_id: self
@@ -738,7 +736,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let sources = loaded
                     .into_iter()
                     .map(|loaded| self.finish_history_read(loaded))
@@ -792,8 +790,7 @@ impl CoreRuntime {
                     && !self.session.configuration_changed
                     && self
                         .session
-                        .execution_configuration
-                        .as_ref()
+                        .execution()
                         .is_some_and(|configuration| configuration.runtime == edit.runtime)
                     && self.session.model_selection.as_ref() == Some(&edit.selection);
                 if reusable {
@@ -825,7 +822,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let (reads, _) = self.capture_pi_edit_sources(&current)?;
                 edit.phase = Phase::Sources(self.pi_edit_io(edit.application, move |_| {
                     Ok(PiEditIoValue::Sources(
@@ -845,41 +842,13 @@ impl CoreRuntime {
                     unreachable!()
                 };
                 let PiEditLaunch {
-                    runner,
-                    tunnel,
+                    execution,
                     prepared_resources,
                 } = *launch;
-                self.session.active_state = state;
-                self.session.gateway_runner = runner;
-                self.session.gateway_tunnel = tunnel;
+                self.session.install_execution(state, execution);
                 if let Some(key) = prepared_resources {
                     self.prepared_remote_resources.borrow_mut().insert(key);
                 }
-                let gateway =
-                    if matches!(edit.selection, Some(crate::ModelSelection::Managed { .. })) {
-                        Some(
-                            self.gateways
-                                .iter()
-                                .find(|gateway| gateway.id == edit.runtime.gateway_id)
-                                .cloned()
-                                .ok_or_else(|| RuntimeError::invalid("gateway id"))?,
-                        )
-                    } else {
-                        None
-                    };
-                self.capture_execution_configuration(
-                    &edit.runtime,
-                    gateway.as_ref().map(|gateway| {
-                        (
-                            gateway,
-                            velune_gateway::SessionIdentity {
-                                namespace: "velune.conversation".into(),
-                                id: edit.conversation_id.clone(),
-                            },
-                        )
-                    }),
-                );
-                self.session.execution_runtime_id = Some(edit.runtime.id.clone());
                 self.session.model_selection = Some(edit.selection.clone());
                 self.session.model_record_key = match &edit.selection {
                     Some(crate::ModelSelection::Managed { model_record_key }) => {
@@ -1057,7 +1026,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 self.check_pi_edit_sources(&current, edit.link.as_ref(), &sources)?;
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
@@ -1116,7 +1085,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let (mut reads, _) = self.capture_pi_edit_sources(&current)?;
                 reads.push(self.prepare_history_read(
                     &edit.runtime.id,
@@ -1149,7 +1118,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 self.check_pi_edit_sources(&current, edit.link.as_ref(), &sources)?;
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
@@ -1177,7 +1146,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 if !edit.fallback_closed {
                     edit.fallback_closed = true;
                     let (mut reads, _) = self.capture_pi_edit_sources(&current)?;
@@ -1358,9 +1327,10 @@ impl CoreRuntime {
         input.permission_mode = permission_mode;
         self.request_turn_settings(&edit.runtime.id, input);
         self.begin_turn_observation();
-        if let Some((gateway_id, session)) = self.backend_session_identity() {
-            self.session_backends()
-                .begin_user_turn(&gateway_id, &session)
+
+        if let Some(gateway) = self.session.gateway() {
+            gateway
+                .begin_user_turn()
                 .map_err(|error| RuntimeError::context("CLI 新轮准备", error))?;
         }
         let ticket = self
@@ -1460,7 +1430,7 @@ impl CoreRuntime {
         let current = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-        self.check_edit_revision(&current, Some(&edit.revision))?;
+        self.check_edit_baseline(&current, &edit.revision)?;
         let config = self.pi_history_configuration(&edit.runtime)?;
         let preparation = self.execution_preparation(&edit.runtime)?.1;
         let source = PathBuf::from(
@@ -1610,62 +1580,26 @@ impl CoreRuntime {
         let managed = if let Some(crate::ModelSelection::Managed { model_record_key }) =
             &edit.selection
         {
-            let gateway = self
-                .gateways
-                .iter()
-                .find(|gateway| gateway.id == runtime.gateway_id)
-                .cloned()
+            let gateway = edit
+                .gateway
+                .clone()
                 .ok_or_else(|| RuntimeError::invalid("gateway id"))?;
-            runnable_pi_model(&gateway, model_record_key)?;
-            let physical = gateway
-                .pi_binding_id(
-                    model_record_key,
-                    gateway.authentication_revision(model_record_key),
-                )
-                .map_err(RuntimeError::invalid)?;
-            let aliases = gateway
-                .selectable_keys()
-                .map(|key| {
-                    gateway
-                        .pi_binding_id(key, gateway.authentication_revision(key))
-                        .map(|alias| (alias, key.to_owned()))
-                        .map_err(RuntimeError::invalid)
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
-            let resolver = crate::authentication_resolver::ProviderResolver::capture_for_dispatch(
-                &gateway,
-                &self.options,
-                self.subscription_quota.clone(),
-            );
-            let scheduling = self.scheduling_state.clone();
-            let quota = self.subscription_quota.source(&gateway.id);
-            let backends = self.execution_backends.clone();
-            let analytics = self.analytics.clone();
-            let telemetry = self.telemetry.clone();
-            let identity = velune_gateway::SessionIdentity {
-                namespace: "velune.conversation".into(),
-                id: edit.conversation_id.clone(),
-            };
-            let key = model_record_key.clone();
-            let protocol = crate::local::pi_composition::pi_gateway_api(
-                gateway
-                    .resolve_dispatch(&key)
-                    .map_err(RuntimeError::invalid)?
-                    .provider()
-                    .protocol,
-            );
+            let pi_composition::PiManagedModel {
+                physical_id,
+                aliases,
+                protocol,
+            } = pi_composition::PiManagedModel::resolve(&gateway, model_record_key)?;
             let lane = self.lane_projection(&context.projection);
             config.provider = Some("velune".into());
             config.model = Some("auto".into());
             config.models_path = Some(lane.join("models.json"));
             config.selection_file = Some(lane.join("velune-selection.json"));
-            Some((
-                gateway, physical, aliases, resolver, scheduling, quota, backends, analytics,
-                telemetry, identity, key, protocol,
-            ))
+            let launch = self.gateway_launch(gateway, aliases, Some(edit.conversation_id.clone()));
+            Some((launch, physical_id, model_record_key.clone(), protocol))
         } else {
             None
         };
+        let runtime = runtime.clone();
         Ok(Box::new(move |state| {
             let prepared_resources = preparation.prepare()?;
             if let Some(cwd) = &config.working_dir
@@ -1686,44 +1620,17 @@ impl CoreRuntime {
                 config.os_home.as_deref(),
             )
             .map_err(|error| RuntimeError::context("运行时版本检查", error))?;
-            let (runner, tunnel, model_key) = if let Some((
-                gateway,
-                physical,
-                aliases,
-                resolver,
-                scheduling,
-                quota,
-                backends,
-                analytics,
-                telemetry,
-                identity,
-                key,
-                protocol,
-            )) = managed
-            {
-                let runner = Runner::start_with_scheduling(
-                    gateway.to_gateway_config()?,
-                    resolver,
-                    aliases,
-                    Some(analytics),
-                    scheduling,
-                    quota,
-                    Some(identity),
-                    backends,
-                )
-                .map_err(|error| RuntimeError::context("gateway startup", error))?;
-                runner.set_telemetry(telemetry, None, None);
-                let tunnel = velune_agent_runtime::execution::LoopbackTunnel::open(
-                    &config.execution,
-                    runner.endpoint(),
-                )
-                .map_err(|error| RuntimeError::context("网关 SSH 转发", error))?;
-                config.gateway_token = Some(runner.token().into());
-                materialize_models(&config, &gateway, tunnel.endpoint(), protocol)?;
+            let (execution, model_key) = if let Some((launch, physical, key, protocol)) = managed {
+                let gateway = launch.start()?.via(&config.execution)?;
+                config.gateway_token = Some(gateway.runner().token().into());
+                materialize_models(&config, gateway.config(), gateway.endpoint(), protocol)?;
                 write_selection_file(&config, &key, &physical)?;
-                (Some(runner), Some(tunnel), Some(key))
+                (
+                    execution::SessionExecution::managed(runtime, gateway),
+                    Some(key),
+                )
             } else {
-                (None, None, None)
+                (execution::SessionExecution::native(runtime), None)
             };
             config
                 .validate_sdk()
@@ -1742,10 +1649,93 @@ impl CoreRuntime {
             pi.restore_context(&source);
             *state = ActiveState::Pi(Box::new(pi));
             Ok(PiEditIoValue::Launch(Box::new(PiEditLaunch {
-                runner,
-                tunnel,
+                execution,
                 prepared_resources,
             })))
         }))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::local::execution::gateway_execution_tests::{
+        pi_execution_fixture, provider, save, snapshot,
+    };
+
+    #[test]
+    fn cold_pi_edit_installs_the_backend_pool_captured_before_worker_launch() {
+        let (root, mut app) = pi_execution_fixture("idle");
+        let core = &mut app.runtime;
+        save(core, provider("edit", "http://127.0.0.1:1/v1"), "test-key");
+        let conversation_id = format!("pi:{}", root.join("session.jsonl").display());
+        let source = snapshot(&conversation_id);
+        core.session.set_history(source.clone());
+        let revision = core.edit_revision(&source).unwrap();
+        core.begin_execution_command(ExecutionCommandKind::Edit)
+            .unwrap();
+        let application = core
+            .serve_live_control(Focus::None, |core| {
+                core.execution_control_ticket(ExecutionCommandKind::Edit)
+            })
+            .unwrap()
+            .unwrap();
+        core.finish_execution_command();
+        let mut edit = PiEdit {
+            application,
+            session: core.session.key,
+            runtime: core.runtime_instance("pi").unwrap().clone(),
+            gateway: Some(core.gateways[0].clone()),
+            sources: Vec::new(),
+            link: None,
+            revision: revision.parse().unwrap(),
+            conversation_id: conversation_id.clone(),
+            message_id: String::new(),
+            native_id: conversation_id,
+            entry: String::new(),
+            selection: Some(crate::ModelSelection::Managed {
+                model_record_key: "edit".into(),
+            }),
+            input: None,
+            native_digest: None,
+            authorized_source_digest: None,
+            retained_digest: None,
+            retained_content: None,
+            recovery_target: None,
+            fallback_install: None,
+            fallback_committed: false,
+            fallback_closed: false,
+            deletion: None,
+            delete_install_error: None,
+            source_to_prepare: None,
+            phase: Phase::PrepareSource,
+            branched: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            preparation_deadline: Instant::now() + Duration::from_secs(10),
+        };
+        let captured = core.execution_backends.clone();
+        let launch = core.capture_pi_edit_launch(&edit, source).unwrap();
+        // A different execution's configuration change can fork the global
+        // pool without changing the runtime, gateway or source of this edit.
+        core.execution_backends = core.execution_backends.fork();
+        edit.phase = Phase::Launch(core.pi_edit_io(edit.application, launch).unwrap());
+        while matches!(edit.phase, Phase::Launch(_)) {
+            assert!(
+                Instant::now() < edit.preparation_deadline,
+                "Pi launch timed out"
+            );
+            assert!(!core.advance_pi_edit_phase(&mut edit).unwrap());
+            if matches!(edit.phase, Phase::Launch(_)) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert!(matches!(edit.phase, Phase::Source(_)));
+        let gateway = core.session.gateway().unwrap();
+        assert!(gateway.uses_backends(&captured));
+        assert!(!gateway.uses_backends(&core.execution_backends));
+        core.shutdown_active().unwrap();
+        assert!(core.session.execution().is_none());
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
     }
 }

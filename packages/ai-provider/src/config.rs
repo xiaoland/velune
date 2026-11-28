@@ -76,7 +76,8 @@ impl HttpEndpoint {
         let port = url
             .port_or_known_default()
             .ok_or(InvalidContract("provider endpoint port"))?;
-        Self::new(transport, host, port, url.path())
+        // URL syntax brackets IPv6 hosts; the structured constructor stores the address.
+        Self::new(transport, host.trim_matches(['[', ']']), port, url.path())
     }
     pub fn transport(&self) -> Transport {
         self.transport
@@ -95,9 +96,15 @@ impl HttpEndpoint {
             Transport::Https => "https",
             Transport::Http => "http",
         };
+        // A validated DNS name or IPv4 address cannot contain a colon.
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
         format!(
             "{scheme}://{}:{}{}{}",
-            self.host,
+            host,
             self.port,
             self.base_path.trim_end_matches('/'),
             suffix

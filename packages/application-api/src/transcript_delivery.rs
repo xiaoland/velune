@@ -17,6 +17,58 @@ pub struct TranscriptCursor {
     pub sequence: u64,
 }
 
+/// A cursor can only order deliveries for this conversation and runtime context.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TranscriptDeliveryPosition {
+    pub context_runtime_id: String,
+    pub conversation_id: String,
+    pub cursor: TranscriptCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TranscriptDeliveryDisposition {
+    Replace,
+    ApplyDelta,
+    Ignore,
+    ReadFull,
+}
+
+/// Decide before touching the installed header, messages, or cached payloads.
+/// The presentation owner supplies whether its request still refers to the
+/// installed view. Only that request can replace a generation or context.
+#[uniffi::export]
+pub fn classify_transcript_delivery(
+    installed: Option<TranscriptDeliveryPosition>,
+    incoming: TranscriptDeliveryPosition,
+    delta_base: Option<TranscriptCursor>,
+    request_is_current: bool,
+) -> TranscriptDeliveryDisposition {
+    use TranscriptDeliveryDisposition::{ApplyDelta, Ignore, ReadFull, Replace};
+    let current = installed
+        .filter(|position| {
+            position.context_runtime_id == incoming.context_runtime_id
+                && position.conversation_id == incoming.conversation_id
+                && position.cursor.generation == incoming.cursor.generation
+        })
+        .map(|position| position.cursor);
+    let sequence = incoming.cursor.sequence;
+
+    if let Some(base) = delta_base {
+        return match current {
+            Some(current) if sequence <= current.sequence => Ignore,
+            Some(current) if current == base => ApplyDelta,
+            _ => ReadFull,
+        };
+    }
+
+    match current {
+        Some(current) if sequence < current.sequence => Ignore,
+        Some(current) if sequence > current.sequence => Replace,
+        _ if request_is_current => Replace,
+        _ => ReadFull,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePayload {
@@ -94,7 +146,8 @@ pub enum DeliveredImageSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct DeliveredMessage {
-    /// Sequence at which this content was first delivered; unchanged content keeps it.
+    /// Opaque value for matching a message with its deferred payload. It stays
+    /// equal for unchanged content in the same view and cannot order deliveries.
     pub stamp: u64,
     pub completed: bool,
     pub id: String,
@@ -222,6 +275,62 @@ pub enum SnapshotUpdate {
 mod tests {
     use super::*;
     use velune_conversation::TurnUsage;
+
+    fn position(context: &str, generation: u64, sequence: u64) -> TranscriptDeliveryPosition {
+        TranscriptDeliveryPosition {
+            context_runtime_id: context.into(),
+            conversation_id: "conversation".into(),
+            cursor: TranscriptCursor {
+                generation,
+                sequence,
+            },
+        }
+    }
+
+    #[test]
+    fn transcript_deltas_require_the_installed_base() {
+        use TranscriptDeliveryDisposition::{ApplyDelta, Ignore, ReadFull};
+        let first = position("context", 10, 1);
+        let second = position("context", 10, 2);
+        let third = position("context", 10, 3);
+        let fourth = position("context", 10, 4);
+        let classify = |installed, incoming, base| {
+            classify_transcript_delivery(installed, incoming, Some(base), false)
+        };
+        assert_eq!(classify(Some(third.clone()), second, first.cursor), Ignore);
+        assert_eq!(
+            classify(Some(third.clone()), fourth.clone(), first.cursor),
+            ReadFull
+        );
+        assert_eq!(
+            classify(Some(third.clone()), fourth.clone(), third.cursor),
+            ApplyDelta
+        );
+        assert_eq!(classify(None, fourth.clone(), third.cursor), ReadFull);
+        let other = position("other", 10, 3);
+        assert_eq!(classify(Some(other), fourth, third.cursor), ReadFull);
+    }
+
+    #[test]
+    fn full_transcript_delivery_orders_one_context_and_generation() {
+        use TranscriptDeliveryDisposition::{Ignore, ReadFull, Replace};
+        let installed = position("context", 10, 3);
+        let older = position("context", 10, 2);
+        let newer = position("context", 10, 4);
+        let restarted = position("context", 11, 1);
+        let handoff = position("new-context", 12, 1);
+        let classify = |incoming, current_request| {
+            classify_transcript_delivery(Some(installed.clone()), incoming, None, current_request)
+        };
+        assert_eq!(classify(older, true), Ignore);
+        assert_eq!(classify(newer, false), Replace);
+        assert_eq!(classify(installed.clone(), false), ReadFull);
+        assert_eq!(classify(installed.clone(), true), Replace);
+        assert_eq!(classify(restarted.clone(), false), ReadFull);
+        assert_eq!(classify(restarted, true), Replace);
+        assert_eq!(classify(handoff.clone(), false), ReadFull);
+        assert_eq!(classify(handoff, true), Replace);
+    }
 
     fn turn(running: bool, usage: Option<TurnUsage>) -> TranscriptTurn {
         TranscriptTurn {

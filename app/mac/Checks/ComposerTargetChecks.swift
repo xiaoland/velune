@@ -147,7 +147,7 @@ import VeluneBindings
     let transferTarget = ConversationWindowModel(application: transferDevice, kind: .single)
     transferTarget.focused.store.selectConversation(id: "sample-0")
     _ = transferTarget.composer(for: transferTarget.focused)
-    transferTarget.drop(TabDragSource.link(for: movingTab.id, conversation: nil), on: transferTarget.focusedPaneID, zone: .center, from: transferSource)
+    transferTarget.drop(TabDragSource.link(for: movingTab.id, conversation: nil), on: transferTarget.focusedPaneID, zone: .center)
     let remainingInput = transferSource.composer(for: remainingSheet)
     precondition(transferTarget.composer(for: movingTab) === movingInput && remainingInput !== movingInput && remainingInput.id == movingInput.id)
     precondition(remainingSheet.composer === remainingInput && remainingInput.savedDraft == movingInput.savedDraft)
@@ -365,13 +365,30 @@ import VeluneBindings
     precondition(first.composerInputs.inputID(for: draftID) == contentID && first.composerInputs.draft(contentID)?.text == "synchronized body" && first.composerInputs.draft(contentID)?.attachments.count == 1)
     precondition(first.composerInputs.state!.inputs.first { $0.id == contentID.uuidString.lowercased() }!.revision == contentRevision)
     let forkID = "synthetic-edited-fork"
-    first.composerInputs.saveEditedTarget(forkID, choices: editedChoices, expectedRevision: nil)
+    first.composerInputs.saveEditedTarget(forkID, choices: editedChoices, expectedRevision: nil, placement: .fork)
     wait { first.composerInputs.targetRecord(for: forkID)?.choices == editedChoices && first.composerInputs.pendingTarget(for: forkID) == nil }
     precondition(first.composerInputs.inputID(for: forkID) == nil, "编辑执行配置不得新建或重绑定普通正文")
     precondition(first.composerInputs.targetRecord(for: draftID)?.choices == editedChoices, "分叉只更新结果会话")
+    // Opening a fork can prepare its empty next-turn target before the edit
+    // receipt publishes the user's choices. Run the same Core operation as
+    // prepareComposerTarget, before delivering the edit result.
+    let openedForkID = "synthetic:prepared-edited-fork"
+    let openedContext = ComposerContextKey.conversation(ownerId: owner, conversationId: openedForkID)
+    let emptyTarget = ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false)
+    let prepared = try! transport.composerInputs(.ensureTarget(context: openedContext, seed: emptyTarget))
+    let initial = prepared.state?.targets.first { $0.context == openedContext }
+    precondition(initial?.revision == 1 && initial?.choices == emptyTarget)
+    first.composerInputs.saveEditedTarget(openedForkID, choices: editedChoices, expectedRevision: nil, placement: .fork)
+    wait {
+        first.composerInputs.targetIssue(for: openedForkID)?.contains("重新选择") == true ||
+        first.composerInputs.targetRecord(for: openedForkID)?.choices == editedChoices
+    }
+    let saved = try! transport.composerInputs(.read(sinceRevision: nil)).state?.targets.first { $0.context == openedContext }
+    precondition(saved?.revision == 2 && saved?.choices == editedChoices && first.composerInputs.targetIssue(for: openedForkID) == nil,
+                 "新分叉已经被窗口准备的空目标必须接纳编辑所选配置")
     let forkRevision = first.composerInputs.targetRecord(for: forkID)!.revision
     let competingForkChoices = ComposerTargetChoices(runtimeId: "pi", runtimeOwnerId: owner, choices: [], choiceEdited: true)
-    first.composerInputs.saveEditedTarget(forkID, choices: competingForkChoices, expectedRevision: nil)
+    first.composerInputs.saveEditedTarget(forkID, choices: competingForkChoices, expectedRevision: nil, placement: .fork)
     wait { first.composerInputs.targetIssue(for: forkID)?.contains("重新选择") == true }
     first.composerInputs.saveTarget(forkID, choices: competingForkChoices)
     var retriedForkTarget = false

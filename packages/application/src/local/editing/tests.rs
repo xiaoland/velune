@@ -429,13 +429,44 @@ fn deletion_links_keep_new_schema_and_refuse_unknown_or_corrupt_state() {
     repository.store_conversation_links(&[]).unwrap();
     let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(value["schemaVersion"], 3);
-    for bytes in [
-        br#"{"schemaVersion":99,"links":[]}"#.as_slice(),
-        br#"{"schemaVersion":2,"links":[],"unknown":true}"#.as_slice(),
-        b"{corrupt".as_slice(),
+    let current = json!({"schemaVersion":3,"links":[{"id":"logical","segments":[{
+        "runtimeInstanceId":"pi","runtimeTypeId":RuntimeKind::Pi,
+        "nativeConversationId":"pi:native","cwd":null,"cutoff":null,"handoff":null,"deleted":false
+    }]}]});
+    let mut envelope = current.clone();
+    envelope["future"] = true.into();
+    let mut nested = current.clone();
+    nested["links"][0]["segments"][0]["future"] = true.into();
+    // Each rejection has a valid current sibling, so a different guard cannot
+    // silently stand in for the reason this fixture is meant to exercise.
+    std::fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let links = repository.load_conversation_links().unwrap();
+    repository.store_conversation_links(&links).unwrap();
+    for (bytes, diagnostic) in [
+        (
+            br#"{"schemaVersion":99,"links":[]}"#.to_vec(),
+            "conversation links schema version",
+        ),
+        (
+            br#"{"schemaVersion":2,"links":[]}"#.to_vec(),
+            "需要先重新打开应用完成可恢复迁移",
+        ),
+        (
+            serde_json::to_vec(&envelope).unwrap(),
+            "含当前版本无法识别的字段",
+        ),
+        (
+            serde_json::to_vec(&nested).unwrap(),
+            "unknown field `future`",
+        ),
+        (b"{corrupt".to_vec(), "key must be a string"),
     ] {
-        std::fs::write(&path, bytes).unwrap();
-        assert!(repository.store_conversation_links(&[]).is_err());
+        std::fs::write(&path, &bytes).unwrap();
+        let error = repository.store_conversation_links(&links).unwrap_err();
+        assert!(
+            error.to_string().contains(diagnostic),
+            "{diagnostic}: {error}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
     drop(application);
@@ -443,7 +474,7 @@ fn deletion_links_keep_new_schema_and_refuse_unknown_or_corrupt_state() {
 }
 
 #[test]
-fn claude_delete_rebuilds_without_send_and_preserves_repeated_identity_after_reopen() {
+fn claude_delete_rebuilds_without_send_and_preserves_repeated_identity_after_reload() {
     for (truncate_to_empty, external_change) in [(false, false), (true, false), (false, true)] {
         use std::os::unix::fs::PermissionsExt;
         let root =
@@ -815,179 +846,183 @@ for line in sys.stdin:
     }
 }
 
-/// Opt-in real-SDK acceptance. Only an explicitly supplied synthetic
-/// fixture is cloned; no original session or ambient HOME is opened.
+/// Opt-in real-SDK acceptance using a fresh copy of the checked-in synthetic session.
 #[test]
+#[ignore = "requires explicit Pi and Node binaries"]
 fn real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns() {
-    let (Some(fixture), Some(cli), Some(node)) = (
-        std::env::var_os("VELUNE_TEST_PI_SYNTHETIC_FIXTURE"),
-        std::env::var_os("VELUNE_TEST_PI_BINARY"),
-        std::env::var_os("VELUNE_TEST_NODE_BINARY"),
-    ) else {
-        return;
-    };
-    fn clone_private(source: &Path, target: &Path) {
-        std::fs::create_dir_all(target).unwrap();
-        for entry in std::fs::read_dir(source).unwrap() {
-            let entry = entry.unwrap();
-            let kind = entry.file_type().unwrap();
-            assert!(
-                !kind.is_symlink(),
-                "synthetic fixture must not escape its root"
-            );
-            let target = target.join(entry.file_name());
-            if kind.is_dir() {
-                clone_private(&entry.path(), &target);
+    fn snapshot(
+        service: &crate::ApplicationService,
+        id: &str,
+        cold: bool,
+    ) -> crate::DeliveredSnapshot {
+        let command = if cold {
+            crate::Command::ReadConversation {
+                runtime_id: "pi".into(),
+                conversation_id: id.into(),
+            }
+        } else {
+            crate::Command::ReadSnapshot {
+                runtime_id: "pi".into(),
+                conversation_id: id.into(),
+            }
+        };
+        match service
+            .execute(crate::ClientViewId("real-pi-delete".into()), command)
+            .unwrap()
+        {
+            crate::Response::ReadConversation(result) | crate::Response::ReadSnapshot(result) => {
+                result
+                    .snapshot
+                    .expect("public reader must return the authoritative snapshot")
+            }
+            _ => panic!("unexpected snapshot response"),
+        }
+    }
+    fn delete(
+        service: &crate::ApplicationService,
+        current: &crate::DeliveredSnapshot,
+        message_id: &str,
+        truncate: bool,
+    ) -> crate::DeliveredSnapshot {
+        let editable = current
+            .follow_up
+            .editable
+            .iter()
+            .find(|item| item.message_id == message_id)
+            .expect("the public snapshot must offer this exact message for deletion");
+        assert!(
+            if truncate {
+                editable.delete_following
             } else {
-                std::fs::copy(entry.path(), target).unwrap();
+                editable.delete_only
+            },
+            "public deletion eligibility"
+        );
+        let revision = editable.revision.clone().expect("public edit revision");
+        let response = service
+            .execute(
+                crate::ClientViewId("real-pi-delete".into()),
+                crate::Command::DeleteUserMessage {
+                    runtime_id: "pi".into(),
+                    conversation_id: current.conversation.id.clone(),
+                    message_id: message_id.into(),
+                    truncate,
+                    expected_revision: revision,
+                },
+            )
+            .unwrap();
+        let crate::Response::DeleteUserMessage(result) = response else {
+            panic!("delete response")
+        };
+        result
+            .snapshot
+            .expect("command must return its authoritative snapshot")
+    }
+    fn close(service: &crate::ApplicationService) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match service.close(true) {
+                Ok(()) => return,
+                Err(error) if error.code == "busy" && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("real Pi owner cleanup must complete before reopen: {error}"),
             }
         }
     }
-    let fixture = PathBuf::from(fixture);
-    let cli = PathBuf::from(cli);
-    let node = PathBuf::from(node);
+    let required = |name| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| panic!("explicit real Pi SDK acceptance requires {name}"))
+    };
+    let cli = PathBuf::from(required("VELUNE_TEST_PI_BINARY"));
+    let node = PathBuf::from(required("VELUNE_TEST_NODE_BINARY"));
     let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../agent-runtime/resources")
         .canonicalize()
         .unwrap();
     for truncate in [false, true] {
-        let root = std::env::temp_dir().join(format!(
-            "velune-core-pi-sdk-delete-{}",
-            crate::new_record_key()
-        ));
+        let root = velune_test_support::TempRoot::new("core-pi-sdk-delete");
         let agent = root.join("agent");
-        clone_private(&fixture.join("pi"), &agent);
-        let models: Value =
-            serde_json::from_slice(&std::fs::read(agent.join("models.json")).unwrap()).unwrap();
-        assert!(
-            models["providers"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|provider| provider["baseUrl"] == "http://127.0.0.1:1/v1"
-                    && provider["apiKey"] == "synthetic"),
-            "real SDK acceptance must have only the closed synthetic endpoint"
+        let workspace = root.dir("workspace");
+        let os_home = root.dir("os-home");
+        let source = velune_test_support::write_pi_three_turn_session(
+            &agent,
+            &workspace,
+            "http://127.0.0.1:1/v1",
         );
-        let workspace = root.join("workspace");
-        let os_home = root.join("os-home");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::create_dir_all(&os_home).unwrap();
-        // The visible fixture may already have been edited by GUI
-        // acceptance. Start from an immutable, complete synthetic backup,
-        // never from an already truncated active branch.
-        let candidates = [
-            fixture.join("state/conversation-edits"),
-            fixture.join("pi/sessions"),
-        ];
-        let mut records: Vec<Value> = candidates
-            .iter()
-            .flat_map(|directory| {
-                std::fs::read_dir(directory)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-            })
-            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-            .filter_map(|path| std::fs::read_to_string(path).ok())
-            .filter_map(|text| {
-                text.lines()
-                    .map(serde_json::from_str)
-                    .collect::<Result<Vec<Value>, _>>()
-                    .ok()
-            })
-            .find(|records| {
-                records
-                    .first()
-                    .is_some_and(|record| record["type"] == "session")
-                    && records
-                        .iter()
-                        .filter(|record| {
-                            record["type"] == "message" && record["message"]["role"] == "user"
-                        })
-                        .count()
-                        == 3
-                    && records
-                        .iter()
-                        .filter(|record| {
-                            record["type"] == "message" && record["message"]["role"] == "assistant"
-                        })
-                        .count()
-                        == 3
-                    && !records.iter().any(|record| {
-                        matches!(record["type"].as_str(), Some("context_edit" | "compaction"))
-                    })
-            })
-            .expect("authorized fixture needs a complete, unedited six-message source or backup");
-        std::fs::remove_dir_all(agent.join("sessions")).unwrap();
-        std::fs::create_dir_all(agent.join("sessions")).unwrap();
-        let source = agent.join("sessions/core-deletion-baseline.jsonl");
-        records[0]["cwd"] = json!(workspace);
-        let before = records
-            .iter()
-            .filter(|record| record["type"] == "message")
-            .count();
-        std::fs::write(
-            &source,
-            records
-                .iter()
-                .map(|record| format!("{record}\n"))
-                .collect::<String>(),
-        )
-        .unwrap();
         if !truncate {
             // Seed a real official-SDK replacement at the old tip. A later
             // rewind must preserve it together with the deletion tombstone.
-            let target = records
-                .iter()
-                .find(|record| record["type"] == "message" && record["message"]["role"] == "user")
-                .unwrap()["id"]
-                .as_str()
-                .unwrap();
             let mut command = velune_agent_runtime::process::command(&node);
             command.args(["--input-type=module","--eval",r#"
 import {pathToFileURL} from 'node:url';
-const [sdk,binary,source,target] = process.argv.slice(1);
+const [sdk,binary,source] = process.argv.slice(1);
 const {resolvePiSdk} = await import(pathToFileURL(sdk).href);
 const {SessionManager} = await resolvePiSdk({binary,runtimeTypeId:'pi-1.0'}).importModule('dist/core/session-manager.js');
-SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier replacement'});
-"#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source).arg(target);
+const manager = SessionManager.open(source);
+const firstUser = manager.getBranch().find(entry => entry.type === "message" && entry.message.role === "user");
+manager.appendContextEdit(firstUser.id,{content:'synthetic earlier replacement'});
+"#]).arg(resources.join("pi_sdk.mjs")).arg(&cli).arg(&source);
             velune_agent_runtime::execution::ExecutionTarget::Local
                 .output(command, None, Some(&os_home))
-                .unwrap();
+                .expect("official SDK replacement must complete successfully");
         }
-        let mut application = crate::Application::open(crate::Options {
+        let options = crate::Options {
             home_directory: root.join("state"),
             resources_directory: resources.clone(),
-        })
-        .unwrap();
-        let core = &mut application.runtime;
-        let mut runtime = RuntimeInstance { enabled:true,id:"pi".into(),name:"Synthetic Pi SDK".into(),type_id:RuntimeKind::Pi,gateway_id:String::new(),
+        };
+        let mut service = crate::ApplicationService::open(options.clone()).unwrap();
+        let runtime = RuntimeInstance { enabled:true,id:"pi".into(),name:"Synthetic Pi SDK".into(),type_id:RuntimeKind::Pi,gateway_id:"default".into(),
                 settings:serde_json::from_value(json!({"binary":cli,"nodeBinary":node,"agentDir":agent,"sessionDir":agent.join("sessions")})).unwrap() };
-        runtime
-            .set_execution(crate::RuntimeExecution {
-                transport: crate::RuntimeTransport::Local,
-                home: crate::RuntimeHome::Existing {
-                    path: os_home.to_string_lossy().into_owned(),
-                },
-                remote_resources_directory: None,
-            })
+        let execution = crate::RuntimeExecution {
+            transport: crate::RuntimeTransport::Local,
+            home: crate::RuntimeHome::Existing {
+                path: os_home.to_string_lossy().into_owned(),
+            },
+            remote_resources_directory: None,
+        };
+        service
+            .execute(
+                crate::ClientViewId("real-pi-delete".into()),
+                crate::Command::UpsertRuntimeWithExecution { runtime, execution },
+            )
             .unwrap();
-        core.runtime_instances = vec![runtime.clone()];
-        core.index_history(&runtime).unwrap();
         let id = format!("pi:{}", source.display());
-        let snapshot = core.read_history("pi", &id).unwrap();
-        core.session.active_state = ActiveState::History(Box::new(snapshot));
-        let current = core.current_snapshot().unwrap();
+        // The public owner establishes the execution ticket and advances the
+        // actual Pi preparation, source confirmation and cleanup lifecycle.
+        let current = snapshot(&service, &id, true);
         let users: Vec<_> = current
             .messages
             .iter()
             .filter(|message| message.role == MessageRole::User)
             .map(|message| message.id.clone())
             .collect();
-        assert!(
-            users.len() >= 3,
-            "synthetic session needs several native user turns"
+        assert_eq!(users.len(), 3);
+        let texts: Vec<_> = current
+            .messages
+            .iter()
+            .flat_map(|message| {
+                message.blocks.iter().filter_map(|block| match block {
+                    crate::DeliveredBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                if truncate {
+                    "Synthetic user 1"
+                } else {
+                    "synthetic earlier replacement"
+                },
+                "Synthetic reply 1",
+                "Synthetic user 2",
+                "Synthetic reply 2",
+                "Synthetic user 3",
+                "Synthetic reply 3",
+            ]
         );
         let selected = &users[1];
         let boundary = current
@@ -1008,12 +1043,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             })
             .map(|(_, message)| message.id.clone())
             .collect();
-        let revision = core.edit_revision(&current).unwrap();
-        let delivered = core
-            .delete_user_message("pi", &id, selected, truncate, &revision)
-            .unwrap()
-            .snapshot
-            .expect("command must return its authoritative snapshot");
+        let delivered = delete(&service, &current, selected, truncate);
         assert_eq!(
             delivered.message_ids, expected,
             "SnapshotResult must deliver the same native order"
@@ -1031,7 +1061,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             expected,
             "delivered transcript rows must retain native order"
         );
-        let visible = core.current_snapshot().unwrap();
+        let visible = snapshot(&service, &id, false);
         assert_eq!(visible.conversation.id, id);
         assert_eq!(
             visible
@@ -1063,9 +1093,11 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                     crate::conversation::TranscriptItem::Message {message_id,..} if message_id==&reply.id
                 )),"retained original closing reply must remain directly visible");
         }
-        // Exercise the cold official SDK reader after the production Core
-        // command closed its actual Pi process and mutated native history.
-        let cold = core.read_history("pi", &id).unwrap();
+        // Closing the actual owner and reopening from the same persisted
+        // configuration must recover the native edit without cached projection.
+        close(&service);
+        service = crate::ApplicationService::open(options.clone()).unwrap();
+        let cold = snapshot(&service, &id, true);
         assert_eq!(
             cold.messages
                 .iter()
@@ -1074,14 +1106,13 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             expected
         );
         if !truncate {
-            let preserved_replacement = |snapshot: &ConversationSnapshot| {
+            let preserved_replacement = |snapshot: &crate::DeliveredSnapshot| {
                 assert!(snapshot.messages.iter().find(|message| message.id==users[0]).unwrap().blocks.iter()
-                        .any(|block| matches!(block,MessageBlock::Text{text} if text=="synthetic earlier replacement")),
+                        .any(|block| matches!(block,crate::DeliveredBlock::Text{text} if text=="synthetic earlier replacement")),
                         "branch-local earlier replacement must survive later deletion and truncation");
             };
             preserved_replacement(&cold);
-            core.session.active_state = ActiveState::History(Box::new(cold));
-            let reopened = core.current_snapshot().unwrap();
+            let reopened = cold;
             let third = &users[2];
             let third_at = reopened
                 .messages
@@ -1092,12 +1123,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                 .iter()
                 .map(|message| message.id.clone())
                 .collect();
-            let revision = core.edit_revision(&reopened).unwrap();
-            let delivered = core
-                .delete_user_message("pi", &id, third, true, &revision)
-                .unwrap()
-                .snapshot
-                .expect("chained command snapshot");
+            let delivered = delete(&service, &reopened, third, true);
             assert_eq!(
                 delivered.message_ids, chained_expected,
                 "chained SnapshotResult must never resurrect User2"
@@ -1114,7 +1140,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                     .collect::<Vec<_>>(),
                 chained_expected
             );
-            let chained = core.current_snapshot().unwrap();
+            let chained = snapshot(&service, &id, false);
             assert_eq!(chained.conversation.id, id);
             assert_eq!(
                 chained
@@ -1145,7 +1171,9 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                 "chained truncation rows must retain native order"
             );
             preserved_replacement(&chained);
-            let chained_cold = core.read_history("pi", &id).unwrap();
+            close(&service);
+            service = crate::ApplicationService::open(options.clone()).unwrap();
+            let chained_cold = snapshot(&service, &id, true);
             assert_eq!(
                 chained_cold
                     .messages
@@ -1171,7 +1199,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
             .filter(|record| record["type"] == "message")
             .count();
         assert_eq!(
-            after, before,
+            after, 6,
             "deletion must not send a model prompt or create a native reply"
         );
         assert!(
@@ -1180,9 +1208,7 @@ SessionManager.open(source).appendContextEdit(target,{content:'synthetic earlier
                 .next()
                 .is_some()
         );
-        application.close_stopping_work().unwrap();
-        drop(application);
-        std::fs::remove_dir_all(root).unwrap();
+        close(&service);
     }
 }
 
@@ -2077,8 +2103,10 @@ for line in sys.stdin:
     .unwrap();
     let mut session = pi::PiSession::new(config);
     session.start(client, projection);
-    core.session.active_state = ActiveState::Pi(Box::new(session));
-    core.session.execution_runtime_id = Some("pi".into());
+    core.session.install_execution(
+        ActiveState::Pi(Box::new(session)),
+        execution::SessionExecution::native(core.runtime_instance("pi").unwrap().clone()),
+    );
     let source_key = core.session.key;
     let mut view = core.current_snapshot().unwrap();
     assert!(!view.actions.can_send);
@@ -2102,13 +2130,16 @@ for line in sys.stdin:
     target.id = "other-pi".into();
     target.enabled = false;
     core.runtime_instances.push(target);
+    let current = core.current_snapshot().unwrap();
+    let revision = core.edit_revision(&current).unwrap();
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::InPlace,
             Some("other-pi"),
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),
@@ -2121,12 +2152,13 @@ for line in sys.stdin:
     assert!(error.to_string().contains("此运行时已停用"));
     let missing = root.join("missing.txt").to_string_lossy().into_owned();
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::InPlace,
             None,
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),
@@ -2138,12 +2170,13 @@ for line in sys.stdin:
         .unwrap_err();
     assert!(error.to_string().contains("无法读取附件"));
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::Fork,
             None,
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),

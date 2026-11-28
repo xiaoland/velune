@@ -122,6 +122,7 @@ pub(crate) struct SettingsStore {
     value: Mutex<Option<StoredNetworkSettings>>,
 }
 impl SettingsStore {
+    #[cfg(test)]
     pub(crate) fn memory() -> Self {
         Self {
             path: None,

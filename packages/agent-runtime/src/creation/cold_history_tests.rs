@@ -2,7 +2,12 @@
 use super::*;
 use crate::history::{self, HistoryConfig};
 use crate::process::command;
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 struct ColdFixture {
     directory: PathBuf,
@@ -91,8 +96,8 @@ fn ledger_after_io<T>(value: &Retained<T>) -> Arc<ReadLedger> {
 fn cold_history_pages_release_framing_headroom_but_keep_payload_credit() {
     let limit = 13 * 1024 * 1024;
     let account = || {
-        let account = ReadAccount::new();
-        account.state.lock().unwrap().limits.retained_bytes = limit;
+        let mut account = ReadAccount::new();
+        Arc::get_mut(&mut account).unwrap().limits.retained_bytes = limit;
         account.ledger.0.lock().unwrap().retained_limit = limit;
         account
     };
@@ -130,6 +135,12 @@ fn cold_paginated_history_keeps_all_page_credit_after_rpc_and_home_cleanup() {
     let fixture = ColdFixture::new(false);
     let read = history::read_codex_with_summary(&fixture.config, "runtime", "synthetic").unwrap();
     fixture.assert_process_closed();
+    let home = fixture.directory.clone();
+    drop(fixture);
+    assert!(
+        !home.exists(),
+        "cold history must outlive its temporary HOME"
+    );
     assert_eq!(read.1.messages.len(), 2);
     assert!(
         read.retention.0.len() >= 4,

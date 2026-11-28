@@ -1,0 +1,139 @@
+起点范围	文件、入口或参数行	只读盘点时的契约与候选判断
+Mac 的每个文件与调用链	AggregatedListChecks.swift	R aggregatedListChecks→runAggregatedListChecks：设备 qualified 顺序、隐藏 slot、实际落盘重读、跨设备失败/重试、cwd 归属、pagination、project identity；重复 UUID/重复 path 两个独立精确负向已修好
+Mac 的每个文件与调用链	ArchivedConversationsChecks.swift	R archivedConversationsChecks：9 个真实 JSONL→archive/read/search/page→unarchive/delete；queued cancel、过滤竞态、关闭视图后回执保留，实际文件删除
+Mac 的每个文件与调用链	BackgroundNotificationChecks.swift	R backgroundNotificationChecks 默认 10 fixture 与 child-activity 分支；已交付 DeliveredSnapshot 的 native row/折叠/复用/内容和消息顺序
+Mac 的每个文件与调用链	BackgroundTaskChecks.swift	R backgroundTaskChecks：loading、失败/offline、capability、旧 tools 恢复、clear/restore、同 ID 新 title；实际生产面板消费 projection
+Mac 的每个文件与调用链	CheckDirectories.swift	R validateCheckDirectories：5 个环境变量 canonical/symlink 后必须在 owned temp，拒 daily
+Mac 的每个文件与调用链	CommandPaletteChecks.swift	R commandPaletteChecks：marked text、焦点/selection、方向/Return/Escape/Command-Return；checkConversationPaletteSearch：首 query gate、晚回执、真实目标历史和新 tab
+Mac 的每个文件与调用链	CompactionTranscriptChecks.swift	R compactionTranscriptChecks：4 种状态文案、2 主题×2 宽度、summary 展开/收起、无 edit/fork 权限
+Mac 的每个文件与调用链	ComposerChecks.swift	R composerOwnershipCheck 主路径、new-tab、default、sync、reopen；C checkComposerSharing 移入该 headless keeper 后退役 preview flag
+Mac 的每个文件与调用链	ComposerControlsChecks.swift	R composerControlsCheck、composerQuotaCreditChecks、composerGeometryChecks；Return/IME/disabled、named pasteboard、stop action、read-only draft、7 credits、真实输入高度/resize
+Mac 的每个文件与调用链	ComposerGroupPresentationChecks.swift	R composerGroupPresentationChecks：真实 PaneGrid/ToolContent anchor、左右选择、2 次来回、text/attachment/choices/undo ownership
+Mac 的每个文件与调用链	ComposerTargetChecks.swift	R composerContentTargetCheck、composerTabStateCheck、composerRestoredGroupStateCheck；独立 input/target revision、CAS、不盖新稿、同 device 新 window、alias 拆分；R composerNativeTargetRetryCheck 可选实际 CLI
+Mac 的每个文件与调用链	ComposerVisualChecks.swift	R composerVisualStateChecks：11 状态×3 宽度、quota/model 长 label tooltip、textarea/操作行 geometry
+Mac 的每个文件与调用链	ContinuationPreparationChecks.swift	R continuationPreparationChecks + fixture operations：ready/advanced、ACK 前后隐藏/关闭、失败保旧输入、重试 CAS、取消/导航、模型消失、已有 queue ID；7 视觉状态
+Mac 的每个文件与调用链	ConversationChecks.swift	F checkGroupCreation 的执行界面：runtime/project/new-tab/unsent reuse/missing-runtime；当前 failure 只输出 FAIL 然后普通 terminate
+Mac 的每个文件与调用链	ConversationPaginationChecks.swift	R conversationPaginationChecks：36 Claude 文件、首屏 limit、合并点击、重复 native ID 失败/移除后恢复；分派 palette-search
+Mac 的每个文件与调用链	ConversationRequestChecks.swift	R conversationRequestChecks 默认 independent requests；child-open／queue-withdrawal／late-send-echo 3 分支，真实 owned synthetic Codex subprocess→FFI→Store
+Mac 的每个文件与调用链	ConversationStoreChecks.swift	R interaction draft lifetime、queue withdrawal、late send echo、independent requests、cold retry、editor/composer states、queued editor、subagent controls、pending cancel、synthetic target admission、concurrent fork dispatch、opening catalog/failure recovery、outgoing admission；C 其中手工 assembled enqueue 的 create/send 时序迁到公开 send
+Mac 的每个文件与调用链	DevelopmentCheck.swift	R 生命周期分派与退役 flag 拒绝；F 全局 synthetic polling 不能用来证明真正可见性门禁；C checkComposerSharing/manual group 的启动分支随迁移退役
+Mac 的每个文件与调用链	DeviceStoreChecks.swift	R checkBackgroundSubmissionAdmission：实际 Store/Context 准入，background running 与真实 LLM busy／elsewhere 分离；fixture 先有有效输入目标
+Mac 的每个文件与调用链	DragProviderChecks.swift	R dragProviderChecks：真实 NSItemProvider 主线程阻塞时仍完成，固定完整 bytes；旧 main-queue 实现负对照
+Mac 的每个文件与调用链	MessageEditingChecks.swift	R prepareVisualCheckState 只给 preview 设置 busy/failure；F 对视觉分支的覆盖声明限于呈现
+Mac 的每个文件与调用链	MessageEditorVisualChecks.swift	R messageEditorOffscreenChecks 实际 synthetic Codex＋native text/undo/image bytes/CAS；R messageEditorVisualCheck matrix/visible 两种；R prepareMessageEditorFixture 的外部 JSONL peer
+Mac 的每个文件与调用链	MessageExperienceChecks.swift	R default/reopen 的真实 journal 与 appearance；R file-links/CJK、typography、native-row、navigation、appearance-zoom、runtime editor/model compaction、fork/Claude compact-edit；F 新 fork 默认偏好未测；F 新 AppKit restore owner 缺调用
+Mac 的每个文件与调用链	ModelAutoCompactionChecks.swift	R modelAutoCompactionChecks：saved provider/route target、draft 禁止、切 runtime 保 identity、save→Core 重读、清除保其它模型、ACP mismatch/未加载模型清除
+Mac 的每个文件与调用链	NotificationNavigationChecks.swift	R notificationNavigationChecks：target payload/collision、invalid 类型、local/peer 相同 ID、旧唯一/歧义、closed model、once completion、aggregation seed/旧远端布局迁移与 bytes backup
+Mac 的每个文件与调用链	OutgoingSubmissionChecks.swift	R outgoingSubmissionChecks：实际 WorkspaceShell 的即时 sending/queue/失败/唯一 cell，调用 outgoing admission 生命周期
+Mac 的每个文件与调用链	ProviderAnalyticsChecks.swift	R providerAnalyticsOffscreenChecks：固定 UTC、异构时间范围／共享 cutoff、provider/device config invalidation、缺失/zero/partial 渲染
+Mac 的每个文件与调用链	QueuedMessageEditorChecks.swift	R queuedMessageEditorChecks：queue 自有 choices/revision/attachment indices、catalog 失联允许内容改、config 必须有效、preparing/busy/stale/dispatched 锁、真实 disconnected save 保输入
+Mac 的每个文件与调用链	RuntimeEditorChecks.swift	R runtimeEditorChecks：真实 form Binding→Transport 保存后切 form，Core 重读原 snapshot、runtime type drafts／HOME/SSH/launch/start policy
+Mac 的每个文件与调用链	RuntimeInteractionChecks.swift	R draft lifetime 和 12 类问题×3 尺寸的 full Pane native geometry、focus/multiline；F radio 检测 if let 可整段跳过
+Mac 的每个文件与调用链	RuntimeRecoveryChecks.swift	R runtimeRecoveryLifecycleChecks（native/recovered/nil/cancelled/exhausted/new user/new occurrence）；R runtimeRecoveryNativeChecks 2 主题×2 宽度，banner/Work/stop/dismiss
+Mac 的每个文件与调用链	ShellMotionChecks.swift	R shellMotionChecks 的实际 split/view identity 与 layout 更新；F 报告范围只为测量，无帧时长阈值
+Mac 的每个文件与调用链	SidebarActionsChecks.swift	C sidebarActionsChecks 的 solo/shared/right 12 rows 向 real shell 移动；R window-content 4 rows 暂保
+Mac 的每个文件与调用链	SidebarToolbarChecks.swift	R sidebarToolbarChecks：30 native layouts、separator/index、真实 action IDs、collapse/restore、inspector/split、overflow/bottom/narrow、310/280 saved widths
+Mac 的每个文件与调用链	TelemetryShutdownChecks.swift	R telemetryShutdownChecks：持住真实 native gRPC event loop，shutdown 完成后真实读 journal bytes
+Mac 的每个文件与调用链	TranscriptTableChecks.swift	R actual model→virtualized cell→AX 顺序、geometry、cell identity、overlay z-order、detach/re-attach zoom；D messageEntryIDsForCheck 镜像
+Mac 的每个文件与调用链	WorkspaceChecks.swift	F checkSendQueue／checkEditMessage 超时 silent return；checkListActions／checkSideChat 仅日志；这些为可见人工 preparation，不计自动通过
+Mac 的每个文件与调用链	WorkspaceContinuityChecks.swift	R workspaceRecoveryChecks：真实磁盘 flush/read、未知版本保 bytes、scope/kind/mtime/legacy backup；R cold-opening gates；R workspaceContinuity artifact/handoff/notification visibility
+Mac 的每个文件与调用链	WorkspaceNavigationChecks.swift	R workspaceNavigationChecks、workspaceKeyboardPaneFocusChecks、conversationManagementVisualChecks／CancellationChecks、workspaceShellChecks：实际 shell 响应链、grid native identity、menus、本地 firstResponder、异步取消
+Mac 参数行：每种行为差异的决定	WorkspaceModelChecks：history/tab-last/reorder/split-close/restore-closed/move/sizes/save-restore/random	R 九组全部保；invalid group、wrong ratio path/count、非法份额各有不同 guard；固定 wire valid 与 outside-grid、duplicate-tab 独立失败；200×60 固定 seed 是操作不变量，非磁盘恢复
+Mac 参数行：每种行为差异的决定	CommandPalette：marked n／ni／ni'hao；up/down/return/escape＋Command-Return	R composition 中禁止 action，commit 后精确一次；不同 selector 正负不能压成一次 count
+Mac 参数行：每种行为差异的决定	Composer state：idle/running/compacting/queue/paused/background/external/child/compacted/model-missing/model-failed × width 360/520/1000	R 全保呈现；external/child 的输入可编辑与提交禁用分开，missing/failed 解释不同；3 宽度保护自适应 geometry，不是 33 个传输测试
+Mac 参数行：每种行为差异的决定	Message editor：empty/long/failed/missing-model/missing-runtime/fork-only/legacy-model/legacy-model-loading/legacy-model-missing/catalog-loading/busy/failure/failure-target-changed/placement/history-changed/long-floating/busy-floating/failure-floating × matrix 480/800	R 18 状态；legacy/loading/missing 不回退到其它模型；failure-target-changed 不盖真实失败；floating 独立窗布局不与 sheet 合并；F 这些 setter 只保护视觉，实际 edit/CAS 另层保
+Mac 参数行：每种行为差异的决定	Credits：balance/zero/unlimited/stale+refreshing/loading/unreported/failed × light/dark	R 七种独立固定中文 oracle；account-quota 还检查 runtimeLogin/conversationRecord origin、UTC+8/UTC、nil reset，不删跨入口独立字段
+Mac 参数行：每种行为差异的决定	Composer Return：默认/Command-Return、marked/unmarked、enabled/disabled；submission phases sending/resuming/stopping/blocked	R 各 guard 的 matched 正路径保；不能用 phase 不可提交替代 cancel stop 真下游 effect
+Mac 参数行：每种行为差异的决定	Composer geometry：typing 1..5 行／delete 4..1、paste、resize 380/1000/520/800、焦点 360/520/420，每阶段 30 layout pass	R 固定目标 native height/宽度/无抖动；非 stopwatch 性能测试，不因重复 pass 删除检测稳态震荡
+Mac 参数行：每种行为差异的决定	RuntimeInteraction：async/sync/closed-default/multiline/multiple/secret/secret-options/readonly-secret/long/readonly/native-child/approval × wide980/narrow360/short620	R 数据/权限/geometry 各差异保；F 可选 radio if-let 必须变可观察正例，否则不声称 radio 分支执行；secret 不回显默认文字和 closed-option 不能隐藏默认值是独立安全契约
+Mac 参数行：每种行为差异的决定	RuntimeRecovery：retry native/recovered、terminal nil/cancelled/exhausted(5)、new occurrence、new user；native 420/900×light/dark	R 每种恢复状态语义不同；dismiss 不 cancel、恢复不复活 older failure，保固定消息 ID 与实际 banner/disclosure
+Mac 参数行：每种行为差异的决定	BackgroundNotifications 10：running/subagent-return/branch-summary/compaction-summary/bash-records/before-final/mixed-closing/late/orphan/unknown-custom ×420/900×light/dark	R 10 种已交付语义都保原生内容/位置；bash-records 再分别 success/failed/cancelled+truncated/不进模型；mixed closing 必须 work/reply 各一次；未知 custom 独立归组守卫
+Mac 参数行：每种行为差异的决定	Child activity：thinking/replying/stopping/finished	R 四 phase native row；finished 应无 row；不能把 fixture status 当真实 child process 生命周期
+Mac 参数行：每种行为差异的决定	Continuation：accepted false/true × hidden/closed；edited false/true × fail；navigate false/true；视觉 ready/advanced/long/default-model/failure/checking/queueing	R ACK 前后接受与 UI存活独立，取消/导航不暗排队；失败保新稿与旧稿副本；default model 缺失不 fallback
+Mac 参数行：每种行为差异的决定	Cold opening：unavailable 可重试；closed/quitting/rejected/其它永久错误；navigate/close/generation；existing/draft 恢复	R 对应不同 retry admission。只记录永久 Error 非重试不能证明 unavailable 的 backoff，正例都保
+Mac 参数行：每种行为差异的决定	Independent request：held send ACK、poll、32 条 payload 批、repeated demand、reply、stop、refresh same ID、stamp变动、old/new generation、late nil/absence、close during create、native reject	R 真实 wire 与 consumer 投影边界分别保；C 只迁 manually assembled create/send 到公开动作，不删除 stale payload 单元时序
+Mac 参数行：每种行为差异的决定	Outgoing admission：poll-before-ACK、native-before-ACK、queue无projection、晚 ACK/晚失败、stop-before-native、重复同文本不同token、queue cancel、input revision	R 借用有效外部 receipt 供 Swift 消费者；ACK 的真实产生由 request keeper独立保护；不可用“fake receipt”标签删掉 Swift 去重/不还稿保障
+Mac 参数行：每种行为差异的决定	Workspace shell/sidebar：solo720/1060/1440、inspector、split、shared、right、return-left、hidden/shown/restored、minimum190、tabs overflow、bottom dock、narrow edge ×light/dark；saved310/280	R 每个状态修改实际 shell；C unwindowed 同类 rows 要先搬 240/420，再删旧 count-only。不同 platform还不能靠 theme PNG 文件存在推定视觉正确
+Mac 参数行：每种行为差异的决定	Appearance zoom：110/125/150 向上，125/110/100/90/80 向下；standard/extraLarge/restored；wide/narrow	R 不同边界和撤销/selection continuity；无值老 JSON 100% 与 shortcut conflict 独立保
+Mac 参数行：每种行为差异的决定	Fork：running/elsewhere 立即派发失败；newTab/rightSplit/newWindow 采用 snapshot；长编号 title；真实 Claude newTab fork→send	R 现有；F absent/invalid/3合法偏好默认调用、普通标题尾截断/伪suffix、新窗口 controller、延迟成功 receipt 新增独立缺口，不把 source 不变的 preview 误称真实 fork
+轻量脚本、CLI 与独立生产 owner	check-build-support.py 4 声明	R stable outputs/selective prune、真实外部 generator失败的旧 pair保留、打包artifact摘要、构建中source临改再还原不签成功
+轻量脚本、CLI 与独立生产 owner	check-build-cache.py	R Windows EACCES retry、preview不删、platform lock、root/nested Cargo lock、symlink拒、idle准确domain删除、域外目录报告
+轻量脚本、CLI 与独立生产 owner	check-macos-dev.py 6声明	R normal/preview双向隔离、invalid mode、stale build、matched vs pid/birth/home/no receipt、restart只stop stale
+轻量脚本、CLI 与独立生产 owner	check-macos-composer-runner.py 4声明	R 两真实worker新PID同盘、reopen失败传播、save失败不reopen、controls/workspace-only/child-open无reopen
+轻量脚本、CLI 与独立生产 owner	check-ci-inputs.py 3声明	R 固定路径正表、原生/docs负表、真实git rename旧路径和GITHUB_OUTPUT append
+轻量脚本、CLI 与独立生产 owner	check-composer-migration.py 6声明	R catalog前/后中断、无checkpoint重入、Mac双份共享草稿、3未来window schema、未来Android XML导出
+轻量脚本、CLI 与独立生产 owner	check-runtime-start-policy.py 3声明	R preview/中断后resume/原始backup/幂等、conflicting政策整批拒写、完整runner顺序
+轻量脚本、CLI 与独立生产 owner	check-service-tier-migration.py 8声明	R preview+backup+runner、Rust/Mac/Windows非空编码、4 ambiguous/unknown、duplicateJSON、3futurewindow＋remote、target-intent入口、retiredCodex/binaryconvert、真实flock
+轻量脚本、CLI 与独立生产 owner	check-claude-history.py 11声明	R API failure reason/所属execution、压缩display/context、summary非user、安全meta、branch过滤、parent回放、usage、缺prehistory、2auto+manual、parallel tools
+轻量脚本、CLI 与独立生产 owner	check-runtime-background-tasks.mjs	R Host版本/kind/identity、child非symlink与parent、UTF8日志上限、unknown status、stop精确单task不误伤sibling、missing/mismatch
+轻量脚本、CLI 与独立生产 owner	check-pi-background-work.mjs	R startup child不发未初始化帧、single stop、missing/multi/unknown拒、任务持久通知、legacy/current layout；5 detection初态rejected/malformed/silent-installed/silent-registry-error/absent
+轻量脚本、CLI 与独立生产 owner	check-pi-subagent-metadata.mjs	R resume旧transcript/新run stop、父切换迟到结果、terminal children、workflow step、parallel role/task、unknown retaining、header/symlink
+轻量脚本、CLI 与独立生产 owner	check-pi-child-history.py	R legacy/current/nested、6valid directread/0readdir、compaction冷metadata、custom session-dir；F来源拒绝诊断
+轻量脚本、CLI 与独立生产 owner	check-pi-child-host.mjs	R foreground/nested/parallel/async真SDK+plugin、真实runner processTerminal、registrationdisposal、parent selection隔离；F最后legacyplugin累积请求
+轻量脚本、CLI 与独立生产 owner	check-pi-projection-snapshot.mjs	R真实stagedimport、冷/热full display与modelcontext分离、delete/replacement/discardedfuture/branch/compaction/sourceordinal/liveidentity；D SDKconstant自比较；R现有3平台resource名单暂留
+轻量脚本、CLI 与独立生产 owner	check-codex-sampling-route.py	R真实Codex私有HOME、text/tool/empty、压缩后context、1HTTP、source/forkbytes不变、archive、不允client请求
+轻量脚本、CLI 与独立生产 owner	check-token-units.sh/.swift/.cs	R双实现独立固定format/parse表，边界非法/溢出、UInt64最大、context/output关系、rate；Swift approximate另有数值表
+轻量脚本、CLI 与独立生产 owner	check-account-quota.sh/.swift	R origin/title/limits、UTC+8和UTC/nil、credits zero/unlimited-stale/missing/failure
+轻量脚本、CLI 与独立生产 owner	check-macos-composer.py	R开发身份、隔离副本、私有env、准确Popen回收、两phase receipt与导出白名单；F child-open约束和缺direct choices
+其他原生平台与工具	app/ios/Preview.swift Debug 8断言	R streamed no-change保持、F delta删除保留assistant缺失；R work/reply分割；R runtime切换草稿与model记忆；R Codable恢复不采用旧snapshot model；R cwd
+其他原生平台与工具	app/ios/WindowStore.swift＋工程	R本地window/viewID/peer/cache独立契约；Xcode单app target的Debug preview编入
+其他原生平台与工具	Android PreviewCatalog/GalleryActivity	R11行 gallery、sessions(list alias)、empty-sessions、no-devices、devices、conversation、running、failed、new、appearance、network
+其他原生平台与工具	Android PreviewConversation/Fixtures/Screens	R各动作演示：切设备/runtime保输入、synthetic send/queue/steer/stop/resume/edit/fork、attachments/tasks/links；appearance独立gallery prefs save/restore
+其他原生平台与工具	Windows app＋PARITY	R现有token单独脚本；无原生test suite，已知原生细节未验收明确保留
+其他原生平台与工具	tools/bindgen/src/main.rs	R唯一入口直接uniffi_bindgen_main；生成器版本由Cargo.lock，工具代码树已触发Rust
+CI／构建／交付的逐门禁	owner／声明	决定与边界
+CI／构建／交付的逐门禁	PR checkout head SHA、fetch/diff whitespace、changedinput输出	R真实PR head差异；F migration dependency漏项（不能按后缀全概括）；保git rename读取旧删除路径
+CI／构建／交付的逐门禁	release metadata prerelease/draft/simple/force-tag/version/positive buildnumber	R独立交付配置契约，静态断言合理；当前只验证配置和script语法，不证明release失败分支
+CI／构建／交付的逐门禁	shell syntax5路径	F当前只有首路径被bash解析；逐文件执行修复，不删除门禁
+CI／构建／交付的逐门禁	Python9＋Node3＋acceptance unittest默认执行	R这些不因Rust路由关闭；Python check-claude-history实际执行resource代码，不把compile-only当测试
+CI／构建／交付的逐门禁	conditional fmt/clippy3feature sets、remote-only normal dependency tree、link、workspace tests、FFI acceptance	R每层独立：feature装配/架构边界/链接/行为/ABI；tree先成功取得再grep，没有把cargo tree失败当无禁用依赖。Pythonacceptance内容由root审核
+CI／构建／交付的逐门禁	build-support source_snapshot/lock、binding pair／artifact digest、no-opmtime、failedbuild不覆盖success	R真实消费者为所有平台和acceptance；4单测保护协议，不证明实际工具链。source input变化检测含mtime/inode（临改还原不冒充同输入）
+CI／构建／交付的逐门禁	Mac build dev/release × development/daily	R开发宏、signedscope/URLscheme、绑定/modulemap/dylib、codesign/arch/resources/licenses、buildmanifest；release包不能被checkrunner接管
+CI／构建／交付的逐门禁	iOS dev/release × simulator/device	Rremote-only staticlib、bindings、Info版本、nativephase唯一生产者、锁、warnings-as-errors、licenses；传入configuration绕过profile被拒
+CI／构建／交付的逐门禁	Android dev/release × normal/diagnostics/skip-native	Rremote so、pinned AARhash、生成绑定与packagedartifact配对、Gradleassemble+lint、签名存在决定APK路径；skip-native+diagnostics拒绝
+CI／构建／交付的逐门禁	Windows dev/release	RhostRust、固定C#generatorrevision/hash、lockedNuGetrestore、dotnetpublish、nativeDLL与JS资源prune/notice幂等
+CI／构建／交付的逐门禁	release source-bundle exacttag与已打包平台closure	R生产下载/固定hash/原始源码manifest/源commit校验；不因slow或static删供应链门禁
+CI／构建／交付的逐门禁	release Macarm64/MacIntel/Androidarm64矩阵	R各真实编译/架构/版本/签名验证；release没有iOS/Windows
+CI／构建／交付的逐门禁	release publish matching4assets、hash/commit/version/build/cert、draftpublish、main→developsyncPR	R独立交付原子性，禁止以源码grep代替真实产物检查；用户未让此任务发布release，不执行
+CI／构建／交付的逐门禁	svc.json	R具名build/start/status/stop、重装与设备遥测各有不同effect；check-runtime-background-tasks与check-macos-background-tasks复用现有owner
+逐声明复用说明	scripts/check-build-support.py `test_stable_generated_inputs_and_selective_prune`	R 生成输出mtime稳定、只清理生成器所拥有的文件，platform modulemap保留
+逐声明复用说明	scripts/check-build-support.py `test_paired_outputs_survive_failure_and_reject_stale_library`	R 实际执行假生成器外部进程；失败保留上一绑定并拒绝过期库
+逐声明复用说明	scripts/check-build-support.py `test_packaged_artifact_is_part_of_pair`	R 二进制包变化必须破坏配套证明，独立于生成源码
+逐声明复用说明	scripts/check-build-support.py `test_changed_input_cannot_publish_current_success`	R 真实命令前后source身份变化不能冒充当前成功，含临时改后恢复字节
+逐声明复用说明	scripts/check-claude-history.py `test_api_failure_preserves_login_reason_after_task_notification`	R 通知后的原生API错误仍显示登录原因/失败执行，不变成成功
+逐声明复用说明	scripts/check-claude-history.py `test_api_failure_recovery_belongs_to_its_execution`	R 恢复只归所属执行，不能被新轮回答消掉
+逐声明复用说明	scripts/check-claude-history.py `test_compaction_keeps_transcript_but_exports_only_effective_context`	R 展示保留完整历史，导出仅有效压缩上下文
+逐声明复用说明	scripts/check-claude-history.py `test_compact_summary_is_detail_of_boundary_never_a_user_turn`	R 摘要依附压缩边界，不伪造新用户轮
+逐声明复用说明	scripts/check-claude-history.py `test_safety_meta_is_visible_and_not_a_new_turn_or_cancelled_success`	R 拒绝元消息可见且失败，真正恢复才完成
+逐声明复用说明	scripts/check-claude-history.py `test_branch_excludes_abandoned_messages`	R 分支过滤弃用消息
+逐声明复用说明	scripts/check-claude-history.py `test_retained_order_repairs_replayed_parent_links`	R 原生保留顺序修复回放父链接
+逐声明复用说明	scripts/check-claude-history.py `test_compaction_updates_context_without_billing_summary_as_a_turn`	R 上下文token更新不重复计费原轮用量
+逐声明复用说明	scripts/check-claude-history.py `test_missing_pre_compact_history_keeps_available_messages`	R 缺失旧链不丢可读压缩后消息
+逐声明复用说明	scripts/check-claude-history.py `test_two_auto_compactions_keep_execution_order_and_manual_is_separate`	R 自动压缩属于同执行，手动压缩独立
+逐声明复用说明	scripts/check-claude-history.py `test_parallel_result_siblings_complete_their_original_rows`	R 并行工具结果归各自原调用行
+逐声明复用说明	scripts/check-composer-migration.py `test_interruption_before_catalog_preserves_identity_and_resumes`	R 真实写盘checkpoint在catalog前中断，重跑保留owner/input身份
+逐声明复用说明	scripts/check-composer-migration.py `test_interruption_after_catalog_resumes_caches`	R catalog提交后中断，重跑完成平台缓存且不改catalog
+逐声明复用说明	scripts/check-composer-migration.py `test_old_interrupted_import_without_checkpoint_preserves_pending_choices`	R 缺历史checkpoint仍保留待同步选择
+逐声明复用说明	scripts/check-composer-migration.py `test_unversioned_window_migrates_both_copies_of_shared_draft`	R Mac两个草稿投影一致迁移且保留原始备份
+逐声明复用说明	scripts/check-composer-migration.py `test_unknown_window_version_refuses_before_catalog_commit`	R 未来Mac版本拒绝整个batch并保持原字节
+逐声明复用说明	scripts/check-composer-migration.py `test_future_android_export_refuses_before_catalog_commit`	R 未来Android导出拒绝且零数据写入
+逐声明复用说明	scripts/check-macos-dev.py `test_old_receipt_remains_normal`	R 旧回执无preview字段按正常模式，只可正常复用
+逐声明复用说明	scripts/check-macos-dev.py `test_preview_never_reused_as_normal`	R 预览回执不能当日常开发实例复用
+逐声明复用说明	scripts/check-macos-dev.py `test_invalid_mode_rejected_before_any_launch`	R 非法模式在进入原生启动前拒绝
+逐声明复用说明	scripts/check-macos-dev.py `test_other_build_is_stale`	R 匹配实例但不同fingerprint归stale以支持显式restart
+逐声明复用说明	scripts/check-macos-dev.py `test_unmatched_instance_is_not_stale`	R（前轮已修） PID/出生时间/目录不符或无回执必须拒绝，且不能允许stale自动退出
+逐声明复用说明	scripts/check-macos-dev.py `test_restart_quits_only_a_stale_instance`	R 只有明确stale走正常stop/start，ambiguous不退出实例
+逐声明复用说明	scripts/check-runtime-start-policy.py `test_preview_and_interrupted_commit_resume_preserving_originals`	R dry-run无变化；config提交后中断，重跑保留原备份并迁移完成
+逐声明复用说明	scripts/check-runtime-start-policy.py `test_conflicting_instance_policy_refuses_before_writes`	R 已存在冲突策略拒绝，原文件与备份目录不变
+逐声明复用说明	scripts/check-runtime-start-policy.py `test_full_runner_orders_existing_migrations_and_remains_idempotent`	R 真实run-migrations子进程顺序及二次幂等
+逐声明复用说明	scripts/check-service-tier-migration.py `test_preview_backup_idempotence_and_runner`	R dry-run、私有备份、真实重读、重复执行和完整迁移链
+逐声明复用说明	scripts/check-service-tier-migration.py `test_nonempty_native_and_platform_encodings`	R Rust/mac/Windows独立编码固定预期，artifact非目标字段不改
+逐声明复用说明	scripts/check-service-tier-migration.py `test_ambiguous_or_unknown_choices_refuse_whole_batch`	R 模型缺失/managed/未知字段/未知variant均拒绝批量改写
+逐声明复用说明	scripts/check-service-tier-migration.py `test_duplicate_fields_refuse_whole_batch`	R 重复JSON字段不能静默覆盖
+逐声明复用说明	scripts/check-service-tier-migration.py `test_future_window_versions_refuse_service_tier_batch`	R 未知外层/内层/远端schema拒绝整批
+逐声明复用说明	scripts/check-service-tier-migration.py `test_future_window_versions_refuse_target_intent_batch`	R target-intent独立迁移入口拒绝未知schema
+逐声明复用说明	scripts/check-service-tier-migration.py `test_retired_codex_identity_and_binary_conversion`	R Codex支持版本拒绝及保留实例ID/HOME/会话身份、私有备份
+逐声明复用说明	scripts/check-service-tier-migration.py `test_live_runtime_lock_refuses_write`	R 实际持有flock时子进程拒写
+逐声明复用说明	scripts/check-ci-inputs.py `test_compiled_sources_helpers_fixtures_and_ffi_consumers_run`	R（已在前轮新增） 独立路径表覆盖Rust源、嵌入helper/fixture、协议Markdown、绑定配置及验收
+逐声明复用说明	scripts/check-ci-inputs.py `test_unrelated_docs_and_native_only_changes_do_not_compile_rust`	R（已在前轮新增） 无变更、文档和仅平台源不无故触发Rust
+逐声明复用说明	scripts/check-ci-inputs.py `test_cli_keeps_deleted_source_of_a_rename_and_appends_output`	R（已在前轮新增） 真实Git重命名仍识别旧Rust源删除，CLI按GITHUB_OUTPUT追加

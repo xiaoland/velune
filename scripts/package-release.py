@@ -21,15 +21,8 @@ from pathlib import PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+from release_assets import artifact_name, sha256  # noqa: E402
 from version import read_build_number, read_version  # noqa: E402
-
-
-def sha256(path: Path) -> str:
-    value = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            value.update(block)
-    return value.hexdigest()
 
 
 def digest(path: Path, algorithm: str) -> str:
@@ -247,14 +240,12 @@ def package(args: argparse.Namespace) -> Path:
         if not source.is_file() or source.suffixes[-2:] != [".tar", ".gz"]:
             raise ValueError("source input must be the verified .tar.gz bundle")
         covered_platforms = source_platforms(source, args.tag, args.commit)
-        suffix = "source.tar.gz"
         signing = "source archive; Cargo.lock Rust sources and RelayKit Go module sources are vendored"
     elif args.kind == "macos":
         if args.arch not in ("arm64", "x86_64") or not source.is_dir() or source.suffix != ".app":
             raise ValueError("macOS input must be a .app bundle for arm64 or x86_64")
         validate_macos_bundle(source, version, version_core, build_number, args.commit, args.arch)
         binary_version = version
-        suffix = f"macOS-{args.arch}.zip"
         signing = "ad-hoc; not notarized"
     elif args.kind == "windows":
         if not args.velopack_dir:
@@ -282,7 +273,6 @@ def package(args: argparse.Namespace) -> Path:
                 raise ValueError(f"Velopack output is missing or empty: {required.name}")
         validate_velopack_feed(feed_source, package_source, version)
         verified_package_payloads = validate_velopack_package(package_source, source, version)
-        suffix = "windows-x64-setup.exe"
         signing = "unsigned; no Authenticode signature"
     elif args.kind == "android":
         if args.arch != "arm64" or not source.is_file() or source.suffix.lower() != ".apk":
@@ -291,11 +281,9 @@ def package(args: argparse.Namespace) -> Path:
             raise ValueError("Android release requires the verified signing certificate SHA-256")
         validate_android_apk(source, version, build_number)
         binary_version = version
-        suffix = "android-arm64.apk"
         signing = "APK v1/v2/v3 signature; certificate SHA-256 " + args.certificate_sha256
 
-    prefix = "velune" if args.kind == "source" else "Velune"
-    name = f"Velune-{args.channel}-Setup.exe" if args.kind == "windows" else f"{prefix}-{args.tag}-{suffix}"
+    name = setup_name if args.kind == "windows" else artifact_name(args.kind, args.arch, args.tag)
     artifact = output_dir / name
     if args.kind == "macos":
         subprocess.run(

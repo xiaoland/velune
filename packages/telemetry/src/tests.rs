@@ -157,11 +157,22 @@ fn delayed_native_work_cannot_reactivate_a_shutdown_owner() {
 fn future_storage_is_never_overwritten() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("telemetry/config.json");
-    config::write(&path, &serde_json::json!({"version": 99})).unwrap();
+    let mut future = Stored::empty().unwrap();
+    future.profile = Some(profile());
+    config::write(&path, &future).unwrap();
+    let current = open_result(dir.path()).unwrap();
+    assert!(current.snapshot().unwrap().configuration_available);
+    current.shutdown().unwrap();
+    drop(current);
+    future.version = 99;
+    config::write(&path, &future).unwrap();
     let before = std::fs::read(&path).unwrap();
     let owner = open_result(dir.path()).unwrap();
     assert!(!owner.snapshot().unwrap().configuration_available);
-    assert!(owner.prepare(0, TelemetryPreference::Off, None).is_err());
+    assert!(matches!(
+        owner.prepare(0, TelemetryPreference::Off, None),
+        Err(Error::StorageFormat)
+    ));
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
 fn open_result(path: &Path) -> Result<Arc<ClientTelemetry>> {

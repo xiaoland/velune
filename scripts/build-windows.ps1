@@ -82,11 +82,7 @@ Invoke-BuildSupport copy "$native\velune_relaykit.dll" "$app\velune_relaykit.dll
 
 $resources = "$app\resources"
 Invoke-BuildSupport copy LICENSE "$resources\ThirdParty\LICENSE"
-$scripts = 'pi_sdk', 'pi_sessions', 'pi_rpc', 'pi_virtual_model', 'pi_transcript', 'pi_background_work', 'pi_subagents', 'pi_auth', 'pi_provider_import', 'huihua_sessions'
-foreach ($script in $scripts) { Invoke-BuildSupport copy "packages\agent-runtime\resources\$script.mjs" "$resources\$script.mjs" }
-if (Test-Path $resources) {
-    Get-ChildItem $resources -Filter '*.mjs' -File | Where-Object { $_.BaseName -notin $scripts } | Remove-Item
-}
+Invoke-BuildSupport stage-runtime-scripts "$resources" --prune
 Invoke-BuildSupport sync "$support\node_modules" "$resources\node_modules" --prune
 Invoke-BuildSupport sync "$support\xurl" "$resources\xurl" --prune --include 'bin/*' --include LICENSE --include REVISION
 Remove-Item "$resources\xurl\.crates.toml", "$resources\xurl\.crates2.json" -ErrorAction SilentlyContinue

@@ -185,5 +185,20 @@ mod tests {
             })
             .collect();
         assert_eq!(results, [("completed", false), ("unfinished", true)]);
+        let completed = context
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .find_map(|block| match block {
+                Block::ToolResult { id, content, .. } if id == "completed" => Some(content),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            completed,
+            &[Block::Text {
+                text: "original output".into(),
+            }]
+        );
     }
 }

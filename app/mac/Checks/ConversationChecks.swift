@@ -2,69 +2,67 @@
 import AppKit
 import VeluneBindings
 
-extension ConversationWindowModel {
-    /// Runs the production group action with synthetic configuration. No
-    /// global input, activation, AX actions or native turn is dispatched.
-    /// Creation opens its own tab: with a conversation shown the tab count
-    /// grows; an unsent tab is retargeted in place instead.
-    func checkGroupCreation(attempt: Int = 0) {
-        guard attempt < 80 else { return groupCreationCheck("FAIL configuration not ready") }
-        let runtimes = application.enabledRuntimeInstances
-        guard runtimes.count >= 2, !focused.store.isLoading,
-              let project = application.conversationProjects.first(where: { $0.primaryFolder != nil }) else {
-            if attempt % 20 == 0 { FileHandle.standardError.write(Data("CHECK group-creation: waiting runtimes=\(runtimes.count) loading=\(focused.store.isLoading) projects=\(application.conversationProjects.map { $0.path })\n".utf8)) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in checkGroupCreation(attempt: attempt + 1) }
-            return
-        }
-        tools.move(.composer, to: .docked(.bottom))
-        if !isSplit { split(.horizontal) }
-        var verifiedNewTab = false
-        if let conversation = conversationTabs.first(where: { !$0.store.isUnsentConversation }) {
-            selectTab(conversation.id)
-            var baseTabs = tabCount
-            createConversation(in: .runtime(runtimeId: runtimes[0].id))
-            guard tabCount == baseTabs + 1, focused !== conversation, focused.store.isUnsentConversation,
-                  !conversation.store.isUnsentConversation, conversation.store.loadedConversationID != nil,
-                  composerContext().nextTurnRuntimeID == runtimes[0].id else {
-                return groupCreationCheck("FAIL group creation did not open a new tab over the conversation")
-            }
-            // An unavailable runtime changes nothing even when a new tab would open.
-            selectTab(conversation.id)
-            baseTabs = tabCount
-            createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
-            guard tabCount == baseTabs, focused === conversation else { return groupCreationCheck("FAIL unavailable runtime opened a tab") }
-            verifiedNewTab = true
-            selectTab(conversationTabs.first { $0.store.isUnsentConversation }!.id)
-        }
-        // The focused tab holds an unsent conversation: retarget it in place.
-        let draft = focused
-        guard draft.store.isUnsentConversation else { return groupCreationCheck("FAIL no unsent tab to retarget") }
-        let input = composer(for: draft)
-        input.restore("GROUP SHARED DRAFT", attachments: [])
-        composerContext(for: draft).selectNextTurnRuntime(runtimes[0].id)
-        let baseTabs = tabCount
-        createConversation(in: .runtime(runtimeId: runtimes[1].id))
-        guard focused === draft, tabCount == baseTabs,
-              composerContext().nextTurnRuntimeID == runtimes[1].id,
-              composer(for: focused) === input, input.submission == "GROUP SHARED DRAFT" else {
-            return groupCreationCheck("FAIL runtime target or shared draft")
-        }
-        createConversation(in: .project(path: project.path))
-        guard focused === draft, tabCount == baseTabs,
-              focused.store.loadedConversationWorkingDirectory == project.primaryFolder,
-              composerContext().nextTurnRuntimeID == (project.nativeRuntimeId ?? runtimes[1].id),
-              composer(for: focused) === input, input.submission == "GROUP SHARED DRAFT" else {
-            return groupCreationCheck("FAIL project primary folder or shared draft")
-        }
-        let before = focused.store.loadedConversationID
-        createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
-        guard focused.store.loadedConversationID == before, tabCount == baseTabs else { return groupCreationCheck("FAIL unavailable runtime fell back") }
-        groupCreationCheck("PASS \(verifiedNewTab ? "new tab over conversations, " : "")in-place retarget of unsent tab, project primary folder, shared input and unavailable runtime; no turn sent")
-    }
-
-    private func groupCreationCheck(_ result: String) {
-        FileHandle.standardError.write(Data("CHECK group-creation: \(result)\n".utf8))
-        DispatchQueue.main.async { NSApp.terminate(nil) }
-    }
+@MainActor func groupCreationCheck() -> Never {
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    let device = DeviceStore(preview: true)
+    let window = ConversationWindowModel(application: device, kind: .workspace)
+    window.split(.horizontal)
+    let source = window.focused
+    source.store.selectConversation(id: "sample-0")
+    let project = ConversationProject(path: "project:synthetic", primaryFolder: "/tmp/group-workspace", nativeRuntimeId: nil,
+        name: "Synthetic", folders: [], worktrees: [], latestActivityUnixMs: nil)
+    let nativeID = "native:multi-folder"
+    var nativeProject = project
+    nativeProject.path = nativeID
+    nativeProject.primaryFolder = "/tmp/native-primary"
+    nativeProject.nativeRuntimeId = "sample-instance"
+    let nativeFolders = ["/tmp/native-primary", "/tmp/native-extra"]
+    let workspace = WorkingDirectoryProject(project: nativeID, name: "Native workspace", canSelectProject: true, directories: nativeFolders)
+    var configuration = ConfigurationSnapshot(conversations: [], conversationGroups: [], conversationProjects: [project, nativeProject],
+        workingDirectoryProjects: ["sample-instance": [workspace]], showsArchived: false, historyFailures: [], gateways: [],
+        runtimeInstances: device.runtimeInstances, runtimeTypes: device.runtimeTypes, modelTemplates: [],
+        conversationBrowserLimits: device.conversationBrowserLimits, outlinePresentation: .popover, linkedConversationOpening: .currentTab,
+        usageDisplay: .used, contextUsageDisplay: .used, conversationBrowserPreferences: ConversationBrowser().preferences,
+        statusLine: [], providerImportTypes: [], protocols: [], selectedRuntimeInstanceId: "sample-instance")
+    device.applyList(configuration)
+    window.tools.move(.composer, to: .docked(.bottom))
+    let originalCount = window.tabCount
+    window.createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
+    precondition(window.focused === source && window.tabCount == originalCount, "不可用运行时不能覆盖当前会话或打开新标签")
+    window.createConversation(in: .runtime(runtimeId: "sample-instance"))
+    let draft = window.focused
+    precondition(draft !== source && source.store.loadedConversationID == "sample-0" && draft.store.isUnsentConversation
+                 && window.tabCount == originalCount + 1 && window.composerContext().nextTurnRuntimeID == "sample-instance")
+    precondition(draft.store.loadedConversationID == draft.store.unsentContextID, "新建草稿与标签必须从第一次打开就使用同一个身份")
+    let input = window.composer(for: draft)
+    let attachment = MacExecutionContext.admitted.stateDirectory.appendingPathComponent("group-draft.txt")
+    try! FileManager.default.createDirectory(at: attachment.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let bytes = Data("synthetic group attachment".utf8)
+    try! bytes.write(to: attachment)
+    defer { try? FileManager.default.removeItem(at: attachment) }
+    input.restore("GROUP SHARED DRAFT", attachments: [attachment])
+    window.createConversation(in: .runtime(runtimeId: "sample-review"))
+    precondition(window.focused === draft && window.composerContext().nextTurnRuntimeID == "sample-review")
+    window.createConversation(in: .project(path: project.path))
+    precondition(draft.store.loadedConversationWorkingDirectory == "/tmp/group-workspace"
+                 && window.composerContext().nextTurnRuntimeID == "sample-review", "项目应使用主目录并保留所选运行时")
+    let id = draft.store.loadedConversationID
+    window.createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
+    precondition(window.focused === draft && window.tabCount == originalCount + 1 && draft.store.loadedConversationID == id
+                 && window.composer(for: draft) === input && input.submission == "GROUP SHARED DRAFT"
+                 && input.attachments == [attachment] && (try? Data(contentsOf: attachment)) == bytes)
+    window.createConversation(in: .project(path: nativeID))
+    let expected = NewConversationProject(key: nativeID, name: "Native workspace", runtimeID: "sample-instance", directories: nativeFolders)
+    precondition(draft.store.unsentConversation?.creationProject == expected && draft.store.loadedConversationWorkingDirectory == "/tmp/native-primary"
+                 && window.composerContext().nextTurnRuntimeID == "sample-instance" && window.composer(for: draft) === input)
+    window.selectTab(source.id)
+    configuration.workingDirectoryProjects = [:]
+    device.applyList(configuration)
+    window.createConversation(in: .project(path: nativeID))
+    precondition(window.focused === source && window.tabCount == originalCount + 1
+                 && device.problems.contains { $0.detail.contains("没有可用的完整工作区") },
+                 "缺少原生项目的完整工作区应说明原因并保留原标签，不能降级到主目录")
+    print("PASS group creation: group actions open or retarget the selected tab, preserve its input and use the project’s primary folder")
+    exit(0)
 }
 #endif

@@ -45,10 +45,8 @@ pub(super) struct Session {
     pub(super) history_cache_weight: Option<(u64, usize, usize)>,
     pub(super) active_state: ActiveState,
     pub(super) native_controls: super::native_control::NativeControls,
-    pub(super) gateway_runner: Option<Runner>,
-    pub(super) execution_runtime_id: Option<String>,
-    /// Immutable launch/provider configuration of the prepared execution.
-    pub(super) execution_configuration: Option<super::execution::ExecutionConfiguration>,
+    /// Captured execution is retained while a worker temporarily owns its adapter.
+    execution: Option<super::execution::SessionExecution>,
     /// A saved edit takes effect when this execution next prepares, never mid-turn.
     pub(super) configuration_changed: bool,
     pub(super) model_record_key: Option<String>,
@@ -63,7 +61,6 @@ pub(super) struct Session {
         Option<velune_agent_runtime::creation::Retained<velune_agent_runtime::native::PendingFork>>,
     /// One new Codex thread's quoted context, consumed during creation.
     pub(super) reference_context: Option<String>,
-    pub(super) gateway_tunnel: Option<velune_agent_runtime::execution::LoopbackTunnel>,
     /// Private execution files of this session's runtime; see `CoreRuntime::lane`.
     pub(super) lane: Option<usize>,
     pub(super) source: Option<live::SourceWatch>,
@@ -98,6 +95,41 @@ pub(super) struct SideChat {
 }
 
 impl Session {
+    pub(super) fn execution(&self) -> Option<&super::execution::SessionExecution> {
+        self.execution.as_ref()
+    }
+
+    pub(super) fn execution_runtime_id(&self) -> Option<&str> {
+        self.execution()
+            .map(|execution| execution.runtime.id.as_str())
+    }
+
+    pub(super) fn gateway(&self) -> Option<&super::execution::GatewayExecution> {
+        self.execution()
+            .and_then(super::execution::SessionExecution::gateway)
+    }
+
+    pub(super) fn install_execution(
+        &mut self,
+        state: ActiveState,
+        execution: super::execution::SessionExecution,
+    ) {
+        self.active_state = state;
+        self.execution = Some(execution);
+        self.configuration_changed = false;
+    }
+
+    pub(super) fn clear_execution(&mut self) {
+        self.execution = None;
+        self.configuration_changed = false;
+    }
+
+    pub(super) fn mark_native_project(&mut self, is_project: bool) {
+        if let Some(execution) = &mut self.execution {
+            execution.native_project |= is_project;
+        }
+    }
+
     /// Keep the unpersisted fork's actual recovery provenance across reconfiguration.
     pub(super) fn refresh_pending_native_fork(&mut self) -> Result<(), RuntimeError> {
         if let ActiveState::Native(native) = &self.active_state {
@@ -169,7 +201,7 @@ impl Session {
 
     /// Editing or removing a source also invalidates a continued conversation's projection.
     pub(super) fn uses_runtime(&self, id: &str) -> bool {
-        self.execution_runtime_id.as_deref() == Some(id)
+        self.execution_runtime_id() == Some(id)
             || self.logical_projection.as_ref().is_some_and(|projection| {
                 projection
                     .link
@@ -389,16 +421,12 @@ impl CoreRuntime {
     /// keeps the configuration it was created with.
     pub(super) fn preserves_connection_configuration(&self) -> bool {
         self.session.requires_live_connection()
-            && self
-                .session
-                .execution_configuration
-                .as_ref()
-                .is_some_and(|saved| {
-                    self.runtime_instance(&saved.runtime.id)
-                        .is_ok_and(|current| {
-                            current.enabled && current.type_id == saved.runtime.type_id
-                        })
-                })
+            && self.session.execution().is_some_and(|saved| {
+                self.runtime_instance(&saved.runtime.id)
+                    .is_ok_and(|current| {
+                        current.enabled && current.type_id == saved.runtime.type_id
+                    })
+            })
     }
 
     /// Address the open session of conversation `id`, if there is one.

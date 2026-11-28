@@ -356,24 +356,6 @@ impl RemoteAccessService {
     pub fn descriptor(&self) -> Result<EndpointDescriptor> {
         self.network()?.descriptor()
     }
-    /// Seal and fully retire the old network before binding its replacement. Failure leaves no old fallback.
-    /// Once queued, the complete transaction survives caller cancellation; the next lifecycle call joins it.
-    pub async fn replace_network(&self, config: EndpointConfig) -> Result<()> {
-        let outcome = self
-            .replace_network_expected(config, None, Vec::new())
-            .await?;
-        if outcome.phase == NetworkApplicationPhase::Applied {
-            Ok(())
-        } else {
-            Err(self
-                .state
-                .network_application
-                .lock()
-                .map_err(|_| RemoteError::Unavailable)?
-                .error
-                .unwrap_or(RemoteError::Unavailable))
-        }
-    }
     pub(crate) async fn replace_network_expected(
         &self,
         config: EndpointConfig,
