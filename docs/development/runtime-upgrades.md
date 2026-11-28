@@ -23,6 +23,14 @@
 | `scripts/check-pi-child-history.py --pi <路径>` | Pi 子任务历史的写出格式 |
 | `scripts/check-pi-projection-snapshot.mjs <路径>` | Pi 会话投影快照 |
 
+Pi 历史改写和取消通知另有三个直接调用 Velune 运行资源的检查。在仓库根目录用目标 Pi 和其支持的 Node 执行。删除与编辑会创建临时会话、操作后用官方 SDK 重新打开，取消检查用本地合成对端观察协议终态。
+
+```sh
+node packages/agent-runtime/tests/scripts/pi_message_deletion.mjs /absolute/path/to/pi
+node packages/agent-runtime/tests/scripts/pi_message_editing.mjs /absolute/path/to/pi
+node packages/agent-runtime/tests/scripts/pi_notification_cancellation.mjs /absolute/path/to/pi
+```
+
 Rust 中需要已安装 CLI 的导入／读取检查使用 `#[ignore]`，默认测试不执行它们。显式启用后必须提供对应的绝对路径；缺条件会失败，不能作为通过记录。例如：
 
 ```sh
