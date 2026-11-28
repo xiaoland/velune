@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::BufRead,
+    rc::Rc,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, uniffi::Record)]
@@ -62,15 +63,19 @@ impl ClientTelemetry {
         // missing its concurrently pruned cleanup would resurrect the problem.
         let _committed = crate::local_log::lock_directory(&directory)?;
         let files = crate::local_log::ordered_logs(&directory)?;
-        let mut problems = BTreeMap::<String, DiagnosticProblem>::new();
+        let mut problems = BTreeMap::<Rc<str>, DiagnosticProblem>::new();
         // Operations already represented, so a failure's twin lines and its UI
         // record never become separate problems.
         let mut operations = HashSet::<String>::new();
         // A background poll can fail the same way thousands of times; repeated
         // backfilled failures stay one open problem at their latest occurrence.
         let mut repeated =
-            HashMap::<(String, String, Option<String>, Option<String>, String), String>::new();
+            HashMap::<(String, String, Option<String>, Option<String>, String), Rc<str>>::new();
+        // Every member of a replayed group can be named by cleanup, including
+        // a previously displayed ID or the first member used by older releases.
+        let mut backfill_aliases = HashMap::<u128, Rc<str>>::new();
         for file in files {
+            let name = file.file_name().unwrap_or_default().to_string_lossy();
             let input = std::fs::File::open(&file)?;
             let mut input = std::io::BufReader::new(input);
             let mut index = 0;
@@ -106,7 +111,7 @@ impl ClientTelemetry {
                                 problems.retain(|_, p| p.operation_id.as_ref() != Some(operation));
                                 operations.insert(operation.clone());
                             }
-                            problems.insert(problem.id.clone(), problem);
+                            problems.insert(Rc::from(problem.id.as_str()), problem);
                         }
                         Some(event @ ("problems_resolved" | "problems_dismissed")) => {
                             let Some(ids) = entry.fields.get("ids") else {
@@ -117,9 +122,18 @@ impl ClientTelemetry {
                             };
                             for id in ids {
                                 let id = id.to_ascii_uppercase();
+                                let key = if problems.contains_key(id.as_str()) {
+                                    id.as_str()
+                                } else if let Some(origin) =
+                                    parse_backfill_id(&id).and_then(|id| backfill_aliases.get(&id))
+                                {
+                                    origin.as_ref()
+                                } else {
+                                    continue;
+                                };
                                 if event == "problems_dismissed" {
-                                    problems.remove(&id);
-                                } else if let Some(problem) = problems.get_mut(&id) {
+                                    problems.remove(key);
+                                } else if let Some(problem) = problems.get_mut(key) {
                                     problem.resolved_at_unix_ms = Some(entry.timestamp_unix_ms);
                                 }
                             }
@@ -185,35 +199,23 @@ impl ClientTelemetry {
                     field("phase"),
                     detail.clone(),
                 );
-                if let Some(open) = repeated
-                    .get(&repeat)
-                    .and_then(|id| problems.get_mut(id))
-                    .filter(|p| p.resolved_at_unix_ms.is_none())
+                let occurrence_id = backfill_id(&name, line_index);
+                if let Some(origin) = repeated.get(&repeat)
+                    && let Some(open) = problems
+                        .get_mut(origin)
+                        .filter(|problem| problem.resolved_at_unix_ms.is_none())
                 {
+                    // Use the last occurrence in journal order. Prefix retention
+                    // cannot remove its ID while retaining an earlier member.
+                    open.id = format_backfill_id(occurrence_id);
                     open.occurred_at_unix_ms = open.occurred_at_unix_ms.max(occurred);
+                    backfill_aliases.insert(occurrence_id, Rc::clone(origin));
                     continue;
                 }
-                let key = format!(
-                    "{}:{line_index}",
-                    file.file_name().unwrap_or_default().to_string_lossy()
-                );
-                let first = key.bytes().fold(0xcbf29ce484222325u64, |h, b| {
-                    (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
-                });
-                let second = key.bytes().rev().fold(0xcbf29ce484222325u64, |h, b| {
-                    (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
-                });
-                let hex = format!("{first:016X}{second:016X}");
-                let id = format!(
-                    "{}-{}-{}-{}-{}",
-                    &hex[..8],
-                    &hex[8..12],
-                    &hex[12..16],
-                    &hex[16..20],
-                    &hex[20..]
-                );
+                let id = format_backfill_id(occurrence_id);
+                let origin = Rc::<str>::from(id.as_str());
                 let problem = DiagnosticProblem {
-                    id: id.clone(),
+                    id,
                     occurred_at_unix_ms: occurred,
                     source,
                     detail,
@@ -231,8 +233,8 @@ impl ClientTelemetry {
                     },
                     resolved_at_unix_ms: None,
                 };
-                repeated.insert(repeat, id.clone());
-                problems.insert(id, problem);
+                repeated.insert(repeat, Rc::clone(&origin));
+                problems.insert(origin, problem);
             }
         }
         if let Some(health) = self
@@ -263,6 +265,40 @@ impl ClientTelemetry {
         values.sort_by_key(|p| p.occurred_at_unix_ms);
         Ok(values)
     }
+}
+
+// Keep the original filename/line encoding so existing cleanup IDs still replay.
+fn backfill_id(name: &str, line_index: usize) -> u128 {
+    let key = format!("{name}:{line_index}");
+    let hash = |h: u64, b: u8| (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+    let first = key.bytes().fold(0xcbf29ce484222325u64, hash);
+    let second = key.bytes().rev().fold(0xcbf29ce484222325u64, hash);
+    (u128::from(first) << 64) | u128::from(second)
+}
+
+fn format_backfill_id(id: u128) -> String {
+    let hex = format!("{id:032X}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+fn parse_backfill_id(id: &str) -> Option<u128> {
+    let mut parts = id.split('-');
+    let mut value = 0;
+    for width in [8, 4, 4, 4, 12] {
+        let part = parts.next()?;
+        if part.len() != width || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        value = (value << (width * 4)) | u128::from_str_radix(part, 16).ok()?;
+    }
+    parts.next().is_none().then_some(value)
 }
 
 fn now() -> i64 {
@@ -356,10 +392,15 @@ mod tests {
                     "fields":{"velune.outcome":"failure","error.type":"closed"}}),
             )
         };
-        let early = (0..30)
-            .map(|n| failure(n, &format!("early-{n}")))
-            .collect::<String>();
-        std::fs::write(logs.join("velune.2026-01-01.jsonl"), early).unwrap();
+        let oldest = logs.join("velune.2026-01-01.jsonl");
+        let retained = logs.join("velune.2026-01-02.jsonl");
+        let failures = |range: std::ops::Range<u32>| {
+            range
+                .map(|n| failure(n, &format!("early-{n}")))
+                .collect::<String>()
+        };
+        std::fs::write(&oldest, failures(0..15)).unwrap();
+        std::fs::write(retained, failures(15..30)).unwrap();
         let open = || {
             ClientTelemetry::open(
                 home.path(),
@@ -374,25 +415,93 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].detail, "synthetic closed");
         assert_eq!(problems[0].occurred_at_unix_ms, 1_767_225_629_000);
+        let dismissed = problems[0].id.clone();
         first
-            .dismiss_problems("test", vec![problems[0].id.clone()])
+            .dismiss_problems("test", vec![dismissed.clone()])
             .unwrap();
+        assert!(first.problems("test").unwrap().is_empty());
         first.shutdown().unwrap();
         drop(first);
 
-        // A recurrence appended after the dismissal is a new problem; the
-        // dismissed history does not come back.
+        // Model prefix retention while the later occurrences and dismissal
+        // still exist. A recurrence is ordered by append, even with clock skew.
+        std::fs::remove_file(oldest).unwrap();
         let second = open();
+        assert!(second.problems("test").unwrap().is_empty());
+        assert_eq!(second.problems("other").unwrap()[0].id, dismissed);
         second
             .writer
             .as_ref()
             .unwrap()
-            .persist(failure(59, "late").into_bytes())
+            .persist(failure(5, "late").into_bytes())
             .unwrap();
         let problems = second.problems("test").unwrap();
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].operation_id.as_deref(), Some("late"));
+        assert_ne!(problems[0].id, dismissed);
         second.shutdown().unwrap();
+    }
+
+    #[test]
+    fn legacy_cleanup_does_not_dismiss_a_later_backfilled_problem() {
+        let home = tempfile::tempdir().unwrap();
+        let logs = home.path().join("logs");
+        std::fs::create_dir(&logs).unwrap();
+        let original = logs.join("velune.2026-01-01.jsonl");
+        let failure =
+            json!({"level":"ERROR","target":"velune_synthetic","fields":{"detail":"repeat"}});
+        // UUID generated by the old projection for line zero of the original file.
+        let old_id = "D1110B32-A7B0-B3C8-FC2D-A55FDF385FE0";
+        let resolve = json!({"timestamp_unix_ms":2,"target":"velune_problems","fields":{
+            "scope":"test","event":"problems_resolved","ids":[old_id]}});
+        std::fs::write(&original, format!("{failure}\n{failure}\n{resolve}\n")).unwrap();
+        std::fs::write(logs.join("velune.2026-01-02.jsonl"), format!("{failure}\n")).unwrap();
+        let client = ClientTelemetry::open(
+            home.path(),
+            TelemetryIdentity::new("test", "0.1").unwrap(),
+            true,
+            None,
+        )
+        .unwrap();
+        let problems = client.problems("test").unwrap();
+        assert_eq!(problems.len(), 2);
+        let resolved = problems
+            .iter()
+            .find(|problem| problem.resolved_at_unix_ms == Some(2))
+            .unwrap();
+        let recurring = problems
+            .iter()
+            .find(|problem| problem.resolved_at_unix_ms.is_none())
+            .unwrap();
+
+        // Even an explicit UI record with the same fields keeps its own UUID.
+        let explicit_id = "00000000-0000-4000-8000-000000000001";
+        client
+            .record_problem(
+                "test",
+                DiagnosticProblem {
+                    id: explicit_id.into(),
+                    ..recurring.clone()
+                },
+            )
+            .unwrap();
+        client
+            .dismiss_problems("test", vec![resolved.id.clone()])
+            .unwrap();
+        let check_survivors = || {
+            let problems = client.problems("test").unwrap();
+            assert_eq!(problems.len(), 2);
+            assert!(problems.iter().all(|p| p.resolved_at_unix_ms.is_none()));
+            assert!(problems.iter().any(|p| p.id == recurring.id));
+            assert!(problems.iter().any(|p| p.id == explicit_id));
+        };
+        check_survivors();
+        {
+            let _lock = crate::local_log::lock_directory(&logs).unwrap();
+            std::fs::remove_file(original).unwrap();
+        }
+        check_survivors();
+        client.shutdown().unwrap();
     }
 
     fn synthetic_problem(id: &str) -> DiagnosticProblem {
