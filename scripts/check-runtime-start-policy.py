@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """运行时新建策略的合成迁移与提交中断检查。"""
+from contextlib import redirect_stderr
 import importlib.util
+from io import StringIO
 import json
 from pathlib import Path
 import subprocess
@@ -62,9 +64,10 @@ class RuntimePolicyMigrationTests(unittest.TestCase):
                 raise OSError("synthetic interruption after instance commit")
             atomic_json(path, value)
         with patch.object(migration, "atomic_json", side_effect=fail_after_config):
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(OSError, "synthetic interruption after instance commit"):
                 self.run_migration()
         backups = {path: path.read_bytes() for path in self.home.glob("before-runtime-start-policy-*/*.json")}
+        self.assertEqual({path.name: data for path, data in backups.items()}, original)
         self.assertEqual(self.read("composer-choices.json")["schemaVersion"], 1)
         self.assertEqual(json.loads(self.read("generic-config.json")["runtimeInstances"][0]["settings"]["newConversation"]), self.policy)
         self.run_migration()
@@ -79,8 +82,11 @@ class RuntimePolicyMigrationTests(unittest.TestCase):
         config["runtimeInstances"][0]["settings"]["newConversation"] = '{"kind":"lastChosen"}'
         self.write("generic-config.json", config)
         before = {path: path.read_bytes() for path in self.home.glob("*.json")}
-        with self.assertRaises(SystemExit):
+        errors = StringIO()
+        with redirect_stderr(errors), self.assertRaises(SystemExit) as rejected:
             self.run_migration()
+        self.assertEqual(rejected.exception.code, 2)
+        self.assertIn("实例已有不同的新会话策略", errors.getvalue())
         self.assertEqual(before, {path: path.read_bytes() for path in self.home.glob("*.json")})
         self.assertFalse(list(self.home.glob("before-runtime-start-policy-*")))
 
