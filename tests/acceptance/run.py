@@ -96,6 +96,29 @@ def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
     return 0 if result["status"] != "failed" else 1
 
 
+def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
+    try:
+        result = json.loads(path.read_text())
+        if (not isinstance(result, dict) or result.get("case") != name
+                or result.get("status") not in ("passed", "skipped", "failed")
+                or not isinstance(result.get("checks"), dict)
+                or not isinstance(result.get("facts"), dict)):
+            raise ValueError("expected a case result with a known status and check records")
+        checks = result["checks"]
+        if result["status"] == "passed" and (not checks or any(value is not True for value in checks.values())):
+            raise ValueError("passed case requires recorded successful checks")
+    except FileNotFoundError:
+        result = {"case": name, "status": "failed", "error": f"worker produced no result; see {log.name}"}
+    except (OSError, ValueError) as error:
+        result = {"case": name, "status": "failed", "error": f"invalid worker result: {error}; see {log.name}"}
+    if returncode != 0:
+        result["status"] = "failed"
+        detail = f"worker exited with {returncode}; see {log.name}"
+        result["error"] = f"{result['error']}; {detail}" if result.get("error") else detail
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 def main() -> int:
     if len(sys.argv) == 6 and sys.argv[1] == "_worker":
         return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]))
@@ -146,17 +169,16 @@ def main() -> int:
         root = Path(tempfile.mkdtemp(prefix=f"velune-acceptance-{name}-")).resolve()
         try:
             with log_path.open("w") as log:
-                subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
-                                json.dumps(config), str(result_path), str(root)],
-                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
-                               env={"PATH": os.environ.get("PATH", "")})
+                done = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
+                                       json.dumps(config), str(result_path), str(root)],
+                                      cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
+                                      env={"PATH": os.environ.get("PATH", "")})
         finally:
             shutil.rmtree(root)
-        result = json.loads(result_path.read_text()) if result_path.exists() else {
-            "case": name, "status": "failed", "error": f"worker produced no result; see {log_path.name}"}
+        result = worker_result(name, result_path, done.returncode, log_path)
         manifest["cases"].append({key: value for key, value in result.items() if key != "traceback"})
         mark = {"passed": "PASS", "skipped": "SKIP", "failed": "FAIL"}[result["status"]]
-        print(f"{mark} {name}" + (f" — {result.get('reason') or result.get('error')}" if mark != "PASS" else
+        print(f"{mark} {name}" + (f" — {result.get('reason') if mark == 'SKIP' else result.get('error')}" if mark != "PASS" else
                                   f" ({len(result.get('checks', {}))} checks, {result.get('seconds')}s)"))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     print(f"manifest: {out / 'manifest.json'}")
