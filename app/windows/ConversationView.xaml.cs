@@ -452,14 +452,15 @@ public sealed partial class ConversationView : UserControl
         {
             CwdMenu.Items.Add(Item("使用运行时默认目录", () => SetCwd("")));
         }
-        var projects = Model.Configuration.Projects.Take(5).ToList();
-        if (projects.Count > 0)
+        if (Model.Configuration.WorkingDirectoryProjects.TryGetValue(Model.Next, out var projects))
         {
+            var directories = projects.SelectMany(project => project.Directories).Distinct(StringComparer.Ordinal).ToArray();
+            if (directories.Length == 0) return;
             CwdMenu.Items.Add(new MenuFlyoutSeparator());
-            CwdMenu.Items.Add(Heading("最近使用"));
-            foreach (var project in projects)
+            CwdMenu.Items.Add(Heading("项目目录"));
+            foreach (var path in directories)
             {
-                CwdMenu.Items.Add(Choice("cwd", project, project == Model.Cwd, () => SetCwd(project)));
+                CwdMenu.Items.Add(Choice("cwd", path, path == Model.Cwd, () => SetCwd(path)));
             }
         }
     }

@@ -5,8 +5,8 @@ sealed record Configuration(
     // The enabled runtime instances.
     IReadOnlyList<RuntimeInstance> Runtimes,
     IReadOnlyList<RuntimeTypeDescriptor> Types,
-    // The working directories of the latest conversations, newest first.
-    IReadOnlyList<string> Projects)
+    // The execution device's complete directory choices for each runtime.
+    Dictionary<string, WorkingDirectoryProject[]> WorkingDirectoryProjects)
 {
     public static readonly Configuration Empty = new([], [], []);
 
@@ -52,14 +52,6 @@ sealed class Listing
 
     public static Listing From(ConfigurationSnapshot list, ActiveConversation[] active)
     {
-        var projects = new List<string>();
-        foreach (var listed in list.Conversations.OrderByDescending(listed => listed.Conversation.UpdatedAtUnixMs ?? 0))
-        {
-            if (listed.Project is { } key && list.ConversationProjects.FirstOrDefault(project => project.Path == key)?.PrimaryFolder is { } project && !projects.Contains(project))
-            {
-                projects.Add(project);
-            }
-        }
         return new Listing
         {
             Conversations = [.. list.Conversations.Where(listed => listed.Archived == list.ShowsArchived && listed.Conversation.ParentConversationId == null)],
@@ -67,7 +59,7 @@ sealed class Listing
             ShowsArchived = list.ShowsArchived,
             Groups = list.ConversationGroups,
             Preferences = list.ConversationBrowserPreferences,
-            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects)
+            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, list.WorkingDirectoryProjects)
             {
                 Outline = list.OutlinePresentation,
                 LinkedOpening = list.LinkedConversationOpening,

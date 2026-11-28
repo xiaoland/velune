@@ -16,6 +16,7 @@ import app.velune.bindings.application.ComposerAttachment
 import app.velune.bindings.application.DeliveredBlock
 import app.velune.bindings.application.DeliveredMessage
 import app.velune.bindings.application.MessagePayload
+import app.velune.bindings.application.NextTurn
 import app.velune.bindings.application.TurnChoice
 import app.velune.bindings.conversation.BackgroundTaskStatus
 import app.velune.bindings.conversation.EditPlacement
@@ -46,25 +47,34 @@ internal class PreviewConversation(
     private fun withRuntime(current: ConversationState, runtime: String): ConversationState {
         val catalog = PreviewFixtures.runtimeOptions(runtime)
         val choice = choices[peer to runtime] ?: TurnChoice()
+        val runtimes = PreviewFixtures.device(peer).second.runtimes
         val sameRuntime = current.conversation != null && current.contextRuntimeId == runtime
         val model = catalog.models.firstOrNull { it.selection == lastTurnChoice.model && sameRuntime } ?: catalog.models.first()
         val efforts = catalog.models.firstOrNull { it.selection == choice.model }?.reasoningEfforts ?: model.reasoningEfforts
+        val explicitChoice = choice.copy(effort = choice.effort?.takeIf { it in efforts })
         val currentEfforts = model.reasoningEfforts
         val currentPermission = catalog.permissions.firstOrNull { it.id == lastTurnChoice.permissionMode } ?: catalog.permissions.firstOrNull()
         return current.copy(
-            canSwitch = current.conversation != null && PreviewFixtures.device(peer).second.runtimes.size > 1,
+            canSwitch = current.conversation != null && runtimes.size > 1,
             selectedRuntimeId = runtime,
-            models = catalog.models,
-            selection = choice.model,
-            hasCurrent = sameRuntime,
-            currentModelName = model.name.takeIf { sameRuntime },
-            efforts = efforts,
-            effort = choice.effort?.takeIf { it in efforts },
-            currentEffort = (lastTurnChoice.effort?.takeIf { it in currentEfforts }
-                ?: "medium".takeIf { it in currentEfforts } ?: currentEfforts.firstOrNull()).takeIf { sameRuntime },
-            permissionModes = catalog.permissions,
-            permissionMode = choice.permissionMode,
-            currentPermissionMode = currentPermission.takeIf { sameRuntime },
+            explicitTurnChoice = explicitChoice,
+            nextTurn = NextTurn(
+                runtimeId = runtime,
+                runtimeType = runtimes.firstOrNull { it.id == runtime }?.typeId,
+                choice = explicitChoice,
+                hasCurrent = sameRuntime,
+                models = catalog.models,
+                model = choice.model ?: model.selection.takeIf { sameRuntime },
+                modelName = model.name.takeIf { sameRuntime },
+                chosenModelUnavailable = false,
+                efforts = efforts,
+                effort = explicitChoice.effort,
+                currentEffort = (lastTurnChoice.effort?.takeIf { it in currentEfforts }
+                    ?: "medium".takeIf { it in currentEfforts } ?: currentEfforts.firstOrNull()).takeIf { sameRuntime },
+                permissionModes = catalog.permissions,
+                permissionMode = catalog.permissions.firstOrNull { it.id == choice.permissionMode },
+                currentPermissionMode = currentPermission.takeIf { sameRuntime },
+            ),
         )
     }
 
@@ -87,7 +97,7 @@ internal class PreviewConversation(
         deviceAttachments[peer] = state.attachments
         peer = next
         val runtime = listing.runtimes.first().id
-        target = ConversationTarget.New(runtime, listing.projects.firstOrNull())
+        target = ConversationTarget.New(runtime, listing.suggestedWorkingDirectory(runtime))
         state = withRuntime(state.copy(attachments = deviceAttachments[next].orEmpty()), runtime)
     }
 
@@ -180,7 +190,7 @@ internal class PreviewConversation(
         val summary = state.conversation ?: PreviewFixtures.summary(
             id, text.lineSequence().firstOrNull()?.take(40)?.ifBlank { null } ?: "附件会话", runtime, target?.cwd,
         )
-        lastTurnChoice = TurnChoice(state.selection, state.effort, state.permissionMode)
+        lastTurnChoice = state.explicitTurnChoice ?: TurnChoice()
         target = null
         state = withRuntime(state.copy(
             conversation = summary,
@@ -373,10 +383,11 @@ internal class PreviewConversation(
         fun newSession(preferredPeer: String?): PreviewConversation {
             val available = PreviewFixtures.listings.filter { it.canStartConversation() }
             val (device, listing) = available.firstOrNull { it.first.peerId == preferredPeer } ?: available.first()
+            val runtime = listing.runtimes.first().id
             return PreviewConversation(
                 device.peerId,
                 PreviewFixtures.newConversation(),
-                ConversationTarget.New(listing.runtimes.first().id, listing.projects.firstOrNull()),
+                ConversationTarget.New(runtime, listing.suggestedWorkingDirectory(runtime)),
             )
         }
     }

@@ -5,6 +5,7 @@ import app.velune.bindings.application.ConfigurationSnapshot
 import app.velune.bindings.remote.PathKind
 import app.velune.bindings.application.ListedConversation
 import app.velune.bindings.application.RuntimeInstance
+import app.velune.bindings.application.WorkingDirectoryProject
 import app.velune.bindings.VeluneApplication
 import app.velune.bindings.remote.ContactConfirmation
 import app.velune.bindings.remote.RemoteServiceSnapshot
@@ -30,17 +31,21 @@ data class DeviceListing(
     val runtimes: List<RuntimeInstance> = emptyList(),
     /** Every runtime instance by ID, disabled ones included, as the list labels them. */
     val runtimeLabels: Map<String, RuntimeLabel> = emptyMap(),
-    /** Display names of projects that have one, by path. */
+    /** Conversation browser project names by path. */
     val projectNames: Map<String, String> = emptyMap(),
-    /** Known project folders, ordered by recent project activity. */
-    val projects: List<String> = emptyList(),
+    val workingDirectoryProjects: Map<String, List<WorkingDirectoryProject>> = emptyMap(),
     /** Running or waiting conversations by ID. */
     val active: Map<String, ActiveConversation> = emptyMap(),
     val loaded: Boolean = false,
     val failure: String? = null,
     /** The path in use, such as “中继 320 ms”: a relayed connection explains a slow device. */
     val path: String? = null,
-)
+) {
+    internal fun workingProjects(runtimeId: String) = workingDirectoryProjects[runtimeId].orEmpty()
+
+    internal fun suggestedWorkingDirectory(runtimeId: String): String? =
+        workingProjects(runtimeId).firstNotNullOfOrNull { it.directories.firstOrNull() }
+}
 
 internal fun RemoteServiceSnapshot.conversationContacts() =
     contacts.filter { it.controlAuthorized && it.confirmation is ContactConfirmation.Confirmed }
@@ -118,17 +123,17 @@ class DeviceWorkspace(private val hub: DeviceHub, val peer: String, private val 
     }
 
     private fun listing(list: ConfigurationSnapshot, active: Map<String, ActiveConversation>): DeviceListing {
-        val projects = list.conversationProjects.sortedByDescending { it.latestActivityUnixMs ?: Long.MIN_VALUE }
+        val browserProjects = list.conversationProjects.sortedByDescending { it.latestActivityUnixMs ?: Long.MIN_VALUE }
         return DeviceListing(
             conversations = list.conversations.filter { !it.archived && it.conversation.parentConversationId == null },
             runtimes = list.runtimeInstances.filter { it.enabled },
             runtimeLabels = list.runtimeTypes.associateBy { it.id }.let { types ->
                 list.runtimeInstances.associate { it.id to RuntimeLabel(it.name, types[it.typeId]?.familyId) }
             },
-            projectNames = projects.flatMap { project ->
+            projectNames = browserProjects.flatMap { project ->
                 project.name?.let { name -> (listOfNotNull(project.path, project.primaryFolder) + project.folders).map { it to name } }.orEmpty()
             }.toMap(),
-            projects = projects.flatMap { listOfNotNull(it.primaryFolder) + it.folders }.distinct(),
+            workingDirectoryProjects = list.workingDirectoryProjects,
             active = active,
             loaded = true,
         )

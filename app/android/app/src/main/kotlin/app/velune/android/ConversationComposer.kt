@@ -94,16 +94,22 @@ internal fun ConversationComposer(
     val hasInput = text.isNotBlank() || state.attachments.isNotEmpty()
     val canSubmit = state.composerReady && state.composerFailure == null && !state.busy &&
         !state.uploadingAttachment && !state.switchingRuntime && hasInput
+    val next = state.nextTurn
+    val choice = state.explicitTurnChoice
+    val models = next?.models.orEmpty()
+    val efforts = next?.efforts.orEmpty()
+    val permissionModes = next?.permissionModes.orEmpty()
+    val hasCurrent = next?.hasCurrent == true
     val showRuntimeOptions = state.canSwitch && (runtimes.size >= 2 || runtimes.any { it.id != state.selectedRuntimeId })
-    val hasExecutionConfig = showRuntimeOptions || state.permissionModes.isNotEmpty() || state.efforts.isNotEmpty()
+    val hasExecutionConfig = showRuntimeOptions || permissionModes.isNotEmpty() || efforts.isNotEmpty()
     val canChooseModel = !state.busy && !state.switchingRuntime &&
         (state.composerReady || state.composerFailure != null)
-    val defaultModelLabel = if (state.hasCurrent) {
-        state.currentModelName?.let { "沿用当前（$it）" } ?: "沿用当前"
+    val defaultModelLabel = if (hasCurrent) {
+        next?.modelName?.let { "沿用当前（$it）" } ?: "沿用当前"
     } else "运行时默认"
-    val shownModel = state.models.firstOrNull { it.selection == state.selection }?.name ?: state.currentModelName ?: "默认模型"
-    val activePermission = state.permissionModes.firstOrNull { it.id == state.permissionMode } ?: state.currentPermissionMode
-    val activeEffort = state.effort ?: state.currentEffort
+    val shownModel = models.firstOrNull { it.selection == choice?.model }?.name ?: next?.modelName ?: "默认模型"
+    val activePermission = permissionModes.firstOrNull { it.id == choice?.permissionMode } ?: next?.currentPermissionMode
+    val activeEffort = choice?.effort ?: next?.currentEffort
     val selectedRuntime = runtimeLabels[state.selectedRuntimeId]?.name
     val configSummary = listOfNotNull(selectedRuntime.takeIf { showRuntimeOptions && !state.usesCurrentRuntime }, activePermission?.label, activeEffort)
         .joinToString(" · ").ifEmpty { "权限与推理" }
@@ -161,7 +167,7 @@ internal fun ConversationComposer(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        if (state.models.isNotEmpty()) {
+                        if (models.isNotEmpty()) {
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                                 Row(
                                     Modifier.clickable(enabled = canChooseModel) { choosingModel = true }.padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
@@ -213,9 +219,9 @@ internal fun ConversationComposer(
     if (choosingModel) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { choosingModel = false }) {
         Text("下一轮的模型", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         LazyColumn(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-            item { ModelOption(defaultModelLabel, state.selection == null) { choosingModel = false; actions.select(null) } }
-            items(state.models, key = { it.name + "/" + it.selection.hashCode() }) { option ->
-                ModelOption(option.name, option.selection == state.selection) { choosingModel = false; actions.select(option.selection) }
+            item { ModelOption(defaultModelLabel, choice?.model == null) { choosingModel = false; actions.select(null) } }
+            items(models, key = { it.name + "/" + it.selection.hashCode() }) { option ->
+                ModelOption(option.name, option.selection == choice?.model) { choosingModel = false; actions.select(option.selection) }
             }
         }
     }
@@ -248,29 +254,29 @@ internal fun ConversationComposer(
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp * spacing),
                 )
             }
-            if (state.efforts.isNotEmpty()) {
-                val defaultEffort = if (state.hasCurrent) {
-                    state.currentEffort?.let { "沿用当前（$it）" } ?: "沿用当前"
+            if (efforts.isNotEmpty()) {
+                val defaultEffort = if (hasCurrent) {
+                    next?.currentEffort?.let { "沿用当前（$it）" } ?: "沿用当前"
                 } else "运行时默认"
                 Text("推理强度", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, top = 8.dp, bottom = 8.dp))
                 FlowRow(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = state.effort == null, enabled = canChooseModel, onClick = { actions.selectEffort(null) }, label = { Text(defaultEffort) })
-                    state.efforts.forEach { level ->
-                        FilterChip(selected = state.effort == level, enabled = canChooseModel, onClick = { actions.selectEffort(level) }, label = { Text(level) })
+                    FilterChip(selected = choice?.effort == null, enabled = canChooseModel, onClick = { actions.selectEffort(null) }, label = { Text(defaultEffort) })
+                    efforts.forEach { level ->
+                        FilterChip(selected = choice?.effort == level, enabled = canChooseModel, onClick = { actions.selectEffort(level) }, label = { Text(level) })
                     }
                 }
             }
-            if (state.permissionModes.isNotEmpty()) {
-                val defaultPermission = if (state.hasCurrent) {
-                    state.currentPermissionMode?.label?.let { "沿用当前（$it）" } ?: "沿用当前"
+            if (permissionModes.isNotEmpty()) {
+                val defaultPermission = if (hasCurrent) {
+                    next?.currentPermissionMode?.label?.let { "沿用当前（$it）" } ?: "沿用当前"
                 } else "运行时默认"
                 Text("权限模式", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 4.dp))
-                PermissionOption(defaultPermission, null, state.permissionMode == null, canChooseModel) {
+                PermissionOption(defaultPermission, null, choice?.permissionMode == null, canChooseModel) {
                     actions.selectPermissionMode(null)
                     choosingConfig = false
                 }
-                state.permissionModes.forEach { mode ->
-                    PermissionOption(mode.label, mode.detail.takeIf { it.isNotBlank() }, state.permissionMode == mode.id, canChooseModel) {
+                permissionModes.forEach { mode ->
+                    PermissionOption(mode.label, mode.detail.takeIf { it.isNotBlank() }, choice?.permissionMode == mode.id, canChooseModel) {
                         actions.selectPermissionMode(mode.id)
                         choosingConfig = false
                     }
