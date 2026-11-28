@@ -25,6 +25,12 @@ struct EditingChoice {
     native: bool,
 }
 
+struct TranslatedBranchContext {
+    context: Retained<velune_agent_runtime::import::Context>,
+    displayed: Retained<Vec<Message>>,
+    boundary: usize,
+}
+
 /// Only the last projected token is retained. Commands always recompute the digest.
 pub(super) struct RevisionCache {
     key: RevisionKey,
@@ -217,6 +223,30 @@ fn segment_message_id(message_id: &str, segment_count: usize) -> Option<(usize, 
     }
     let parsed: usize = index.parse().ok()?;
     (parsed < segment_count).then_some((parsed, id))
+}
+
+fn checked_branch_prefix<'a>(
+    link: &crate::config::ConversationLink,
+    index: usize,
+    messages: &'a [Message],
+) -> Result<&'a [Message], RuntimeError> {
+    let segment = &link.segments[index];
+    let Some(cutoff) = &segment.cutoff else {
+        return Ok(messages);
+    };
+    if let Some(prefix) = super::continuation::verified_cutoff_prefix(cutoff, messages)? {
+        return Ok(prefix);
+    }
+    super::continuation::trace_prefix_mismatch(
+        "conversation_edit_source_conflict",
+        &link.id,
+        index,
+        segment,
+        "sealed",
+        cutoff,
+        messages,
+    );
+    Err(RuntimeError::invalid("会话来源已改变，请重新打开后再试"))
 }
 
 fn pi_entry(message_id: &str) -> Option<&str> {
@@ -875,25 +905,27 @@ impl CoreRuntime {
         else {
             return Default::default();
         };
+        // A steering input remains eligible after its native turn's first
+        // branch point. Find eligible IDs in one pass before visiting turns.
+        let codex_users = (branching == Branching::Codex).then(|| {
+            snapshot
+                .messages
+                .iter()
+                .skip_while(|message| {
+                    message.role != MessageRole::User || message.branch_point.is_none()
+                })
+                .filter(|message| message.role == MessageRole::User)
+                .map(|message| message.id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+        });
         snapshot
             .transcript_turns
             .iter()
             .filter(|turn| !turn.is_running)
             .filter(|turn| {
-                branching != Branching::Codex || {
-                    // A Codex fork resolves the boundary at the turn's own
-                    // start or the nearest one before it; a steered turn
-                    // shares its native turn's point.
-                    let index = snapshot
-                        .messages
-                        .iter()
-                        .position(|message| message.id == turn.user_message_id);
-                    index.is_some_and(|index| {
-                        snapshot.messages[..=index].iter().any(|message| {
-                            message.role == MessageRole::User && message.branch_point.is_some()
-                        })
-                    })
-                }
+                codex_users
+                    .as_ref()
+                    .is_none_or(|users| users.contains(turn.user_message_id.as_str()))
             })
             .map(|turn| turn.user_message_id.clone())
             .collect()
@@ -935,47 +967,30 @@ impl CoreRuntime {
         }
         // The selected completed prefix is independent of later source work.
         // Native preparation below belongs to a new execution, never the source.
-        // A linked tail already contains the runtime's effective imported
-        // context. Fork that native session first, rather than reimporting it.
-        let mut active_source = self.owned_native_snapshot()?;
-        let native = if self.simple_source(conversation_id) {
-            active_source.map(|source| {
-                let id = if self.link_of(conversation_id).is_some() {
-                    message_id.strip_prefix("segment-0:").unwrap_or(message_id)
-                } else {
-                    message_id
-                };
-                (source, id.to_owned())
+        // A linked active tail already contains the effective imported
+        // context. A sealed segment must instead use the checked cutoff,
+        // even if the conversation has since returned to the same runtime.
+        let native_id = if self.simple_source(conversation_id) {
+            Some(if self.link_of(conversation_id).is_some() {
+                message_id.strip_prefix("segment-0:").unwrap_or(message_id)
+            } else {
+                message_id
             })
         } else {
             self.link_of(conversation_id).and_then(|link| {
-                link.segments
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, segment)| {
-                        let id = message_id.strip_prefix(&format!("segment-{index}:"))?;
-                        if segment.runtime_instance_id != current.context_runtime_id
-                            || segment.deleted
-                        {
-                            return None;
-                        }
-                        let source = if index + 1 == link.segments.len() {
-                            active_source.take()
-                        } else {
-                            match self.read_history(&segment.runtime_instance_id, &segment.native_conversation_id) {
-                                Ok(snapshot) => Some(snapshot),
-                                Err(error) => {
-                                    tracing::warn!(target:"velune_application", event="conversation_fork_source_unavailable", detail=%error);
-                                    None
-                                }
-                            }
-                        };
-                        source.map(|source| (source, id.to_owned()))
-                    })
+                let (index, id) = segment_message_id(message_id, link.segments.len())?;
+                let segment = &link.segments[index];
+                (index + 1 == link.segments.len()
+                    && segment.cutoff.is_none()
+                    && !segment.deleted
+                    && segment.runtime_instance_id == current.context_runtime_id)
+                    .then_some(id)
             })
         };
-        if let Some((source, id)) = native {
-            match self.native_fork_message(&source, &id) {
+        if let Some(id) = native_id
+            && let Some(source) = self.owned_native_snapshot()?
+        {
+            match self.native_fork_message(&source, id) {
                 Ok(()) => {
                     self.name_fork(&current)?;
                     return self.snapshot_result();
@@ -1512,36 +1527,7 @@ impl CoreRuntime {
             } else {
                 self.read_segment(segment)?
             };
-            let mut messages = snapshot.messages.clone();
-            if let Some(cutoff) = &segment.cutoff {
-                let count = usize::try_from(cutoff.message_count)
-                    .map_err(|_| RuntimeError::invalid("会话截止位置无效"))?;
-                let Some(prefix) = messages.get(..count) else {
-                    super::continuation::trace_prefix_mismatch(
-                        "conversation_edit_source_conflict",
-                        &link.id,
-                        index,
-                        segment,
-                        "sealed",
-                        cutoff,
-                        &messages,
-                    );
-                    return Err(RuntimeError::invalid("会话来源已改变，请重新打开后再编辑"));
-                };
-                if !super::continuation::prefix_digest_matches(prefix, &cutoff.prefix_digest)? {
-                    super::continuation::trace_prefix_mismatch(
-                        "conversation_edit_source_conflict",
-                        &link.id,
-                        index,
-                        segment,
-                        "sealed",
-                        cutoff,
-                        &messages,
-                    );
-                    return Err(RuntimeError::invalid("会话来源已改变，请重新打开后再编辑"));
-                }
-                messages.truncate(count);
-            }
+            let messages = checked_branch_prefix(&link, index, &snapshot.messages)?;
             if let Some(imported) = &segment.imported
                 && super::continuation::verified_import_prefix(segment, &snapshot.messages)
                     .is_none()
@@ -1564,10 +1550,10 @@ impl CoreRuntime {
                     displayed.push(self.boundary_message(segment, index));
                 }
                 displayed.extend(super::continuation::display_segment(
-                    segment, &messages, index,
+                    segment, messages, index,
                 )?);
             } else {
-                displayed.extend(messages);
+                displayed.extend_from_slice(messages);
             }
             sources.push(snapshot);
         }
@@ -2108,24 +2094,14 @@ impl CoreRuntime {
         Ok(())
     }
 
-    /// Continue through the user message `message_id` in a conversation whose
-    /// history spans native segments (or whose runtime cannot branch there):
-    /// translate the boundary segment's effective model context into a new
-    /// native conversation of the current context runtime, cut at the boundary,
-    /// and send `turn` there — or, for a fork with no turn, leave the copy
-    /// waiting for its next message. The original conversation and its
-    /// association graph are never rewritten.
-    fn translated_branch(
-        &mut self,
+    fn translated_branch_context(
+        &self,
         current: &ConversationSnapshot,
         message_id: &str,
-        target_runtime_id: &str,
-        selection: Option<crate::ModelSelection>,
-        turn: Option<crate::ComposedTurn>,
-    ) -> Result<crate::SnapshotResult, RuntimeError> {
-        let target_runtime = self.runtime_instance(target_runtime_id)?.clone();
+        placement: ForkBoundary,
+    ) -> Result<TranslatedBranchContext, RuntimeError> {
         let simple = self.simple_source(&current.conversation.id);
-        let (link, displayed) = if simple {
+        let (link, displayed, boundary_segment) = if simple {
             let native_id = self
                 .link_of(&current.conversation.id)
                 .map(|link| link.segments[0].native_conversation_id.as_str())
@@ -2137,14 +2113,23 @@ impl CoreRuntime {
                     segments: vec![self.segment_reference(&fresh)?],
                 },
                 fresh.into_retained().map(|snapshot| snapshot.messages),
+                0,
             )
         } else {
             let link = self
                 .link_of(&current.conversation.id)
                 .ok_or_else(|| RuntimeError::invalid("会话缺少关联信息"))?
                 .clone();
-            // Authoritative re-read of every sealed segment, as handoff does.
-            let (tail, checked) = self.read_link(&link)?;
+            let (boundary_segment, _) = segment_message_id(message_id, link.segments.len())
+                .ok_or_else(|| RuntimeError::invalid("消息不属于来源原生段"))?;
+            let source_segment = &link.segments[boundary_segment];
+            let (tail, checked) = self.read_link_with(&link, |segment| {
+                let snapshot = self.read_segment(segment)?;
+                if segment == source_segment {
+                    checked_branch_prefix(&link, boundary_segment, &snapshot.messages)?;
+                }
+                Ok(snapshot)
+            })?;
             let index = link.segments.len() - 1;
             let segment = &link.segments[index];
             let tail_retention = tail
@@ -2161,9 +2146,12 @@ impl CoreRuntime {
                 &tail.messages,
                 index,
             )?);
-            (link, Retained::from_parts(displayed, retention))
+            (
+                link,
+                Retained::from_parts(displayed, retention),
+                boundary_segment,
+            )
         };
-        let tail_index = link.segments.len() - 1;
         let (ordinal, expected) = current
             .messages
             .iter()
@@ -2199,53 +2187,44 @@ impl CoreRuntime {
             })
         }
         .ok_or_else(|| RuntimeError::invalid("会话已在别处改变，请重新打开后再编辑"))?;
-        // Which segment holds the boundary: display ids are namespaced.
-        let boundary_segment = message_id
-            .strip_prefix("segment-")
-            .and_then(|rest| rest.split(':').next())
-            .and_then(|index| index.parse::<usize>().ok())
-            .unwrap_or(tail_index);
-        if boundary_segment > tail_index {
-            return Err(RuntimeError::invalid("分叉边界已不在当前会话中"));
-        }
         // Export the segment holding the boundary, cut at the message. Each
         // segment's export is its own effective context; earlier sealed
         // segments are display-only history, and a legacy segment may still
         // carry an unmigratable quoted handoff the model never replayed.
-        let segment = link
-            .segments
-            .get(boundary_segment)
-            .ok_or_else(|| RuntimeError::invalid("分叉边界已不在当前会话中"))?;
+        let segment = &link.segments[boundary_segment];
         let runtime = self.runtime_instance(&segment.runtime_instance_id)?;
         let native_id = segment
             .native_conversation_id
             .strip_prefix(&format!("{}:", runtime.id))
             .ok_or_else(|| RuntimeError::invalid("关联段的原生身份无效"))?;
-        let raw_boundary_id = if simple {
-            displayed[boundary].id.as_str()
-        } else {
-            displayed[boundary]
-                .id
-                .strip_prefix(&format!("segment-{boundary_segment}:"))
-                .ok_or_else(|| RuntimeError::invalid("消息不属于来源原生段"))?
-        };
         let next_user = displayed[boundary + 1..]
             .iter()
-            .find(|message| message.role == MessageRole::User)
-            .and_then(|message| {
-                if simple {
-                    Some(message.id.as_str())
-                } else {
-                    message
-                        .id
-                        .strip_prefix(&format!("segment-{boundary_segment}:"))
-                }
-            });
-        let before = if turn.is_some() {
-            Some(raw_boundary_id)
-        } else {
-            next_user
+            .position(|message| message.role == MessageRole::User)
+            .map(|index| boundary + 1 + index);
+        let end = match placement {
+            ForkBoundary::BeforeTurn => Some(boundary),
+            ForkBoundary::ThroughTurn => next_user,
         };
+        let before = end.and_then(|index| {
+            let id = displayed[index].id.as_str();
+            if simple {
+                Some(id)
+            } else {
+                id.strip_prefix(&format!("segment-{boundary_segment}:"))
+            }
+        });
+        if Branching::of(runtime.type_id).is_some() && segment.cutoff.is_some() && before.is_none()
+        {
+            // The persisted cutoff authenticates display content, but does
+            // not supply a native end-of-replay position. A later prompt
+            // outside this prefix could follow new context or compaction.
+            let mut failure = crate::Failure::new(
+                crate::FailureKind::Unsupported,
+                "无法确认封存会话在此轮结束时的原生边界，未创建分叉。",
+            );
+            failure.code = "fork_sealed_boundary_unavailable".into();
+            return Err(RuntimeError::Contract(failure));
+        }
         let export = match runtime.type_id {
             RuntimeKind::Pi => match before {
                 Some(before) => velune_agent_runtime::history::export_pi_context_before(
@@ -2276,21 +2255,40 @@ impl CoreRuntime {
                 ),
             },
             _ => Ok(velune_agent_runtime::creation::Retained::from_parts(
-                quoted_context(
-                    &displayed[..if turn.is_some() {
-                        boundary
-                    } else {
-                        displayed[boundary + 1..]
-                            .iter()
-                            .position(|message| message.role == MessageRole::User)
-                            .map_or(displayed.len(), |next| boundary + 1 + next)
-                    }],
-                ),
+                quoted_context(&displayed[..end.unwrap_or(displayed.len())]),
                 velune_agent_runtime::creation::DataRetention::default(),
             )),
         }
         .map_err(|error| RuntimeError::context("导出原生上下文", error))?;
-        let context = export;
+        Ok(TranslatedBranchContext {
+            context: export,
+            displayed,
+            boundary,
+        })
+    }
+
+    /// Translate the effective native context through a completed turn for a
+    /// plain fork, or before the selected user message for an edited fork.
+    /// The original conversation and its association graph stay intact.
+    fn translated_branch(
+        &mut self,
+        current: &ConversationSnapshot,
+        message_id: &str,
+        target_runtime_id: &str,
+        selection: Option<crate::ModelSelection>,
+        turn: Option<crate::ComposedTurn>,
+    ) -> Result<crate::SnapshotResult, RuntimeError> {
+        let target_runtime = self.runtime_instance(target_runtime_id)?.clone();
+        let placement = if turn.is_some() {
+            ForkBoundary::BeforeTurn
+        } else {
+            ForkBoundary::ThroughTurn
+        };
+        let TranslatedBranchContext {
+            context,
+            displayed,
+            boundary,
+        } = self.translated_branch_context(current, message_id, placement)?;
         let cwd = std::path::PathBuf::from(
             current
                 .conversation

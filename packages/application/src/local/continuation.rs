@@ -336,10 +336,19 @@ pub(super) fn verified_import_prefix(
     messages: &[Message],
 ) -> Option<usize> {
     let prefix = &segment.imported.as_ref()?.prefix;
-    let count = usize::try_from(prefix.message_count).ok()?;
-    prefix_digest_matches(messages.get(..count)?, &prefix.prefix_digest)
-        .ok()?
-        .then_some(count)
+    Some(verified_cutoff_prefix(prefix, messages).ok()??.len())
+}
+
+pub(super) fn verified_cutoff_prefix<'a>(
+    cutoff: &ConversationCutoff,
+    messages: &'a [Message],
+) -> Result<Option<&'a [Message]>, RuntimeError> {
+    let count = usize::try_from(cutoff.message_count)
+        .map_err(|_| RuntimeError::invalid("会话截止位置无效"))?;
+    let Some(prefix) = messages.get(..count) else {
+        return Ok(None);
+    };
+    Ok(prefix_digest_matches(prefix, &cutoff.prefix_digest)?.then_some(prefix))
 }
 
 /// Names the runtime instance that ran the turn each user message starts,
