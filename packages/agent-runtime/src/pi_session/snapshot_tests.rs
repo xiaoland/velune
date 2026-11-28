@@ -285,6 +285,7 @@ fn edit_branch_does_not_complete_on_rewind_error_or_invalid_post_branch_frame() 
         let (mut session, root) = edit_fixture(mode);
         assert!(!session.sync_history("pi", None).unwrap());
         session.sync_history_for_edit("pi", None).unwrap();
+        let history = session.snapshot().unwrap().messages.clone();
         let error = if mode == "rewind-error" {
             session.branch_for_edit("edited-user").unwrap_err()
         } else {
@@ -303,15 +304,20 @@ fn edit_branch_does_not_complete_on_rewind_error_or_invalid_post_branch_frame() 
             _ => panic!("{mode} failed in the wrong phase: {error:?}"),
         };
         assert!(detail.contains(expected), "{mode}: {error}");
-        assert_eq!(
-            ids(&session),
-            [
-                "pi:session:prefix-user:0",
-                "pi:session:prefix-reply:0",
-                "pi:session:edited-user:0",
-                "pi:session:future-reply:0",
-            ],
+        let messages = &session.snapshot().unwrap().messages;
+        assert!(
+            messages.starts_with(&history),
             "{mode}: a failed edit barrier must preserve the last validated history"
+        );
+        let [diagnostic] = &messages[history.len()..] else {
+            panic!("{mode}: expected exactly one operation failure diagnostic");
+        };
+        assert_eq!(diagnostic.role, crate::conversation::MessageRole::System);
+        assert_eq!(
+            diagnostic.blocks,
+            [crate::conversation::MessageBlock::Notice {
+                text: format!("Pi 扩展错误：{error}\n扩展路径：\n事件：Pi operation")
+            }]
         );
         let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
         assert!(!requests.lines().any(|line| {
