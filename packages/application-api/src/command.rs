@@ -598,7 +598,7 @@ pub enum Command {
     ReadBackgroundTasks {
         runtime_id: String,
         conversation_id: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[uniffi(default = false)]
         manual: bool,
     },

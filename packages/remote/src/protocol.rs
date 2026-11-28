@@ -4,6 +4,12 @@ use std::{net::SocketAddr, time::Duration};
 use velune_application_api::{ApplicationReply, ClientViewId, Command, ExecutionContext, Failure};
 
 pub const PROTOCOL_VERSION: u16 = 3;
+/// Application envelope version. The dialing descriptor, ALPN and pairing
+/// keep their own v3 contract so already authorized devices can connect.
+pub(crate) const APPLICATION_WIRE_VERSION: u16 = 4;
+pub(crate) fn supports_wire_version(version: u16) -> bool {
+    matches!(version, PROTOCOL_VERSION | APPLICATION_WIRE_VERSION)
+}
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const ALPN: &[u8] = b"velune/remote/3";
 

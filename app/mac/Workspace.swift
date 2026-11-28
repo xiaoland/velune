@@ -590,6 +590,24 @@ struct WindowSeed: Codable, Hashable {
     var device: String?
 }
 
+enum ForkConversationOpening: String, CaseIterable, Identifiable {
+    case newTab, rightSplit, newWindow
+
+    static let preferenceKey = "forkConversationOpening"
+    static var preferred: Self {
+        UserDefaults.standard.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .newTab
+    }
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .newTab: "新标签页"
+        case .rightSplit: "右侧分栏"
+        case .newWindow: "新窗口"
+        }
+    }
+}
+
 /// Presentation intent belongs to this opening, never to restored window data.
 @MainActor enum WindowPresentation {
     static var notificationTargets: Set<UUID> = []
@@ -1585,17 +1603,25 @@ struct WindowSeed: Codable, Hashable {
         hand(tab, toNewWindowIn: newWindowFrame(size: sheetSize, at: nil))
     }
 
-    /// Show in a new tab a conversation the core has just opened, such as an
-    /// edit's fork, as `result` gives it.
-    func openInNewTab(adopting result: SnapshotResult, device: DeviceStore) {
+    /// Adopt the fork on its execution device before the user starts a new turn.
+    func openFork(adopting result: SnapshotResult, device: DeviceStore, opening: ForkConversationOpening = .preferred) {
         guard let id = result.snapshot?.conversation.id else { return }
         if select(showing: id, device: device) { return }
         let store = ConversationStore(device: device)
-        insertTab(ConversationTab(store: store, start: {
+        let tab = ConversationTab(store: store, start: {
             store.start(adopting: result)
-        }), at: afterShownTab)
-        navigateComposer(to: id, tab: focused)
-        focused.store.noteFocused()
+        })
+        switch opening {
+        case .newWindow:
+            hand(tab, toNewWindowIn: newWindowFrame(size: nil, at: nil))
+            return
+        case .rightSplit:
+            addPane(with: tab, beside: focusedPaneID, edge: .trailing)
+        case .newTab:
+            insertTab(tab, at: afterShownTab)
+        }
+        navigateComposer(to: id, tab: tab)
+        tab.store.noteFocused()
     }
 
     /// Divide the focused pane; the new pane takes focus and opens
@@ -1912,7 +1938,9 @@ struct WindowSeed: Codable, Hashable {
         releaseComposerForHandoff(tab)
         Self.handoff[tab.id] = tab
         let existing = Set(NSApp.windows.map(\.windowNumber))
-        let peer = (tab as? ConversationTab).flatMap { hub?.peerID(of: $0.store.device) } ?? device
+        let peer: String?
+        if let tab = tab as? ConversationTab { peer = tab.store.device.peerID }
+        else { peer = device }
         openWindow(.single, WindowSeed(tab: tab.id, device: peer))
         if let frame { Self.place(windowNotIn: existing, frame: frame, attempts: 20) }
     }
