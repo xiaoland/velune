@@ -47,10 +47,19 @@ private final class ComposerInputWorker: @unchecked Sendable {
         return ComposerInputContent(text: draft.text, attachments: files)
     }
 
-    func perform(_ operation: ComposerInputOperation) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
+    func perform(_ operation: ComposerInputOperation, promotionChoices: ComposerTargetChoices? = nil) throws -> (ComposerInputState, [UUID: SavedComposerDraft], String) {
         if executionOwnerID == nil { executionOwnerID = try transport.composerOwnerID() }
         let previous = state
-        let update = try transport.composerInputs(operation)
+        let update: ComposerInputUpdate
+        let targetSeed: (ComposerContextKey, ComposerTargetChoices)?
+        if case .promote(let input, let owner, let conversation, let runtime) = operation {
+            let promotion = ComposerPromotion(inputId: input, ownerId: owner, conversationId: conversation, runtimeId: runtime, choices: promotionChoices)
+            update = try transport.promoteComposerInput(promotion, sinceRevision: previous?.revision)
+            targetSeed = promotionChoices.map { (.conversation(ownerId: owner, conversationId: conversation), $0) }
+        } else {
+            update = try transport.composerInputs(operation)
+            if case .ensureTarget(let context, let seed) = operation { targetSeed = (context, seed) } else { targetSeed = nil }
+        }
         if update.state == nil, let state { return (state, prepared, executionOwnerID!) }
         guard let result = update.state else { throw TransportError.rejected("共享输入返回了无效修订") }
         state = result
@@ -81,7 +90,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
             }
             contents[id] = SavedComposerDraft(text: input.content.text, attachments: urls)
         }
-        if case .ensureTarget(let context, let seed) = operation,
+        if let (context, seed) = targetSeed,
            let target = result.targets.first(where: { $0.context == context }), target.choices == seed,
            previous?.targets.first(where: { $0.context == context }) == nil || previous?.targets.first(where: { $0.context == context })?.choices == ComposerTargetChoices(runtimeId: nil, runtimeOwnerId: nil, choices: [], choiceEdited: false) {
             lastTargetWrites[context] = target.revision
@@ -534,12 +543,7 @@ private final class ComposerInputWorker: @unchecked Sendable {
         let promotionSeed: ComposerTargetChoices?
         if case .promote(_, _, let conversation, _) = operation { promotionSeed = promotions[conversation]?.choices } else { promotionSeed = nil }
         worker.queue.async { [weak self] in
-            let result = Result {
-                if case .promote(_, let owner, let conversation, _) = operation, let promotionSeed {
-                    _ = try worker.perform(.ensureTarget(context: .conversation(ownerId: owner, conversationId: conversation), seed: promotionSeed))
-                }
-                return try worker.perform(operation)
-            }
+            let result = Result { try worker.perform(operation, promotionChoices: promotionSeed) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 if case .bind(let context, _, _) = operation { self.runningBindings.remove(context) }

@@ -326,6 +326,20 @@ pub struct ComposerInputUpdate {
     pub revision: u64,
     /// None means the caller already has this exact directory revision.
     pub state: Option<ComposerInputState>,
+    /// Older execution owners omit this capability in the same wire response.
+    #[serde(default)]
+    pub atomic_creation: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerPromotion {
+    pub input_id: String,
+    pub owner_id: String,
+    pub conversation_id: String,
+    pub runtime_id: String,
+    /// Choices captured when the user sent the first input.
+    pub choices: Option<ComposerTargetChoices>,
 }
 
 #[derive(Clone, Serialize, Deserialize, uniffi::Enum)]
@@ -371,6 +385,9 @@ pub enum ComposerInputOperation {
         owner_id: String,
         conversation_id: String,
         runtime_id: String,
+    },
+    PromoteWithTarget {
+        promotion: ComposerPromotion,
     },
     Forget {
         context: ComposerContextKey,
@@ -427,5 +444,12 @@ mod local_conversation_tests {
             let context = ComposerContextKey::of_conversation(owner(), id.clone()).unwrap();
             assert_eq!(context.conversation_id(), id);
         }
+    }
+
+    #[test]
+    fn old_input_updates_leave_atomic_creation_disabled() {
+        let legacy: super::ComposerInputUpdate =
+            serde_json::from_str(r#"{"revision":1,"state":null}"#).unwrap();
+        assert!(!legacy.atomic_creation);
     }
 }

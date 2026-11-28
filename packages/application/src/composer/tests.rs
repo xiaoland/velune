@@ -69,14 +69,53 @@ fn blank_tab_contexts_keep_independent_content_and_choices_after_promotion() {
             .unwrap();
         assert_eq!(store.legacy_input(conversation_id).unwrap().id, inputs[1]);
     }
-    store
-        .operate(ComposerInputOperation::Promote {
-            input_id: inputs[0].clone(),
-            owner_id: owner_id.clone(),
-            conversation_id: "native-created".into(),
-            runtime_id: "runtime-0".into(),
+    let destination = ComposerContextKey::Conversation {
+        owner_id: owner_id.clone(),
+        conversation_id: "native-created".into(),
+    };
+    let choices = store.target(&contexts[0]).unwrap().choices;
+    let mut promotion = ComposerPromotion {
+        input_id: identity(),
+        owner_id: owner_id.clone(),
+        conversation_id: "native-created".into(),
+        runtime_id: "runtime-0".into(),
+        choices: Some(choices.clone()),
+    };
+    let before = store.stored.state.revision;
+    assert!(
+        store
+            .operate(ComposerInputOperation::PromoteWithTarget {
+                promotion: promotion.clone(),
+            })
+            .is_err()
+    );
+    assert!(store.target(&destination).is_none());
+    assert_eq!(store.stored.state.revision, before);
+
+    promotion.input_id = inputs[0].clone();
+    let committed = store
+        .operate(ComposerInputOperation::PromoteWithTarget {
+            promotion: promotion.clone(),
         })
         .unwrap();
+    assert_eq!(committed.revision, before + 1);
+    assert_eq!(store.target(&destination).unwrap().choices, choices);
+    assert_eq!(
+        committed
+            .bindings
+            .iter()
+            .find(|binding| binding.context == destination)
+            .unwrap()
+            .input_id,
+        inputs[0],
+    );
+    promotion.choices = None;
+    assert_eq!(
+        store
+            .operate(ComposerInputOperation::PromoteWithTarget { promotion })
+            .unwrap(),
+        committed
+    );
     drop(store);
     let restored = ComposerInputs::open(&home).unwrap();
     for (index, context) in contexts.iter().enumerate() {

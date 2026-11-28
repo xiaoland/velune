@@ -58,7 +58,9 @@ application 在 `ClientState` 之外持有 `VELUNE_HOME/composer-inputs.json`（
 
 ## 新建交接
 
-首次发送捕获实际 InputID、内容和目标选择快照。原生创建成功后继续使用同一内容，以提交时的选择初始化新会话目标记录，再执行 `Promote`。`ComposerCreation` 以 `(ownerId, conversationId)` 记录原生交接身份，重复交接返回原结果。客户端只让持有该 InputID 的未发送 Tab 接续原生身份；其它空白 Tab 不受影响。
+首次发送捕获实际 InputID、内容和目标选择快照。原生创建成功后，`promote_composer_input` 让保存端一次提交输入关联、初始目标选择与原生交接记录。已有目标选择遵循原有修订和默认值规则。保存端若未声明原子交接能力，绑定层使用旧主机支持的准备及交接流程。`ComposerCreation` 以 `(ownerId, conversationId)` 记录原生交接身份，重复交接返回原结果。客户端只让持有该 InputID 的未发送 Tab 接续原生身份。
+
+草稿身份随工作区标签创建、恢复和移动。本地草稿身份的编码、识别与共享目录映射统一由 application-api 提供。Windows 将标签 UUID 保存在布局中，旧布局的设备级全局草稿从一个恢复入口复制，备份原始布局并保留旧输入资料。提交到原生会话后，工作区先保存原生身份再退休本机草稿缓存。
 
 旧全局新建关联仅在仍指向被消费输入时换入空内容，以兼容旧调用方；独立 Tab 不消费该关联。失败恢复只针对提交时的内容，并尊重其间新编辑。
 

@@ -173,6 +173,11 @@ final class Transport: @unchecked Sendable {
         let reading: Bool = if case .read = operation { true } else { false }
         return try withApplication("composerInputs", reading ? .reads : .writes, reading ? .conversationRead : .conversationWrite) { try $0.manageComposerInputs(operation: operation) }
     }
+    func promoteComposerInput(_ promotion: ComposerPromotion, sinceRevision: UInt64?) throws -> ComposerInputUpdate {
+        try withApplication("promoteComposerInput", .writes, .conversationWrite) {
+            try $0.promoteComposerInput(promotion: promotion, sinceRevision: sinceRevision)
+        }
+    }
     func prepareComposerTarget(_ request: ComposerTargetRequest, overlayChoices: ComposerTargetChoices?) throws -> PreparedComposerTarget {
         try withApplication("prepareComposerTarget", .preparesComposer, .conversationRead) { try $0.prepareComposerTarget(request: request, overlayChoices: overlayChoices) }
     }

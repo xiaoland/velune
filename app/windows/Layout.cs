@@ -98,8 +98,13 @@ sealed class ToolLayout
     public List<Tool> InArea(Area area) => [.. Enum.GetValues<Tool>().Where(tool => Docked(tool, area))];
 }
 
-// A tab in a saved editor: a conversation, or an unsent one when its ID is empty.
-sealed record TabState(string RuntimeId, string ConversationId, string Title);
+// Keep the native ID empty for an unsent tab in the existing layout format.
+sealed record TabState(string RuntimeId, string ConversationId, string Title,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? DraftId = null)
+{
+    public Target Restore() => ConversationId.Length == 0
+        ? Target.Draft(RuntimeId, DraftId) : new Target(RuntimeId, ConversationId, Title);
+}
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
 [JsonDerivedType(typeof(PaneState), "pane")]
@@ -142,6 +147,34 @@ sealed class SavedLayout
     // The latest tool layout, which a window without its own starts from.
     public ToolLayout Tools { get; set; } = ToolLayout.Default();
     public List<WindowState> Windows { get; set; } = [];
+
+    // Old empty tabs shared one draft per device. Recover it once and assign
+    // separate identities to the other tabs whose old layout held no identity.
+    public bool AssignDraftIdentities()
+    {
+        var panes = Windows.SelectMany(window => Panes(window.Editor).Select(pane => (window.Device, Pane: pane))).ToList();
+        var recovered = panes.Where(entry => entry.Pane.Tabs.Any(tab => tab.DraftId == Guid.Empty))
+            .Select(entry => entry.Device).ToHashSet(StringComparer.Ordinal);
+        var changed = false;
+        foreach (var (device, pane) in panes)
+        {
+            for (var index = 0; index < pane.Tabs.Count; index++)
+            {
+                var tab = pane.Tabs[index];
+                if (tab.ConversationId.Length != 0 || tab.DraftId.HasValue) continue;
+                pane.Tabs[index] = tab with { DraftId = recovered.Add(device) ? Guid.Empty : Guid.NewGuid() };
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    static IEnumerable<PaneState> Panes(EditorState node) => node switch
+    {
+        PaneState pane => [pane],
+        SplitState split => split.Children.SelectMany(Panes),
+        _ => [],
+    };
 }
 
 // LayoutStore keeps the layout in VELUNE_HOME/windows-layout.json. A file of
@@ -197,6 +230,12 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
                 {
                     window.Tools.Complete();
                 }
+                if (saved.AssignDraftIdentities())
+                {
+                    var backup = path + ".pre-draft-identity";
+                    if (!File.Exists(backup)) File.Copy(path, backup);
+                    Write(saved);
+                }
                 return saved;
             }
             canWrite = false;
@@ -240,10 +279,7 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
         }
         try
         {
-            Directory.CreateDirectory(home);
-            var temporary = path + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(layout(), Options));
-            File.Move(temporary, path, true);
+            Write(layout());
             pending = null;
             return true;
         }
@@ -252,5 +288,13 @@ sealed class LayoutStore(string home, DispatcherQueue dispatcher)
             Problems.Report("保存窗口布局", failure);
             return false;
         }
+    }
+
+    void Write(SavedLayout layout)
+    {
+        Directory.CreateDirectory(home);
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(layout, Options));
+        File.Move(temporary, path, true);
     }
 }

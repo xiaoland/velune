@@ -12,9 +12,6 @@ mod migration;
 pub(crate) use migration::prepare_migration;
 
 const CURRENT_SCHEMA: u32 = 2;
-/// The single new-conversation draft that field-specific legacy commands
-/// address. It predates per-tab `draft:<tab identity>` identities.
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Stored {
@@ -63,6 +60,117 @@ fn identity() -> String {
         &hex[16..20],
         &hex[20..]
     )
+}
+
+fn apply_promotion(
+    next: &mut Stored,
+    revision: u64,
+    promotion: ComposerPromotion,
+) -> Result<(), Error> {
+    let ComposerPromotion {
+        input_id,
+        owner_id,
+        conversation_id,
+        runtime_id,
+        choices,
+    } = promotion;
+    let context = ComposerContextKey::Conversation {
+        owner_id: owner_id.clone(),
+        conversation_id: conversation_id.clone(),
+    };
+    validate_context(&context)?;
+    if let Some(choices) = &choices {
+        if LocalConversation::of(&conversation_id).is_some() {
+            return Err(Error::invalid(
+                "composer promotion requires a native identity",
+            ));
+        }
+        validate_choices(choices)?;
+    }
+    if runtime_id.is_empty() {
+        return Err(Error::invalid("composer creation runtime"));
+    }
+    if let Some(creation) = next.state.creations.iter().find(|creation| {
+        creation.owner_id == owner_id && creation.conversation_id == conversation_id
+    }) {
+        if creation.input_id != input_id || creation.runtime_id != runtime_id {
+            return Err(Error::invalid("composer creation identity changed"));
+        }
+        return Ok(());
+    }
+    next.state.creations.push(ComposerCreation {
+        input_id: input_id.clone(),
+        owner_id: owner_id.clone(),
+        runtime_id: runtime_id.clone(),
+        conversation_id,
+        revision: revision,
+    });
+    if !next.state.inputs.iter().any(|input| input.id == input_id) {
+        return Err(Error::invalid("composer input does not exist"));
+    }
+    let seed = choices.map(normalize_composer_target_choices);
+    if let Some(target) = next
+        .state
+        .targets
+        .iter_mut()
+        .find(|target| target.context == context)
+    {
+        if let Some(seed) = seed
+            && target.revision == 1
+            && target.choices == ComposerTargetChoices::default()
+            && seed != ComposerTargetChoices::default()
+        {
+            target.choices = seed;
+            target.revision += 1;
+        }
+    } else {
+        let fallback = || ComposerTargetChoices {
+            runtime_id: Some(runtime_id),
+            runtime_owner_id: Some(owner_id),
+            ..Default::default()
+        };
+        next.state.targets.push(ComposerTarget {
+            context: context.clone(),
+            revision: 1,
+            choices: seed
+                .filter(|seed| *seed != ComposerTargetChoices::default())
+                .unwrap_or_else(fallback),
+        });
+    }
+    if let Some(binding) = next
+        .state
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.context == context)
+    {
+        if binding.input_id != input_id {
+            binding.input_id = input_id.clone();
+            binding.revision = revision;
+        }
+    } else {
+        next.state.bindings.push(ComposerInputBinding {
+            context,
+            input_id: input_id.clone(),
+            revision,
+        });
+    }
+    let new = next
+        .state
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.context == ComposerContextKey::NewConversation)
+        .unwrap();
+    if new.input_id == input_id {
+        let fresh = ComposerInput {
+            id: identity(),
+            revision: 1,
+            content: Default::default(),
+        };
+        new.input_id = fresh.id.clone();
+        new.revision = revision;
+        next.state.inputs.push(fresh);
+    }
+    Ok(())
 }
 
 impl ComposerInputs {
@@ -225,12 +333,14 @@ impl ComposerInputs {
             return Ok(ComposerInputUpdate {
                 revision: self.stored.state.revision,
                 state: None,
+                atomic_creation: true,
             });
         }
         let state = self.operate(operation)?;
         Ok(ComposerInputUpdate {
             revision: state.revision,
             state: Some(state),
+            atomic_creation: true,
         })
     }
     pub(crate) fn open(home: &Path) -> Result<Self, Error> {
@@ -476,84 +586,20 @@ impl ComposerInputs {
                 conversation_id,
                 runtime_id,
             } => {
-                let context = ComposerContextKey::Conversation {
-                    owner_id: owner_id.clone(),
-                    conversation_id: conversation_id.clone(),
-                };
-                validate_context(&context)?;
-                if runtime_id.is_empty() {
-                    return Err(Error::invalid("composer creation runtime"));
-                }
-                if let Some(creation) = next.state.creations.iter().find(|creation| {
-                    creation.owner_id == owner_id && creation.conversation_id == conversation_id
-                }) {
-                    if creation.input_id != input_id || creation.runtime_id != runtime_id {
-                        return Err(Error::invalid("composer creation identity changed"));
-                    }
-                    return Ok(self.stored.state.clone());
-                }
-                next.state.creations.push(ComposerCreation {
-                    input_id: input_id.clone(),
-                    owner_id: owner_id.clone(),
-                    runtime_id: runtime_id.clone(),
-                    conversation_id,
-                    revision: next.state.revision + 1,
-                });
-                if !next.state.inputs.iter().any(|input| input.id == input_id) {
-                    return Err(Error::invalid("composer input does not exist"));
-                }
-                // The native target starts from the creation's execution snapshot;
-                // the global new target remains independent for the next creation.
-                if !next
-                    .state
-                    .targets
-                    .iter()
-                    .any(|target| target.context == context)
-                {
-                    let choices = ComposerTargetChoices {
-                        runtime_id: Some(runtime_id),
-                        runtime_owner_id: Some(owner_id),
-                        ..Default::default()
-                    };
-                    next.state.targets.push(ComposerTarget {
-                        context: context.clone(),
-                        revision: 1,
-                        choices,
-                    });
-                }
-                if let Some(binding) = next
-                    .state
-                    .bindings
-                    .iter_mut()
-                    .find(|binding| binding.context == context)
-                {
-                    if binding.input_id != input_id {
-                        binding.input_id = input_id.clone();
-                        binding.revision = revision;
-                    }
-                } else {
-                    next.state.bindings.push(ComposerInputBinding {
-                        context,
-                        input_id: input_id.clone(),
-                        revision,
-                    });
-                }
-                let new = next
-                    .state
-                    .bindings
-                    .iter_mut()
-                    .find(|binding| binding.context == ComposerContextKey::NewConversation)
-                    .unwrap();
-                if new.input_id == input_id {
-                    let fresh = ComposerInput {
-                        id: identity(),
-                        revision: 1,
-                        content: Default::default(),
-                    };
-                    new.input_id = fresh.id.clone();
-                    new.revision = revision;
-                    next.state.inputs.push(fresh);
-                }
+                apply_promotion(
+                    &mut next,
+                    revision,
+                    ComposerPromotion {
+                        input_id,
+                        owner_id,
+                        conversation_id,
+                        runtime_id,
+                        choices: None,
+                    },
+                )?;
+            }
+            Op::PromoteWithTarget { promotion } => {
+                apply_promotion(&mut next, revision, promotion)?;
             }
             Op::Forget { context } => {
                 if context == ComposerContextKey::NewConversation {

@@ -12,6 +12,7 @@ sealed partial class Conversation
     string? intentOwner;
     sealed record PendingComposerCreation(string InputId, string OwnerId, string RuntimeId, string ConversationId, ComposerTargetChoices Choices);
     PendingComposerCreation? pendingCreation;
+    string? handedOffDraftCache;
     ulong? composerDirectoryRevision;
     ulong? composerBaseline;
     ComposerTargetChoices? composerTargetChoices;
@@ -28,7 +29,7 @@ sealed partial class Conversation
     public string ComposerText => composerText;
     public string? ComposerIssue => (composerTargetDirty && composerTargetBaseline != composerTargetRevision ? "配置已在另一端更新，请重新选择以采用当前配置" : composerFailure) ?? (intentOwner != null && intentOwner != composerOwner ? "所选运行时位于另一设备，输入已保留" : null) ?? (!composerLoaded ? "正在恢复输入" : null);
     public bool ComposerReady => composerLoaded && composerTargetLoaded && PreparedNextTurn()?.ChosenModelUnavailable == false && composerFailure == null && pendingCreation == null && !composerUnbound && !composerSaving && (intentOwner == null || intentOwner == composerOwner) && Configuration.Runtimes.Any(runtime => runtime.Id == Next && runtime.Enabled);
-    string ComposerCachePath => ComposerCachePathFor(Target.Unsent ? "newConversation" : "conversation:" + Target.ConversationID);
+    string ComposerCachePath => ComposerCachePathFor(Target.Unsent ? Target.ComposerIdentity : "conversation:" + Target.ConversationID);
     string ComposerCachePathFor(string context) => Path.Combine(core.Home, "composer-cache", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Device.PeerId + "/" + context))) + ".json");
     sealed record CachedComposer(int Schema, ComposerInput? Input, bool Pending, ulong? Baseline, string? Owner, ulong? DirectoryRevision, PendingComposerCreation? Creation, bool Unbound, ulong? BindingRevision, ulong? BindingBaseline, ComposerTargetChoices? TargetChoices, ulong? TargetRevision, bool TargetPending, ulong? TargetBaseline);
     static readonly JsonSerializerOptions ComposerJson = new() { Converters = { new ComposerModelJson() } };
@@ -58,16 +59,26 @@ sealed partial class Conversation
     {
         try
         {
-            if (!File.Exists(ComposerCachePath)) return;
-            using var document = JsonDocument.Parse(File.ReadAllText(ComposerCachePath));
+            var cache = ComposerCachePath;
+            var legacy = ComposerCachePathFor("newConversation");
+            var recovering = Target.DraftId == Guid.Empty && !File.Exists(cache) && File.Exists(legacy);
+            if (!File.Exists(recovering ? legacy : cache)) return;
+            using var document = JsonDocument.Parse(File.ReadAllText(recovering ? legacy : cache));
             if (document.RootElement.GetProperty("Schema").GetInt32() != 2)
                 throw new JsonException("本机输入需要显式迁移，原文件已保留");
             var saved = JsonSerializer.Deserialize<CachedComposer>(document.RootElement.GetRawText(), ComposerJson)
                 ?? throw new JsonException("无法读取本机输入，原文件已保留");
+            if (recovering && saved.Creation == null)
+            {
+                var copy = saved.Input is { } input ? new ComposerInput(Guid.NewGuid().ToString(), 0, input.Content) : null;
+                saved = new CachedComposer(2, copy, copy != null, null, null, null, null, copy != null,
+                    null, null, saved.TargetChoices, null, saved.TargetChoices?.ChoiceEdited == true, null);
+            }
             composerDirty = saved.Pending; composerBaseline = saved.Baseline; composerOwner = saved.Owner; composerDirectoryRevision = saved.DirectoryRevision; pendingCreation = saved.Creation; composerUnbound = saved.Unbound; composerRestored = true; composerBindingRevision = saved.BindingRevision; composerBindingBaseline = saved.BindingBaseline;
             composerTargetDirty = saved.TargetPending; composerTargetBaseline = saved.TargetBaseline; composerTargetRevision = saved.TargetRevision;
             if (saved.Input is { } input) ReceiveComposer(input);
             if (saved.TargetChoices is { } choices) ReceiveTargetChoices(choices);
+            if (recovering) CacheComposer();
         }
         catch (Exception failure)
         {
@@ -98,6 +109,16 @@ sealed partial class Conversation
     // Retry that same write before a caller relies on the local copy at exit.
     public bool FlushComposerCache() => composerCacheSaved || TryCacheComposer("保存输入");
 
+    // The workspace retires the draft only after its saved layout points at the native session.
+    public bool HasHandedOffDraftCache => handedOffDraftCache != null;
+    public void RetireHandedOffDraftCache()
+    {
+        if (handedOffDraftCache is not { } path) return;
+        try { File.Delete(path); handedOffDraftCache = null; }
+        catch (IOException failure) { Problems.Report("清理已交接的草稿缓存", failure, Device); }
+        catch (UnauthorizedAccessException failure) { Problems.Report("清理已交接的草稿缓存", failure, Device); }
+    }
+
     bool TryCacheComposer(string operation)
     {
         try
@@ -121,9 +142,8 @@ sealed partial class Conversation
         return VeluneApplicationApiMethods.NormalizeComposerTargetChoices(new(runtime, runtime == null ? null : intentOwner ?? composerOwner,
             [.. (composerTargetChoices?.Choices.Where(choice => choice.OwnerId != composerOwner && choice.OwnerId.Length > 0) ?? []).Concat(intent.OrderBy(entry => entry.Key, StringComparer.Ordinal).Select(entry => new ComposerRuntimeChoice(composerOwner ?? "", entry.Key, entry.Value)))], composerTargetChoices?.ChoiceEdited ?? false));
     }
-    ComposerContextKey ComposerContext() => Target.Unsent
-        ? new ComposerContextKey.NewConversation()
-        : new ComposerContextKey.Conversation(composerOwner ?? throw new InvalidOperationException("输入来源尚未恢复"), Target.ConversationID);
+    ComposerContextKey ComposerContext() => VeluneApplicationApiMethods.ComposerContextKey(composerOwner, Target.ComposerIdentity)
+        ?? throw new InvalidOperationException("输入来源尚未恢复");
     static bool SameComposerValue<T>(T left, T right) => JsonSerializer.Serialize(left, ComposerJson) == JsonSerializer.Serialize(right, ComposerJson);
 
     void ReceiveComposer(ComposerInput input)
@@ -161,7 +181,7 @@ sealed partial class Conversation
         : Configuration.Runtimes.FirstOrDefault(runtime => runtime.Enabled)?.Id ?? "";
 
     ComposerTargetRequest ComposerTargetRequest() => Target.Unsent
-        ? new(DefaultNewComposerRuntime(), null)
+        ? new(DefaultNewComposerRuntime(), Target.ComposerIdentity)
         : new(Snapshot?.Conversation.RuntimeId ?? Target.RuntimeID, Target.ConversationID);
     NextTurn? PreparedNextTurn()
     {
@@ -249,16 +269,15 @@ sealed partial class Conversation
                 if (closed) return;
                 snapshot = read.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话");
             }
-            // Until the view adopts the native identity, edits belong to the global new target.
-            if (Target.Unsent) await FlushComposerTarget(new ComposerContextKey.NewConversation());
+            if (Target.Unsent) await FlushComposerTarget(ComposerContext());
             Merge(snapshot); composerTargetLoaded = false; composerTargetRevision = null;
         }
         var targetVersion = composerTargetVersion;
         var context = new ComposerContextKey.Conversation(creation.OwnerId, creation.ConversationId);
         var choices = creation.Choices with { RuntimeId = creation.RuntimeId, RuntimeOwnerId = creation.OwnerId };
-        var ensured = await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.EnsureTarget(context, choices)));
-        var target = ensured.State?.Targets.FirstOrDefault(candidate => candidate.Context == context) ?? throw new InvalidOperationException("设备没有返回新会话的发送目标");
-        await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.Promote(creation.InputId, creation.OwnerId, creation.ConversationId, creation.RuntimeId)));
+        var promotion = new ComposerPromotion(creation.InputId, creation.OwnerId, creation.ConversationId, creation.RuntimeId, choices);
+        var promoted = await Call(NativeOperation.ConversationWrite, application => application.PromoteComposerInput(promotion, composerDirectoryRevision));
+        var target = promoted.State?.Targets.FirstOrDefault(candidate => candidate.Context == context) ?? throw new InvalidOperationException("设备没有返回新会话的发送目标");
         pendingCreation = null; composerDirectoryRevision = null;
         if (composerTargetVersion == targetVersion && !composerTargetDirty) ReceiveTarget(target);
         else
@@ -268,9 +287,7 @@ sealed partial class Conversation
             composerTargetBaseline = SameComposerValue(target.Choices, VeluneApplicationApiMethods.NormalizeComposerTargetChoices(choices)) ? target.Revision : null;
         }
         CacheComposer();
-        var newPath = ComposerCachePathFor("newConversation");
-        if (File.Exists(newPath) && JsonSerializer.Deserialize<CachedComposer>(File.ReadAllText(newPath), ComposerJson)?.Creation?.InputId == creation.InputId) File.Delete(newPath);
-        if (oldPath != ComposerCachePath && File.Exists(oldPath)) File.Delete(oldPath);
+        if (oldPath != ComposerCachePath) handedOffDraftCache = oldPath;
     }
     void ObserveComposerTarget(ComposerTarget target)
     {
@@ -308,12 +325,33 @@ sealed partial class Conversation
                     await FlushComposerTarget(context);
                     Merge(created.Snapshot ?? throw new InvalidOperationException("设备没有返回新会话"));
                     composerTargetLoaded = false; composerTargetRevision = null; preparedComposerTarget = null;
-                    CacheComposer(); if (oldPath != ComposerCachePath && File.Exists(oldPath)) File.Delete(oldPath);
+                    CacheComposer();
+                    if (oldPath != ComposerCachePath) handedOffDraftCache = oldPath;
                     return;
                 }
                 if (!state.Bindings.Any(binding => binding.Context == context))
                 {
-                    var ensured = await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.Ensure(context, Guid.NewGuid().ToString(), new("", []))));
+                    if (Target.DraftId == Guid.Empty && composerInput == null)
+                    {
+                        var legacy = new ComposerContextKey.NewConversation();
+                        var legacyBinding = state.Bindings.FirstOrDefault(binding => binding.Context == legacy);
+                        var legacyInput = state.Inputs.FirstOrDefault(input => input.Id == legacyBinding?.InputId);
+                        if (legacyInput != null)
+                        {
+                            ReceiveComposer(new ComposerInput(Guid.NewGuid().ToString(), 0, legacyInput.Content));
+                            composerDirty = composerUnbound = true;
+                        }
+                        if (composerTargetChoices == null && state.Targets.FirstOrDefault(target => target.Context == legacy)?.Choices is { ChoiceEdited: true } legacyChoices)
+                        {
+                            ReceiveTargetChoices(legacyChoices);
+                            composerTargetDirty = true;
+                        }
+                        CacheComposer();
+                    }
+                    var unsaved = composerUnbound && composerInput is { Revision: 0 } ? composerInput : null;
+                    ComposerInputContent seed = unsaved == null ? new("", []) : ComposerContent();
+                    var inputId = unsaved?.Id ?? Guid.NewGuid().ToString();
+                    var ensured = await Call(NativeOperation.ConversationWrite, application => application.ManageComposerInputs(new ComposerInputOperation.Ensure(context, inputId, seed)));
                     if (closed || request != ComposerTargetRequest()) return;
                     state = ensured.State ?? throw new InvalidOperationException("设备没有返回输入目录");
                 }
@@ -335,6 +373,7 @@ sealed partial class Conversation
             var canPrepare = !Target.Unsent || Configuration.Runtimes.Any(runtime => runtime.Enabled && runtime.Id == runtimeId);
             if (canPrepare)
             {
+                await FlushComposerTarget(context);
                 var overlay = composerTargetDirty ? ComposerTargetContent() : null;
                 var prepared = await Call(NativeOperation.ConversationWrite, application => application.PrepareComposerTarget(request, overlay));
                 if (closed || request != ComposerTargetRequest()) return;

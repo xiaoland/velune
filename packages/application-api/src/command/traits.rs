@@ -205,6 +205,7 @@ impl Command {
                 | ComposerInputOperation::SaveTarget { .. }
                 | ComposerInputOperation::Bind { .. }
                 | ComposerInputOperation::Promote { .. }
+                | ComposerInputOperation::PromoteWithTarget { .. }
                 | ComposerInputOperation::Forget { .. } => Traits::EFFECT,
             },
             Self::ManageScheduledTasks { operation } => match operation {

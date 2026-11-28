@@ -559,16 +559,16 @@ class ConversationModel(
             val created = io(NativeOperation.CONVERSATION_READ) { it.readConversation(creation.runtimeId, creation.conversationId) }
             apply(created); target = ConversationTarget.Existing(creation.runtimeId, creation.conversationId, "会话")
         }
+        val promotion = app.velune.bindings.application.ComposerPromotion(creation.inputId, creation.ownerId, creation.conversationId, creation.runtimeId, creation.choices)
+        val updated = io(NativeOperation.CONVERSATION_WRITE) { it.promoteComposerInput(promotion, composerRevision) }
         creation.choices?.let { choices ->
             val context = ComposerContextKey.Conversation(creation.ownerId, creation.conversationId)
-            val updated = io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.EnsureTarget(context, choices)) }
             val actual = updated.state?.targets?.firstOrNull { it.context == context } ?: error("设备没有返回新会话的目标配置")
             targetRevision = actual.revision
             if (targetPending) targetBaseline = actual.revision.takeIf { normalizeComposerTargetChoices(actual.choices) == normalizeComposerTargetChoices(choices) }
             else observeTarget(actual, creation.ownerId)
         }
         preparedComposerTarget = null
-        io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Promote(creation.inputId, creation.ownerId, creation.conversationId, creation.runtimeId)) }
         val draftContext = creation.draftId?.let { ComposerContextKey.Conversation(creation.ownerId, draftConversationId(it)) }
         if (draftContext != null) io(NativeOperation.CONVERSATION_WRITE) { it.manageComposerInputs(ComposerInputOperation.Forget(draftContext)) }
         pendingCreation = null; cacheComposer()

@@ -137,6 +137,7 @@ ManageComposerInputs/ensureTarget	Effect	false	false	true	false	[false, false, f
 ManageComposerInputs/saveTarget	Effect	false	false	true	false	[false, false, false]	owner	ManageComposerInputs	-	-
 ManageComposerInputs/bind	Effect	false	false	true	false	[false, false, false]	owner	ManageComposerInputs	-	-
 ManageComposerInputs/promote	Effect	false	false	true	false	[false, false, false]	owner	ManageComposerInputs	-	-
+ManageComposerInputs/promoteWithTarget	Effect	false	false	true	false	[false, false, false]	owner	ManageComposerInputs	-	-
 ManageComposerInputs/forget	Effect	false	false	true	false	[false, false, false]	owner	ManageComposerInputs	-	-
 ManageScheduledTasks/save	Effect	false	true	true	false	[false, false, false]	owner	ManageScheduledTasks	-	-
 ManageScheduledTasks/setEnabled	Effect	false	true	true	false	[false, false, false]	owner	ManageScheduledTasks	-	-

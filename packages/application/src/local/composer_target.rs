@@ -40,7 +40,7 @@ impl CoreRuntime {
         owner_id: String,
     ) -> Result<ComposerTargetIdentity, RuntimeError> {
         let snapshot = self.composer_target_snapshot(&request)?;
-        Ok(target_identity(&request, owner_id, snapshot.as_ref()))
+        target_identity(&request, owner_id, snapshot.as_ref())
     }
 
     pub(crate) fn composer_target_basis(
@@ -54,7 +54,7 @@ impl CoreRuntime {
             context,
             default_runtime_id,
             ..
-        } = target_identity(&request, owner_id.clone(), snapshot.as_ref());
+        } = target_identity(&request, owner_id.clone(), snapshot.as_ref())?;
         let choices = normalize_composer_target_choices(choices.unwrap_or_default());
         if choices
             .runtime_owner_id
@@ -137,22 +137,17 @@ fn target_identity(
     request: &ComposerTargetRequest,
     owner_id: String,
     snapshot: Option<&crate::conversation::ConversationSnapshot>,
-) -> ComposerTargetIdentity {
-    let context =
-        request
-            .conversation_id
-            .as_ref()
-            .map_or(ComposerContextKey::NewConversation, |id| {
-                ComposerContextKey::Conversation {
-                    owner_id: owner_id.clone(),
-                    conversation_id: id.clone(),
-                }
-            });
-    ComposerTargetIdentity {
+) -> Result<ComposerTargetIdentity, RuntimeError> {
+    let context = match &request.conversation_id {
+        Some(id) => ComposerContextKey::of_conversation(Some(owner_id.clone()), id.clone())
+            .ok_or_else(|| RuntimeError::invalid("侧聊使用自己的临时执行选择"))?,
+        None => ComposerContextKey::NewConversation,
+    };
+    Ok(ComposerTargetIdentity {
         owner_id,
         context,
         default_runtime_id: snapshot
             .map(|snapshot| snapshot.context_runtime_id.clone())
             .unwrap_or_else(|| request.runtime_id.clone()),
-    }
+    })
 }
