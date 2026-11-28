@@ -429,13 +429,44 @@ fn deletion_links_keep_new_schema_and_refuse_unknown_or_corrupt_state() {
     repository.store_conversation_links(&[]).unwrap();
     let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(value["schemaVersion"], 3);
-    for bytes in [
-        br#"{"schemaVersion":99,"links":[]}"#.as_slice(),
-        br#"{"schemaVersion":2,"links":[],"unknown":true}"#.as_slice(),
-        b"{corrupt".as_slice(),
+    let current = json!({"schemaVersion":3,"links":[{"id":"logical","segments":[{
+        "runtimeInstanceId":"pi","runtimeTypeId":RuntimeKind::Pi,
+        "nativeConversationId":"pi:native","cwd":null,"cutoff":null,"handoff":null,"deleted":false
+    }]}]});
+    let mut envelope = current.clone();
+    envelope["future"] = true.into();
+    let mut nested = current.clone();
+    nested["links"][0]["segments"][0]["future"] = true.into();
+    // Each rejection has a valid current sibling, so a different guard cannot
+    // silently stand in for the reason this fixture is meant to exercise.
+    std::fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let links = repository.load_conversation_links().unwrap();
+    repository.store_conversation_links(&links).unwrap();
+    for (bytes, diagnostic) in [
+        (
+            br#"{"schemaVersion":99,"links":[]}"#.to_vec(),
+            "conversation links schema version",
+        ),
+        (
+            br#"{"schemaVersion":2,"links":[]}"#.to_vec(),
+            "需要先重新打开应用完成可恢复迁移",
+        ),
+        (
+            serde_json::to_vec(&envelope).unwrap(),
+            "含当前版本无法识别的字段",
+        ),
+        (
+            serde_json::to_vec(&nested).unwrap(),
+            "unknown field `future`",
+        ),
+        (b"{corrupt".to_vec(), "key must be a string"),
     ] {
-        std::fs::write(&path, bytes).unwrap();
-        assert!(repository.store_conversation_links(&[]).is_err());
+        std::fs::write(&path, &bytes).unwrap();
+        let error = repository.store_conversation_links(&links).unwrap_err();
+        assert!(
+            error.to_string().contains(diagnostic),
+            "{diagnostic}: {error}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
     drop(application);
@@ -2104,13 +2135,16 @@ for line in sys.stdin:
     target.id = "other-pi".into();
     target.enabled = false;
     core.runtime_instances.push(target);
+    let current = core.current_snapshot().unwrap();
+    let revision = core.edit_revision(&current).unwrap();
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::InPlace,
             Some("other-pi"),
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),
@@ -2123,12 +2157,13 @@ for line in sys.stdin:
     assert!(error.to_string().contains("此运行时已停用"));
     let missing = root.join("missing.txt").to_string_lossy().into_owned();
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::InPlace,
             None,
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),
@@ -2140,12 +2175,13 @@ for line in sys.stdin:
         .unwrap_err();
     assert!(error.to_string().contains("无法读取附件"));
     let error = core
-        .edit_message_with_runtime(
+        .edit_message_with_revision(
             "pi",
             "pi:synthetic",
             "u1",
             EditPlacement::Fork,
             None,
+            Some(&revision),
             None,
             crate::ComposedTurn {
                 text: "replacement".into(),

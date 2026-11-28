@@ -227,7 +227,15 @@ fn preparation_revision_survives_network_replacement_but_not_owner_replacement()
     let proxy = fixture.connect();
     let remote = proxy.remote_backend().unwrap();
     let before = remote.context().unwrap();
-    fixture
+    let saved = fixture
+        .client
+        .owner
+        .service
+        .network_state()
+        .unwrap()
+        .saved
+        .unwrap();
+    let applied = fixture
         .client
         .owner
         .runtime
@@ -236,15 +244,35 @@ fn preparation_revision_survives_network_replacement_but_not_owner_replacement()
                 .client
                 .owner
                 .service
-                .replace_network(EndpointConfig {
-                    relay: RelayConfig::Disabled,
-                    discovery: DiscoveryConfig::None,
-                    local_discovery: false,
-                    bind_addresses: vec!["127.0.0.1:0".parse().unwrap()],
-                    ..EndpointConfig::default()
+                .apply_network(velune_remote::NetworkSettingsUpdate {
+                    expected_revision: saved.revision,
+                    config: EndpointConfig {
+                        relay: saved.relay.clone(),
+                        discovery: saved.discovery.clone(),
+                        local_discovery: saved.local_discovery,
+                        path_policy: saved.path_policy,
+                        bind_addresses: saved.bind_addresses.clone(),
+                        request_timeout: std::time::Duration::from_millis(saved.request_timeout_ms),
+                        relay_credentials: Vec::new(),
+                    },
+                    credentials: saved
+                        .credentials
+                        .iter()
+                        .map(|credential| velune_remote::RelayCredentialEdit {
+                            url: credential.url.clone(),
+                            credential: velune_remote::CredentialEdit::Keep,
+                        })
+                        .collect(),
+                    restore_lookup_urls: Vec::new(),
                 }),
         )
         .unwrap();
+    assert!(matches!(
+        applied.phase,
+        velune_remote::NetworkApplicationPhase::Applied
+    ));
+    assert_eq!(applied.applied_revision, Some(saved.revision + 1));
+    assert_eq!(applied.saved.unwrap().revision, saved.revision + 1);
     fixture
         .client
         .owner

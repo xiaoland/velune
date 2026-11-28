@@ -534,10 +534,22 @@ mod tests {
         assert_eq!(args[5], cwd.join(".gemini"));
         assert_eq!(
             process.command.get_envs().collect::<Vec<_>>(),
-            REMOVED_ENVIRONMENT
-                .iter()
-                .map(|name| (std::ffi::OsStr::new(name), None))
-                .collect::<Vec<_>>()
+            [
+                "AGY_ADC_AUTH",
+                "CLOUD_CODE_URL",
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "GOOGLE_CLOUD_LOCATION",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_QUOTA_PROJECT",
+                "GOOGLE_GEMINI_BASE_URL",
+                "GOOGLE_GENAI_USE_VERTEXAI",
+                "GOOGLE_OAUTH_ACCESS_TOKEN",
+            ]
+            .iter()
+            .map(|name| (std::ffi::OsStr::new(name), None))
+            .collect::<Vec<_>>()
         );
         assert_eq!(process.mcp_endpoint, endpoint);
         assert!(process.input_prefix.is_empty());

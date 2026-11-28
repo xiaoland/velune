@@ -889,6 +889,103 @@ fn collect(
     })
 }
 
+fn collect_usage_payload(payload: Value, scope: CollectionScope, collected: &mut Collected) {
+    let usage = match scope {
+        CollectionScope::Credits => {
+            serde_json::from_value::<CreditsResponse>(payload).map(|response| UsageResponse {
+                credits: response.credits,
+                rate_limit_reset_credits: None,
+            })
+        }
+        _ => serde_json::from_value(payload),
+    };
+    match usage {
+        Ok(usage) => {
+            let credits = usage.credits.map(|credits| ProviderAccountCredits {
+                has_credits: credits.has_credits,
+                unlimited: credits.unlimited,
+                balance: credits.balance.map(String::from),
+            });
+            let count = usage
+                .rate_limit_reset_credits
+                .and_then(|summary| summary.available_count);
+            collected.snapshot.credits = credits;
+            if count.is_some() {
+                collected.snapshot.resets = Some(ProviderAccountResets {
+                    available_count: count,
+                    grants: None,
+                });
+                collected.snapshot.reset_count_observed = Some(observation_now());
+            }
+            if collected.snapshot.credits.is_some()
+                || count.is_some()
+                || scope == CollectionScope::Credits
+            {
+                if collected.snapshot.credits.is_some() {
+                    collected.snapshot.credits_observed = Some(observation_now());
+                }
+                collected.succeeded = true;
+            } else {
+                collected.failures.push(failure(
+                    ProviderAccountSource::Usage,
+                    "额度响应未报告 credits 余额或重置权益次数",
+                ));
+            }
+        }
+        Err(_) => collected.failures.push(failure(
+            ProviderAccountSource::Usage,
+            "额度响应格式无效，请稍后刷新",
+        )),
+    }
+}
+
+fn collect_reset_payload(payload: Value, collected: &mut Collected) {
+    match serde_json::from_value::<ResetResponse>(payload) {
+        Ok(resets) => {
+            let grants = resets.credits.map(|credits| {
+                credits
+                    .into_iter()
+                    .map(|grant| ProviderAccountResetGrant {
+                        id: grant.id,
+                        reset_type: grant.reset_type,
+                        status: grant.status,
+                        granted_at: grant.granted_at,
+                        expires_at: grant.expires_at,
+                        title: grant.title,
+                        description: grant.description,
+                    })
+                    .collect()
+            });
+            let old_count = collected
+                .snapshot
+                .resets
+                .as_ref()
+                .and_then(|resets| resets.available_count);
+            collected.snapshot.resets = Some(ProviderAccountResets {
+                available_count: resets.available_count.or(old_count),
+                grants: grants.clone(),
+            });
+            if resets.available_count.is_some() {
+                collected.snapshot.reset_count_observed = Some(observation_now());
+            }
+            if grants.is_some() {
+                collected.snapshot.reset_grants_observed = Some(observation_now());
+            }
+            collected.succeeded |= resets.available_count.is_some() || grants.is_some();
+            if grants.is_none() {
+                collected.failures.push(failure(
+                    ProviderAccountSource::Resets,
+                    "重置权益响应未报告明细",
+                ));
+            }
+        }
+        Err(_) => collected.failures.push(failure(
+            ProviderAccountSource::Resets,
+            "重置权益响应格式无效，请稍后刷新",
+        )),
+    }
+}
+
 async fn collect_async(
     home: PathBuf,
     capture: Capture,
@@ -936,53 +1033,7 @@ async fn collect_async(
     )
     .await;
     if let Some(payload) = usage {
-        let usage = match scope {
-            CollectionScope::Credits => {
-                serde_json::from_value::<CreditsResponse>(payload).map(|response| UsageResponse {
-                    credits: response.credits,
-                    rate_limit_reset_credits: None,
-                })
-            }
-            _ => serde_json::from_value(payload),
-        };
-        match usage {
-            Ok(usage) => {
-                let credits = usage.credits.map(|credits| ProviderAccountCredits {
-                    has_credits: credits.has_credits,
-                    unlimited: credits.unlimited,
-                    balance: credits.balance.map(String::from),
-                });
-                let count = usage
-                    .rate_limit_reset_credits
-                    .and_then(|summary| summary.available_count);
-                collected.snapshot.credits = credits;
-                if count.is_some() {
-                    collected.snapshot.resets = Some(ProviderAccountResets {
-                        available_count: count,
-                        grants: None,
-                    });
-                    collected.snapshot.reset_count_observed = Some(observation_now());
-                }
-                if collected.snapshot.credits.is_some()
-                    || count.is_some()
-                    || scope == CollectionScope::Credits
-                {
-                    if collected.snapshot.credits.is_some() {
-                        collected.snapshot.credits_observed = Some(observation_now());
-                    }
-                    collected.succeeded = true;
-                } else {
-                    collected.failures.push(failure(
-                        ProviderAccountSource::Usage,
-                        "额度响应未报告 credits 余额或重置权益次数",
-                    ));
-                }
-            }
-            Err(_) => collected.failures.push(failure(
-                ProviderAccountSource::Usage,
-                "额度响应格式无效，请稍后刷新",
-            )),
-        }
+        collect_usage_payload(payload, scope, &mut collected);
     }
 
     if scope == CollectionScope::Credits {
@@ -998,50 +1049,7 @@ async fn collect_async(
     )
     .await;
     if let Some(payload) = resets {
-        match serde_json::from_value::<ResetResponse>(payload) {
-            Ok(resets) => {
-                let grants = resets.credits.map(|credits| {
-                    credits
-                        .into_iter()
-                        .map(|grant| ProviderAccountResetGrant {
-                            id: grant.id,
-                            reset_type: grant.reset_type,
-                            status: grant.status,
-                            granted_at: grant.granted_at,
-                            expires_at: grant.expires_at,
-                            title: grant.title,
-                            description: grant.description,
-                        })
-                        .collect()
-                });
-                let old_count = collected
-                    .snapshot
-                    .resets
-                    .as_ref()
-                    .and_then(|resets| resets.available_count);
-                collected.snapshot.resets = Some(ProviderAccountResets {
-                    available_count: resets.available_count.or(old_count),
-                    grants: grants.clone(),
-                });
-                if resets.available_count.is_some() {
-                    collected.snapshot.reset_count_observed = Some(observation_now());
-                }
-                if grants.is_some() {
-                    collected.snapshot.reset_grants_observed = Some(observation_now());
-                }
-                collected.succeeded |= resets.available_count.is_some() || grants.is_some();
-                if grants.is_none() {
-                    collected.failures.push(failure(
-                        ProviderAccountSource::Resets,
-                        "重置权益响应未报告明细",
-                    ));
-                }
-            }
-            Err(_) => collected.failures.push(failure(
-                ProviderAccountSource::Resets,
-                "重置权益响应格式无效，请稍后刷新",
-            )),
-        }
+        collect_reset_payload(payload, &mut collected);
     }
 
     let profile = fetch_json(
@@ -1448,37 +1456,99 @@ mod tests {
     }
 
     #[test]
-    fn reset_count_survives_missing_detail_rows_and_source_count_is_not_recomputed() {
-        let usage: UsageResponse = serde_json::from_value(serde_json::json!({
-            "rate_limit_reset_credits": {"available_count": 3}
-        }))
-        .unwrap();
-        let details: Result<ResetResponse, _> =
-            serde_json::from_value(serde_json::json!({"credits": null}));
-        let count = usage.rate_limit_reset_credits.unwrap().available_count;
-        assert_eq!(count, Some(3));
-        assert!(details.is_ok());
-        let details = details.unwrap();
-        assert!(details.credits.is_none());
-        let resets = ProviderAccountResets {
-            available_count: count,
-            grants: None,
-        };
-        assert_eq!(resets.available_count, Some(3));
-        assert_eq!(resets.grants, None);
-    }
-
-    #[test]
-    fn switcher_reset_fixture_keeps_expired_and_redeemed_rows_without_recounting() {
-        let response: ResetResponse = serde_json::from_value(serde_json::json!({
-            "available_count": 2,
-            "credits": [
-                {"id":"expired","reset_type":"codex_rate_limits","status":"available","expires_at":"2026-01-01T00:00:00Z"},
-                {"id":"used","reset_type":"codex_rate_limits","status":"redeemed"}
-            ]
-        })).unwrap();
-        assert_eq!(response.available_count, Some(2));
-        assert_eq!(response.credits.unwrap().len(), 2);
+    fn reset_payload_merge_preserves_reported_counts_rows_and_observation_owners() {
+        let rows = serde_json::json!([
+            {"id":"expired","reset_type":"codex_rate_limits","status":"available", "granted_at":"2025-01-01", "expires_at":"2026-01-01T00:00:00Z", "title":"Earlier grant", "description":"Keep original detail"},
+            {"id":"used","reset_type":"codex_rate_limits","status":"redeemed"},
+            {"id":"new","reset_type":"other","status":"available"}
+        ]);
+        for (payload, count, row_count, refresh_count, failure_expected) in [
+            (serde_json::json!({"credits":null}), 3, None, false, true),
+            (
+                serde_json::json!({"available_count":2,"credits":rows.clone()}),
+                2,
+                Some(3),
+                true,
+                false,
+            ),
+            (
+                serde_json::json!({"available_count":0,"credits":[]}),
+                0,
+                Some(0),
+                true,
+                false,
+            ),
+            (
+                serde_json::json!({"credits":rows}),
+                3,
+                Some(3),
+                false,
+                false,
+            ),
+        ] {
+            let mut collected = Collected::default();
+            collect_usage_payload(
+                serde_json::json!({
+                    "rate_limit_reset_credits":{"available_count":3}
+                }),
+                CollectionScope::Full,
+                &mut collected,
+            );
+            assert_eq!(
+                collected.snapshot.resets.as_ref().unwrap().available_count,
+                Some(3)
+            );
+            assert!(collected.snapshot.reset_count_observed.is_some());
+            assert!(collected.snapshot.reset_grants_observed.is_none());
+            collected.snapshot.reset_count_observed.as_mut().unwrap().at = "earlier-count".into();
+            collect_reset_payload(payload, &mut collected);
+            let result = collected.snapshot.resets.unwrap();
+            assert_eq!(result.available_count, Some(count));
+            assert_eq!(result.grants.as_ref().map(Vec::len), row_count);
+            assert_eq!(
+                collected.snapshot.reset_count_observed.unwrap().at != "earlier-count",
+                refresh_count
+            );
+            assert_eq!(
+                collected.snapshot.reset_grants_observed.is_some(),
+                row_count.is_some()
+            );
+            assert!(collected.succeeded);
+            assert_eq!(collected.failures.len(), usize::from(failure_expected));
+            if failure_expected {
+                assert_eq!(collected.failures[0].source, ProviderAccountSource::Resets);
+                assert!(collected.failures[0].message.contains("未报告明细"));
+            }
+            if row_count == Some(3) {
+                let grants = result.grants.unwrap();
+                assert_eq!(
+                    grants
+                        .iter()
+                        .map(|grant| (
+                            grant.id.as_str(),
+                            grant.reset_type.as_str(),
+                            grant.status.as_str()
+                        ))
+                        .collect::<Vec<_>>(),
+                    [
+                        ("expired", "codex_rate_limits", "available"),
+                        ("used", "codex_rate_limits", "redeemed"),
+                        ("new", "other", "available"),
+                    ]
+                );
+                assert_eq!(grants[0].granted_at.as_deref(), Some("2025-01-01"));
+                assert_eq!(
+                    grants[0].expires_at.as_deref(),
+                    Some("2026-01-01T00:00:00Z")
+                );
+                assert_eq!(grants[0].title.as_deref(), Some("Earlier grant"));
+                assert_eq!(
+                    grants[0].description.as_deref(),
+                    Some("Keep original detail")
+                );
+                assert!(grants[1].expires_at.is_none());
+            }
+        }
     }
 
     #[test]
