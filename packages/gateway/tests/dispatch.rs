@@ -24,6 +24,7 @@ struct Reply {
     status: u16,
     headers: Vec<(&'static str, String)>,
     body: String,
+    interrupted: bool,
 }
 impl Reply {
     fn json(status: u16, body: Value) -> Self {
@@ -34,6 +35,7 @@ impl Reply {
             status,
             headers: vec![("content-type", "application/json".into())],
             body: body.into(),
+            interrupted: false,
         }
     }
     fn stream(body: &str) -> Self {
@@ -41,6 +43,7 @@ impl Reply {
             status: 200,
             headers: vec![("content-type", "text/event-stream".into())],
             body: body.into(),
+            interrupted: false,
         }
     }
     fn header(mut self, name: &'static str, value: &str) -> Self {
@@ -101,7 +104,20 @@ impl Upstream {
         for (name, value) in reply.headers {
             response = response.header(name, value);
         }
-        response.body(Body::from(reply.body)).unwrap()
+        let body = if reply.interrupted {
+            use futures_util::{StreamExt, stream};
+            let first = stream::iter([Ok(reply.body)]);
+            let disconnect = stream::once(async {
+                // Give the HTTP server time to flush the head and first chunk
+                // before the upstream connection fails.
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
+            });
+            Body::from_stream(first.chain(disconnect))
+        } else {
+            Body::from(reply.body)
+        };
+        response.body(body).unwrap()
     }
 }
 
@@ -987,6 +1003,26 @@ async fn unreachable_member_moves_to_the_next() {
         assert_eq!(answer.status, 200);
         assert_eq!(upstream.hits().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn interrupted_success_body_does_not_replay_or_cool_down_the_member() {
+    let protocol = Api::Responses;
+    let (upstream, address) = Upstream::start().await;
+    let runner = gateway(protocol, &address);
+    let mut partial = Reply::json_bytes(200, r#"{"status":"completed","#);
+    partial.interrupted = true;
+    upstream.reply("a", partial);
+    upstream.reply("b", Reply::json(200, protocol.success()));
+
+    let answer = send(&runner, protocol, "velune/model/route", false).await;
+    assert_eq!(upstream.hits(), ["/a/v1/responses"]);
+    assert_eq!(answer.status, 502);
+
+    upstream.reply("a", Reply::json(200, protocol.success()));
+    let answer = send(&runner, protocol, "velune/model/route", false).await;
+    assert_eq!(answer.status, 200);
+    assert_eq!(upstream.hits(), ["/a/v1/responses", "/a/v1/responses"]);
 }
 
 #[tokio::test]

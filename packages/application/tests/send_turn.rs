@@ -10,12 +10,13 @@ use std::{
 };
 use velune_application::{
     ApplicationService, ClientViewId, Command, ComposedTurn, DeliveredBlock, DeliveredSnapshot,
-    ModelSelection, Options, Response, RuntimeExecution, RuntimeHome, SnapshotUpdate,
-    SubmissionReceipt,
+    ModelSelection, Options, Response, RuntimeExecution, RuntimeHome, ScheduledRunPhase,
+    ScheduledTarget, ScheduledTask, ScheduledTaskStatus, ScheduledTasksOperation,
+    ScheduledTasksState, SnapshotUpdate, SubmissionReceipt,
     config::RuntimeInstance,
     conversation::{MessageRole, RunState, RuntimeKind},
 };
-use velune_test_support::TempRoot;
+use velune_test_support::{TempRoot, wait_until};
 
 const CONVERSATION: &str = "synthetic:abcd";
 const NEW_TEXT: &str = "new question";
@@ -49,7 +50,7 @@ for line in sys.stdin:
     if method == 'config/read':
         result = {'config': {'model_provider': 'openai'}}
     elif method in ('thread/read', 'thread/resume'):
-        result = {'thread': {'id': 'abcd', 'cwd': str(root), 'name': 'Synthetic',
+        result = {'thread': {'id': params['threadId'], 'cwd': str(root), 'name': 'Synthetic',
                              'modelProvider': 'openai', 'historyMode': 'paginated' if paged else 'legacy'}}
         if method == 'thread/read' and params.get('includeTurns'):
             assert not paged
@@ -81,6 +82,9 @@ for line in sys.stdin:
         emit({'method': 'turn/started', 'params': {**context, 'turn': {'id': 'new-turn'}}})
         emit({'method': 'item/completed', 'params': {**context, 'item': {
             'id': 'new-user', 'type': 'userMessage', 'content': params['input']}}})
+        if params['input'][0].get('text') == 'hold conversation open':
+            emit({'id': request['id'], 'result': result})
+            continue
         if side:
             deadline = time.monotonic() + 8
             while not (root / 'release-side-reply').exists():
@@ -211,6 +215,112 @@ impl Drop for Fixture {
         // Close the service so its RPC owners reap their exact child processes.
         let _ = self.service.close(true);
     }
+}
+
+#[test]
+fn scheduled_run_waits_for_its_own_conversation_without_blocking_another() {
+    let fixture = Fixture::new();
+    let schedules = |operation| {
+        let Response::ManageScheduledTasks(state) =
+            fixture.execute(Command::ManageScheduledTasks { operation })
+        else {
+            panic!("expected scheduled task state")
+        };
+        state
+    };
+    let run_now = |conversation_id: &str, prompt: &str| {
+        let state = schedules(ScheduledTasksOperation::Save {
+            task: ScheduledTask {
+                id: String::new(),
+                revision: 0,
+                name: prompt.into(),
+                prompt: prompt.into(),
+                rrule: "FREQ=DAILY".into(),
+                time_zone: "Asia/Shanghai".into(),
+                status: ScheduledTaskStatus::Paused,
+                target: ScheduledTarget::ExistingConversation {
+                    runtime_id: "synthetic".into(),
+                    conversation_id: conversation_id.into(),
+                },
+                model: None,
+                effort: None,
+                permission_mode: None,
+                notify_only_failures: false,
+                next_run_at_unix_ms: None,
+                source: None,
+                issue: None,
+            },
+        });
+        let task = state
+            .tasks
+            .into_iter()
+            .find(|task| task.name == prompt)
+            .unwrap();
+        schedules(ScheduledTasksOperation::RunNow {
+            id: task.id.clone(),
+            revision: task.revision,
+        });
+        task.id
+    };
+    let check_run = |state: &ScheduledTasksState, id: &str, phase| {
+        state
+            .runs
+            .iter()
+            .any(|run| run.task_id == id && run.phase == phase)
+    };
+
+    fixture.snapshot_when(|snapshot| snapshot.actions.can_send);
+    fixture.execute(Command::SendTurn {
+        submission_id: None,
+        source_runtime_id: "synthetic".into(),
+        target_runtime_id: "synthetic".into(),
+        conversation_id: CONVERSATION.into(),
+        selection: None,
+        turn: ComposedTurn {
+            text: "hold conversation open".into(),
+            effort: None,
+            permission_mode: None,
+            attachments: vec![],
+        },
+    });
+    fixture.snapshot_when(|snapshot| snapshot.run_state == RunState::Running);
+    let blocked = run_now(CONVERSATION, "scheduled in busy conversation");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            schedules(ScheduledTasksOperation::List)
+                .runs
+                .iter()
+                .any(|run| {
+                    run.task_id == blocked
+                        && run.phase == ScheduledRunPhase::Waiting
+                        && run.detail.is_some()
+                })
+        }),
+        "scheduler never observed the busy target"
+    );
+
+    let ready = run_now("synthetic:cdef", "scheduled in idle conversation");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            let state = schedules(ScheduledTasksOperation::List);
+            check_run(&state, &ready, ScheduledRunPhase::Completed)
+        }),
+        "independent run did not complete: {:?}",
+        schedules(ScheduledTasksOperation::List).runs
+    );
+    let state = schedules(ScheduledTasksOperation::List);
+    assert!(check_run(&state, &blocked, ScheduledRunPhase::Waiting));
+    let wire = fixture.root.read("turns.jsonl");
+    let requests = wire
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["params"]["threadId"], "cdef");
+    assert_eq!(
+        requests[1]["params"]["input"][0]["text"],
+        "scheduled in idle conversation"
+    );
 }
 
 #[test]

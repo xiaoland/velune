@@ -6,6 +6,7 @@ use crate::{
     ScheduledRun, ScheduledRunPhase as Phase, ScheduledTarget as Target, ScheduledTask,
     ScheduledTaskStatus as Status, ScheduledTasksOperation as Operation, ScheduledTasksState,
 };
+use std::ops::ControlFlow;
 
 impl CoreRuntime {
     pub(crate) fn scheduled_tasks(
@@ -402,8 +403,9 @@ impl CoreRuntime {
                 self.scheduled_tasks.put_run(&run)?;
                 continue;
             }
-            self.dispatch_scheduled_run(task, &mut run)?;
-            break;
+            if self.dispatch_scheduled_run(task, &mut run)?.is_break() {
+                break;
+            }
         }
         Ok(())
     }
@@ -411,11 +413,11 @@ impl CoreRuntime {
         &mut self,
         task: &ScheduledTask,
         run: &mut ScheduledRun,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<ControlFlow<()>, RuntimeError> {
         // Keep the run waiting rather than preparing it against credentials
         // that an interactive login is about to replace.
         if self.login_running() {
-            return Ok(());
+            return Ok(ControlFlow::Break(()));
         }
         match &task.target {
             Target::ExistingConversation {
@@ -431,10 +433,10 @@ impl CoreRuntime {
                     run.detail = Some(detail.clone());
                     self.scheduled_tasks.put_run(run)?;
                     self.pause_schedule(task, detail, false)?;
-                    return Ok(());
+                    return Ok(ControlFlow::Break(()));
                 }
-                let Some(snapshot) = self.current_snapshot() else {
-                    return Ok(());
+                let Some(snapshot) = self.submission_context() else {
+                    return Ok(ControlFlow::Continue(()));
                 };
                 if self.check_handoff_input(&snapshot).is_err() {
                     let detail = "等待用户恢复 Velune 会话控制";
@@ -442,7 +444,7 @@ impl CoreRuntime {
                         run.detail = Some(detail.into());
                         self.scheduled_tasks.put_run(run)?;
                     }
-                    return Ok(());
+                    return Ok(ControlFlow::Continue(()));
                 }
                 if snapshot.actions.input_access == crate::conversation::InputAccess::ReadOnly {
                     run.phase = Phase::Failed;
@@ -450,7 +452,7 @@ impl CoreRuntime {
                     run.detail = Some(detail.clone());
                     self.scheduled_tasks.put_run(run)?;
                     self.pause_schedule(task, detail, false)?;
-                    return Ok(());
+                    return Ok(ControlFlow::Break(()));
                 }
                 if snapshot.actions.input_access != crate::conversation::InputAccess::Editable
                     || self.session.executing()
@@ -459,9 +461,12 @@ impl CoreRuntime {
                         .iter()
                         .any(|interaction| interaction.blocks_turn())
                 {
-                    run.detail = Some("等待会话空闲、审批结束或外部客户端释放控制权".into());
-                    self.scheduled_tasks.put_run(run)?;
-                    return Ok(());
+                    let detail = "等待会话空闲、审批结束或外部客户端释放控制权";
+                    if run.detail.as_deref() != Some(detail) {
+                        run.detail = Some(detail.into());
+                        self.scheduled_tasks.put_run(run)?;
+                    }
+                    return Ok(ControlFlow::Continue(()));
                 }
             }
             Target::NewConversation { .. } => self.focus_new(),
@@ -491,7 +496,7 @@ impl CoreRuntime {
                 run.detail = Some(detail.clone());
                 self.scheduled_tasks.put_run(run)?;
                 self.pause_schedule(task, detail, false)?;
-                return Ok(());
+                return Ok(ControlFlow::Break(()));
             }
         }
         let snapshot = self
@@ -543,7 +548,8 @@ impl CoreRuntime {
                 run.detail = Some(format!("派发未能确认：{error}；请检查会话，未自动重发"));
             }
         }
-        self.scheduled_tasks.put_run(run)
+        self.scheduled_tasks.put_run(run)?;
+        Ok(ControlFlow::Break(()))
     }
     fn schedule_worktree(
         &self,

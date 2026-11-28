@@ -58,7 +58,9 @@ Windows 已准备每用户 Velopack 安装器、GitHub 更新源和原生 feed�
 
 项目脚本对同平台的共享生成／App输出加文件锁，dev／release也不会同时覆盖它们。跨平台保留各自输出；Cargo管理共享工具和cross域中的编译锁。安装使用独立host范围资源，不把独立worktree编译串在日常安装资源之后。没有额外的项目构建守护进程或队列。
 
-`target/build-state/results/<platform>-<profile>.json`（Mac 为 `macos-<profile>-<purpose>.json`） 记录命令、输入前后身份、变化路径、产物摘要、耗时与退出码；成功时另存 `*-success.json`。输入身份覆盖相关源码／资源、编译配置和选择的环境摘要，并包含mtime／inode来识别构建期间临时修改后还原的情况。它是工作区本地来源记录，不是跨机器源码版本号，也不替代编译器的依赖判断。若输入变化，返回3、保留产物与此前成功记录；本次不得作为当前源码的通过证据，下一次请求使用现有增量缓存继续。
+`target/build-state/results/<platform>-<profile>.json` 记录命令、输入前后身份、变化路径、产物摘要、耗时与退出码。Mac 使用 `macos-<profile>-<purpose>.json`，Android 独立原生构建使用 `android-native-<profile>.json`，记录原生库和绑定清单的摘要。构建命令失败时，回执保留原退出码，产物摘要为空。只有成功才更新 `*-success.json`。
+
+输入身份覆盖相关源码／资源、编译配置和选定的环境摘要，并用 mtime 与 inode 识别构建期间改动后又还原的文件。若输入变化，返回 3，保留产物与此前成功记录。下一次请求继续使用增量缓存，重新生成当前源码的构建回执。
 
 代码 Agent 的验证分工与证据复用约束见[Agent 指引](../../AGENTS.md#构建与验收协作)。
 
