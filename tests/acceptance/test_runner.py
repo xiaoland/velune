@@ -19,7 +19,7 @@ spec.loader.exec_module(runner)
 
 
 class RunnerTests(unittest.TestCase):
-    def run_worker(self, body: str):
+    def run_worker(self, payload: str | None, exit_code: int = 0):
         with tempfile.TemporaryDirectory(prefix="velune-runner-test-") as temporary:
             root = Path(temporary)
             cases = root / "cases"
@@ -31,7 +31,8 @@ class RunnerTests(unittest.TestCase):
             resources = root / "resources"
             resources.mkdir()
             worker = root / "worker.py"
-            worker.write_text("import json, pathlib, sys\nresult = pathlib.Path(sys.argv[4])\n" + body)
+            write = f"pathlib.Path(sys.argv[4]).write_text({payload!r})\n" if payload is not None else ""
+            worker.write_text(f"import pathlib, sys\n{write}sys.exit({exit_code})\n")
             output = io.StringIO()
             # Only replace the external worker executable and output locations.
             # The actual parent owns subprocess execution, result parsing and exit policy.
@@ -50,34 +51,38 @@ class RunnerTests(unittest.TestCase):
             return status, manifest["cases"][0], output.getvalue()
 
     def test_worker_exit_is_required_even_after_a_passed_result(self):
-        status, result, output = self.run_worker(
-            'result.write_text(json.dumps({"case":"synthetic","status":"passed","checks":{"saved":True},"facts":{}}))\n'
-            'sys.exit(7)\n')
+        valid = {"case": "synthetic", "status": "passed", "checks": {"saved": True}, "facts": {}}
+        status, result, output = self.run_worker(json.dumps(valid), exit_code=7)
         self.assertEqual(status, 1, output)
         self.assertEqual(result["status"], "failed")
-        self.assertIn("7", result["error"])
+        self.assertEqual(result["worker_returncode"], 7)
+        self.assertIn("worker exited with 7", result["error"])
         self.assertIn("FAIL synthetic", output)
 
     def test_unreadable_worker_results_still_publish_failures(self):
-        for body, diagnosis in [
-            ("pass\n", "no result"),
-            ("result.write_text('{broken')\n", "invalid result"),
-            ("result.write_text('[]')\n", "invalid result"),
-            ('result.write_text(\'{"case":"synthetic","status":"unknown"}\')\n', "invalid result"),
-            ('result.write_text(\'{"case":"different","status":"passed"}\')\n', "invalid result"),
-            ('result.write_text(\'{"case":"synthetic","status":"passed","checks":[]}\')\n', "invalid result"),
-            ('result.write_text(\'{"case":"synthetic","status":"passed","facts":{}}\')\n', "invalid result"),
-            ('result.write_text(\'{"case":"synthetic","status":"passed","checks":{},"facts":{}}\')\n', "requires recorded successful checks"),
-            ('result.write_text(\'{"case":"synthetic","status":"passed","checks":{"saved":false},"facts":{}}\')\n', "requires recorded successful checks"),
-        ]:
-            with self.subTest(diagnosis=diagnosis, body=body):
-                status, result, output = self.run_worker(body)
+        valid = {"case": "synthetic", "status": "passed", "checks": {"saved": True}, "facts": {}}
+        schema_error = "expected a case result with a known status and check records"
+        cases = [
+            (None, "no result"),
+            ("{broken", "invalid result"),
+            ("[]", schema_error),
+            (json.dumps({**valid, "status": "unknown"}), schema_error),
+            (json.dumps({**valid, "case": "different"}), schema_error),
+            (json.dumps({**valid, "facts": []}), schema_error),
+            (json.dumps({**valid, "checks": []}), schema_error),
+            (json.dumps({key: value for key, value in valid.items() if key != "checks"}), schema_error),
+            (json.dumps({**valid, "checks": {}}), "requires recorded successful checks"),
+            (json.dumps({**valid, "checks": {"saved": False}}), "requires recorded successful checks"),
+        ]
+        for payload, diagnosis in cases:
+            with self.subTest(payload=payload):
+                status, result, output = self.run_worker(payload)
                 self.assertEqual(status, 1, output)
                 self.assertEqual(result["status"], "failed")
                 self.assertIn(diagnosis, result["error"])
 
     def test_success_skip_and_case_failure_keep_their_distinct_meaning(self):
-        for state, expected, code in [("passed", 0, 0), ("skipped", 0, 0), ("failed", 1, 1)]:
+        for state, expected in [("passed", 0), ("skipped", 0), ("failed", 1)]:
             with self.subTest(state=state):
                 payload = {"case": "synthetic", "status": state, "facts": {}, "checks": {}}
                 if state == "passed":
@@ -86,8 +91,8 @@ class RunnerTests(unittest.TestCase):
                     payload["reason"] = "requires --codex"
                 else:
                     payload["error"] = "target invariant failed"
-                status, result, output = self.run_worker(
-                    f"result.write_text({json.dumps(payload)!r})\nsys.exit({code})\n")
+                # A successful process exit leaves the case status as the deciding input.
+                status, result, output = self.run_worker(json.dumps(payload))
                 self.assertEqual(status, expected, output)
                 self.assertEqual(result["status"], state)
                 if state == "failed":

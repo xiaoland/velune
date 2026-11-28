@@ -44,7 +44,7 @@ def resources(root: Path, explicit: Path | None) -> Path:
     return target
 
 
-def enter(root: Path, explicit_resources: Path | None, extra_environment: dict[str, str] | None = None) -> Isolated:
+def enter(root: Path, explicit_resources: Path | None) -> Isolated:
     """Create the directories and replace the process environment.
 
     Clients that honor the proxy environment reach loopback directly and use
@@ -62,5 +62,4 @@ def enter(root: Path, explicit_resources: Path | None, extra_environment: dict[s
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         os.environ[key] = os.environ[key.lower()] = "http://127.0.0.1:1"
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = "localhost,127.0.0.1"
-    os.environ.update(extra_environment or {})
     return isolated

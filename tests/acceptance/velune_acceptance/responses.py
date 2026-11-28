@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import threading
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -20,7 +19,6 @@ class Stage:
     reply: str
     started: threading.Event = field(default_factory=threading.Event)
     released: threading.Event = field(default_factory=threading.Event)
-    extra_items: Callable[[], list[dict]] = list
 
 
 class ResponsesProvider:
@@ -39,9 +37,8 @@ class ResponsesProvider:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._server.server_port}/v1"
 
-    def stage(self, name: str, prompt: str, reply: str, *, held: bool = False,
-              extra_items: Callable[[], list[dict]] = list) -> Stage:
-        stage = Stage(prompt, reply, extra_items=extra_items)
+    def stage(self, name: str, prompt: str, reply: str, *, held: bool = False) -> Stage:
+        stage = Stage(prompt, reply)
         if not held:
             stage.released.set()
         self.stages[name] = stage
@@ -57,18 +54,16 @@ class ResponsesProvider:
     def _match(self, request: str) -> str | None:
         return next((name for name, stage in self.stages.items() if stage.prompt in request), None)
 
-    def _response(self, name: str, answer: str, extra: list[dict]) -> bytes:
+    def _response(self, name: str, answer: str) -> bytes:
         item = {"type": "message", "id": f"message-{name}", "status": "completed",
                 "role": "assistant", "phase": "final_answer",
                 "content": [{"type": "output_text", "text": answer, "annotations": []}]}
-        items = extra + [item]
         response = {"id": f"response-{name}", "object": "response", "status": "completed",
-                    "model": self.model, "output": items,
+                    "model": self.model, "output": [item],
                     "usage": {"input_tokens": 16, "output_tokens": 4, "total_tokens": 20}}
         events = [{"type": "response.created", "response": dict(response, status="in_progress", output=[])}]
-        for index, entry in enumerate(items):
-            events.append({"type": "response.output_item.added", "output_index": index, "item": entry})
-            events.append({"type": "response.output_item.done", "output_index": index, "item": entry})
+        events.append({"type": "response.output_item.added", "output_index": 0, "item": item})
+        events.append({"type": "response.output_item.done", "output_index": 0, "item": item})
         events.append({"type": "response.completed", "response": response})
         return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
 
@@ -105,7 +100,7 @@ class ResponsesProvider:
                 if "Generate task titles only" in str(body.get("instructions", "")) or "title" in schema:
                     provider.title_requests += 1
                     self.write("text/event-stream", provider._response(
-                        "title", json.dumps({"title": "Synthetic acceptance conversation"}), []))
+                        "title", json.dumps({"title": "Synthetic acceptance conversation"})))
                     return
                 users = [item for item in body.get("input", []) if item.get("role") == "user"]
                 request = json.dumps(users[-1]) if users else ""
@@ -120,6 +115,6 @@ class ResponsesProvider:
                 if not stage.released.wait(provider.hold_seconds):
                     self.send_error(504, "fixture request held too long")
                     return
-                self.write("text/event-stream", provider._response(name, stage.reply, stage.extra_items()))
+                self.write("text/event-stream", provider._response(name, stage.reply))
 
         return Handler

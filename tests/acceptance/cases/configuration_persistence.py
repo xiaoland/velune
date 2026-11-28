@@ -43,6 +43,7 @@ def run(ctx: Context) -> None:
         assert first.name == "Initial synthetic provider"
         assert first.endpoint == "http://127.0.0.1:1/acceptance" and first.protocol == api.Protocol.MESSAGES
         assert len(first.models) == 1 and first.models[0].provider_model_id == "synthetic-model"
+        assert first.models[0].record_key, "saved model is missing its identity"
         assert first.models[0].context_window == 32000 and first.models[0].max_output_tokens == 4096
         assert app.read_provider_api_key("default", PROVIDER) == API_KEY
         ctx.passed("saved_provider_and_synthetic_key_survive_reopen")

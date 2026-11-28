@@ -56,4 +56,4 @@ def load(directory: Path, scratch: Path, package_name: str) -> types.SimpleNames
     package.__path__ = [str(scratch)]
     sys.modules[package_name] = package
     loaded = {name: importlib.import_module(f"{package_name}.velune_{name}") for name in MODULES}
-    return types.SimpleNamespace(**loaded, library=lib)
+    return types.SimpleNamespace(**loaded)
