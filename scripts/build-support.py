@@ -196,7 +196,7 @@ def source_snapshot(platform):
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
-        paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
+        paths += ["LICENSE", "scripts/build-android.sh", "scripts/build-android-native.sh"]
     if is_git_checkout():
         output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
         selected = [os.fsdecode(name) for name in sorted(set(output.split(b"\0")) - {b""})]
@@ -309,7 +309,7 @@ def source_identity(platform):
     return snapshot_identity(source_snapshot(platform))
 
 
-def artifact_identity(platform, profile, command, purpose="development"):
+def artifact_identity(platform, profile, command, purpose, android_native_only):
     native_profile = "debug" if profile == "dev" else "release"
     ios_sdk = "iphoneos" if "iphoneos" in command or os.environ.get("PLATFORM_NAME") == "iphoneos" else "iphonesimulator"
     ios_target = "aarch64-apple-ios" if ios_sdk == "iphoneos" else "aarch64-apple-ios-sim"
@@ -326,8 +326,12 @@ def artifact_identity(platform, profile, command, purpose="development"):
             if isinstance(executable, str) and executable and Path(executable).name == executable:
                 paths.append(str((bundle / "Contents/MacOS" / executable).relative_to(ROOT)))
     elif platform == "android":
+        paths = ["target/android-native/arm64-v8a/libvelune_bindings.so"]
+        if android_native_only:
+            paths.append("target/android-bindings/.velune-bindings.json")
+            return {path: digest(ROOT / path) for path in paths}
         apk, output_metadata = android_apk_output(profile)
-        paths = ["target/android-native/arm64-v8a/libvelune_bindings.so", str(apk.relative_to(ROOT)), str(output_metadata.relative_to(ROOT))]
+        paths.extend(str(path.relative_to(ROOT)) for path in (apk, output_metadata))
     else:
         paths = {
             "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
@@ -374,6 +378,8 @@ def run(args):
     from build_lock import FileLock
     if args.purpose != "development" and args.platform != "macos":
         raise ValueError("--purpose 仅用于 Mac 构建")
+    if args.android_native_only and args.platform != "android":
+        raise ValueError("--android-native-only 仅用于 Android 构建")
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
@@ -392,17 +398,31 @@ def run(args):
         if code == 0 and before != after:
             code = 3
             print("构建期间输入已变化；产物保留，本次不作为当前源码的通过结果。请重新请求构建。", file=sys.stderr)
+        artifacts = {}
+        artifact_error = None
+        if result.returncode == 0:
+            try:
+                artifacts = artifact_identity(args.platform, args.profile, command, args.purpose, args.android_native_only)
+            except (OSError, ValueError) as error:
+                artifact_error = str(error)
+                print(artifact_error, file=sys.stderr)
+                if code == 0:
+                    code = 1
         record = {"platform": args.platform, "profile": args.profile, "command": command,
                   "input_before": before, "input_after": after, "current": before == after,
                   "exit_code": code, "duration_seconds": round(time.time() - started, 3),
-                  "artifacts": artifact_identity(args.platform, args.profile, command, args.purpose),
+                  "artifacts": artifacts,
                   "changed_inputs": sorted(name for name in before_snapshot.keys() | after_snapshot.keys() if before_snapshot.get(name) != after_snapshot.get(name))}
-        purpose_suffix = ""
+        if artifact_error is not None:
+            record["artifact_error"] = artifact_error
+        result_name = f"{args.platform}-{args.profile}"
         if args.platform == "macos":
             record["purpose"] = args.purpose
-            purpose_suffix = "-" + args.purpose
+            result_name += "-" + args.purpose
+        elif args.android_native_only:
+            result_name = f"android-native-{args.profile}"
         data = (json.dumps(record, indent=2, ensure_ascii=False) + "\n").encode()
-        path = STATE / "results" / f"{args.platform}-{args.profile}{purpose_suffix}.json"
+        path = STATE / "results" / f"{result_name}.json"
         write(path, data)
         if code == 0:
             write(path.with_name(path.stem + "-success.json"), data)
@@ -418,7 +438,7 @@ def main():
     actions.add_parser("source-provenance")
     for name in ("bindgen", "verify-bindings"):
         p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "python", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
-    p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("command", nargs=argparse.REMAINDER)
+    p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("--android-native-only", action="store_true"); p.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if args.action == "copy": copy(args.source, args.destination)

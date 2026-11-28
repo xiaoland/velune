@@ -18,7 +18,7 @@ esac
 if [[ "${VELUNE_BUILD_MANAGED:-}" != android ]]; then
   arguments=(--profile "$profile")
   [[ "$features" != remote-diagnostics ]] || arguments+=(--diagnostics)
-  exec python3 scripts/build-support.py run --platform android --profile "$profile" -- bash "$0" "${arguments[@]}"
+  exec python3 scripts/build-support.py run --platform android --profile "$profile" --android-native-only -- bash "$0" "${arguments[@]}"
 fi
 
 sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"

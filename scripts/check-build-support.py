@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('support', Path(__file__).with_name('build-support.py'))
 support = importlib.util.module_from_spec(spec)
@@ -66,7 +67,7 @@ class BuildSupportChecks(unittest.TestCase):
         try:
             subprocess.run(['git','init','-q',str(self.root)],check=True)
             source=self.root/'app/mac/Probe.swift'; source.parent.mkdir(parents=True); source.write_text('before')
-            args=argparse.Namespace(platform='macos',profile='dev',purpose='development',command=[sys.executable,'-c','pass'])
+            args=argparse.Namespace(platform='macos',profile='dev',purpose='development',android_native_only=False,command=[sys.executable,'-c','pass'])
             self.assertEqual(support.run(args),0)
             result = support.STATE/'results/macos-dev-development.json'
             successful_result = support.STATE/'results/macos-dev-development-success.json'
@@ -79,6 +80,76 @@ class BuildSupportChecks(unittest.TestCase):
             self.assertEqual(support.run(args),3, 'Restored bytes must not hide a source edit during compilation')
         finally:
             support.ROOT, support.STATE = old_root, old_state
+
+    def test_android_build_receipts_follow_the_outputs_of_each_entry_point(self):
+        state = self.root / 'target/build-state'
+        results = state / 'results'
+        library = self.root / 'target/android-native/arm64-v8a/libvelune_bindings.so'
+        bindings = self.root / 'target/android-bindings/.velune-bindings.json'
+        native_result = results / 'android-native-dev.json'
+        native_success = results / 'android-native-dev-success.json'
+        apk_result = results / 'android-dev.json'
+        apk_success = results / 'android-dev-success.json'
+        args = argparse.Namespace(platform='android', profile='dev', purpose='development',
+                                  android_native_only=True, command=[sys.executable, '-c', 'pass'])
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        (self.root / 'LICENSE').write_text('original license')
+        for path in (library, bindings):
+            path.parent.mkdir(parents=True)
+            path.write_text('synthetic artifact')
+
+        with patch.multiple(support, ROOT=self.root, STATE=state):
+            self.assertEqual(support.run(args), 0)
+            native = json.loads(native_result.read_text())
+            self.assertEqual(set(native['artifacts']), {
+                library.relative_to(self.root).as_posix(),
+                bindings.relative_to(self.root).as_posix(),
+            })
+            self.assertFalse(apk_result.exists())
+            bindings.unlink()
+            self.assertEqual(support.run(args), 1, 'a missing binding manifest must fail a native build')
+            self.assertEqual(json.loads(native_result.read_text())['exit_code'], 1)
+            self.assertEqual(json.loads(native_success.read_text()), native)
+            bindings.write_text('synthetic artifact')
+
+            args.android_native_only = False
+            args.command = [sys.executable, '-c', 'raise SystemExit(17)']
+            self.assertEqual(support.run(args), 17)
+            failure = json.loads(apk_result.read_text())
+            self.assertEqual(failure['exit_code'], 17)
+            self.assertEqual(failure['artifacts'], {})
+            self.assertFalse(apk_success.exists())
+
+            args.command = [sys.executable, '-c', 'pass']
+            self.assertEqual(support.run(args), 1, 'a missing APK must still fail a full build')
+            self.assertIn('output-metadata.json', json.loads(apk_result.read_text())['artifact_error'])
+            self.assertFalse(apk_success.exists())
+
+            apk_dir = self.root / 'app/android/app/build/outputs/apk/debug'
+            apk_dir.mkdir(parents=True)
+            (apk_dir / 'app-debug.apk').write_text('synthetic APK')
+            (apk_dir / 'output-metadata.json').write_text(json.dumps({
+                'variantName': 'debug', 'elements': [{'outputFile': 'app-debug.apk'}],
+            }))
+            self.assertEqual(support.run(args), 0)
+            success = apk_success.read_bytes()
+            self.assertIn('app/android/app/build/outputs/apk/debug/app-debug.apk',
+                          json.loads(success)['artifacts'])
+            args.command = [sys.executable, '-c', 'raise SystemExit(17)']
+            self.assertEqual(support.run(args), 17)
+            latest_apk_result = apk_result.read_bytes()
+            self.assertEqual(apk_success.read_bytes(), success)
+
+            args.android_native_only = True
+            args.command = [sys.executable, '-c', 'pass']
+            self.assertEqual(support.run(args), 0)
+            self.assertEqual(apk_result.read_bytes(), latest_apk_result)
+            self.assertEqual(apk_success.read_bytes(), success)
+            self.assertEqual(json.loads(native_result.read_text())['artifacts'], native['artifacts'])
+
+            args.command = [sys.executable, '-c', 'from pathlib import Path; Path("LICENSE").write_text("updated")']
+            self.assertEqual(support.run(args), 3)
+            self.assertEqual(json.loads(native_result.read_text())['changed_inputs'], ['LICENSE'])
 
 
 if __name__=='__main__': unittest.main()
