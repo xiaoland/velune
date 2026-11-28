@@ -92,15 +92,23 @@ pub(crate) fn anchor(task: &mut ScheduledTask) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-struct TurnSettlement {
-    outcome: TurnOutcome,
-    work_pending: bool,
+pub(crate) enum DispatchReceipt {
+    Admitted,
+    WaitingForControl,
+    Unconfirmed(String),
+}
+
+enum RunUpdate {
+    Dispatch(DispatchReceipt),
+    Turn {
+        outcome: TurnOutcome,
+        work_pending: bool,
+    },
 }
 
 pub(crate) struct Store {
     connection: Connection,
-    pending_settlements: BTreeMap<String, TurnSettlement>,
+    pending_updates: BTreeMap<String, RunUpdate>,
 }
 impl Store {
     pub(crate) fn open(home: &Path) -> Result<Self, Error> {
@@ -115,7 +123,7 @@ impl Store {
             .map_err(db)?;
         let mut store = Self {
             connection,
-            pending_settlements: BTreeMap::new(),
+            pending_updates: BTreeMap::new(),
         };
         // A prior owner may have crossed the native acceptance boundary. Never
         // replay it, even when the process died before recording its reply.
@@ -267,44 +275,84 @@ impl Store {
         outcome: TurnOutcome,
         work_pending: bool,
     ) {
-        self.persist_or_retain(
+        if let Err(error) = self.record_update(
             id,
-            TurnSettlement {
+            RunUpdate::Turn {
                 outcome,
                 work_pending,
             },
-        );
-    }
-
-    pub(crate) fn retry_turn_results(&mut self) {
-        for (id, settlement) in std::mem::take(&mut self.pending_settlements) {
-            self.persist_or_retain(id, settlement);
-        }
-    }
-
-    pub(crate) fn has_pending_turn_result(&self, id: &str) -> bool {
-        self.pending_settlements.contains_key(id)
-    }
-
-    fn persist_or_retain(&mut self, id: String, settlement: TurnSettlement) {
-        if let Err(error) = self.persist_turn_result(&id, settlement) {
+        ) {
             tracing::warn!(target: "velune_application", event="scheduled_run_settlement_failed", detail=%error);
-            self.pending_settlements.insert(id, settlement);
         }
     }
 
-    fn persist_turn_result(&mut self, id: &str, settlement: TurnSettlement) -> Result<(), Error> {
+    pub(crate) fn retry_run_updates(&mut self) {
+        for (id, update) in std::mem::take(&mut self.pending_updates) {
+            if let Err(error) = self.record_update(id, update) {
+                tracing::warn!(target: "velune_application", event="scheduled_run_update_failed", detail=%error);
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_run_update(&self, id: &str) -> bool {
+        self.pending_updates.contains_key(id)
+    }
+
+    fn record_update(&mut self, id: String, update: RunUpdate) -> Result<(), Error> {
+        if matches!(update, RunUpdate::Dispatch(_))
+            && matches!(self.pending_updates.get(&id), Some(RunUpdate::Turn { .. }))
+        {
+            return Ok(());
+        }
+        let result = self.persist_update(&id, &update);
+        if result.is_ok() {
+            self.pending_updates.remove(&id);
+        } else {
+            self.pending_updates.insert(id, update);
+        }
+        result
+    }
+
+    fn persist_update(&mut self, id: &str, update: &RunUpdate) -> Result<(), Error> {
         let Some(mut run) = self.run(id)? else {
             return Ok(());
         };
-        run.turn_outcome = Some(settlement.outcome);
-        if settlement.outcome == TurnOutcome::Cancelled {
-            run.detail = Some("运行已由用户停止".into());
-        }
-        if settlement.work_pending {
-            run.phase = ScheduledRunPhase::Running;
-        } else {
-            Self::finalize_phase(&mut run, None);
+        match update {
+            RunUpdate::Dispatch(receipt) => {
+                // A short turn may have already stored its result during send.
+                if run.turn_outcome.is_some() {
+                    return Ok(());
+                }
+                let (phase, detail) = match receipt {
+                    DispatchReceipt::Admitted => (ScheduledRunPhase::Running, None),
+                    DispatchReceipt::WaitingForControl => (
+                        ScheduledRunPhase::Waiting,
+                        Some("等待外部客户端释放控制权；尚未发送".into()),
+                    ),
+                    DispatchReceipt::Unconfirmed(detail) => {
+                        (ScheduledRunPhase::OutcomeUnknown, Some(detail.clone()))
+                    }
+                };
+                if run.phase == phase && run.detail == detail {
+                    return Ok(());
+                }
+                run.phase = phase;
+                run.detail = detail;
+            }
+            RunUpdate::Turn {
+                outcome,
+                work_pending,
+            } => {
+                run.turn_outcome = Some(*outcome);
+                if *outcome == TurnOutcome::Cancelled {
+                    run.detail = Some("运行已由用户停止".into());
+                }
+                if *work_pending {
+                    run.phase = ScheduledRunPhase::Running;
+                } else {
+                    Self::finalize_phase(&mut run, None);
+                }
+            }
         }
         self.put_run(&run)
     }
@@ -331,17 +379,12 @@ impl Store {
         self.put_run(run)
     }
 
-    pub(crate) fn put_dispatch_result(&mut self, run: &ScheduledRun) -> Result<(), Error> {
-        // A short turn can settle before send returns. Its terminal result
-        // wins over the send receipt, including when storage is retrying it.
-        if self.has_pending_turn_result(&run.id)
-            || self
-                .run(&run.id)?
-                .is_some_and(|record| record.turn_outcome.is_some())
-        {
-            return Ok(());
-        }
-        self.put_run(run)
+    pub(crate) fn put_dispatch_result(
+        &mut self,
+        id: &str,
+        receipt: DispatchReceipt,
+    ) -> Result<(), Error> {
+        self.record_update(id.to_owned(), RunUpdate::Dispatch(receipt))
     }
 
     pub(crate) fn put_run(&mut self, run: &ScheduledRun) -> Result<(), Error> {
