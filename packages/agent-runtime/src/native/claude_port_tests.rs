@@ -71,7 +71,14 @@ for line in sys.stdin:
    if mode!='steer_success': continue
   emit({'type':'system','subtype':'task_started','task_id':'shell','run_id':'one','task_type':'local_bash','description':'Shell'})
   emit({'type':'control_request','request_id':'permission','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'synthetic'}}})
-  if mode=='block':
+  if mode=='partial-write':
+   # The next command must enter the real pipe before this fixture stops
+   # consuming it. The marker distinguishes a partial write from queue expiry.
+   prefix=os.read(sys.stdin.fileno(),1)
+   marker=os.path.join(root,'partial-write-prefix')
+   with open(marker+'.tmp','wb') as f: f.write(prefix)
+   os.replace(marker+'.tmp',marker)
+  if mode in ['block','partial-write']:
    while not os.path.exists(os.path.join(root,'release')):
     emit({'type':'system','subtype':'task_progress','task_id':'shell','run_id':'one','description':'pulse'})
     time.sleep(.02)
@@ -1174,24 +1181,59 @@ fn claude_port_unknown_request_automatic_rejection_does_not_wait_for_blocked_std
 
 #[test]
 fn claude_port_partial_write_timeout_keeps_cleanup_fact_after_receipt_drain() {
-    let mut f = Fixture::new("block");
+    let mut f = Fixture::new("partial-write");
     f.user();
+    let command = ClaudeCommand::Steer(Fixture::input(&"x".repeat(2 * 1024 * 1024)));
+    // Encoding and admission share this absolute budget with the physical
+    // write. Use the fixture's ordinary preparation budget, then prove that
+    // bytes reached the child before testing expiry of the blocked write.
+    let deadline = Instant::now() + Duration::from_secs(3);
     let ticket = f
         .session
-        .enqueue_claude_command(
-            ClaudeCommand::Steer(Fixture::input(&"x".repeat(2 * 1024 * 1024))),
-            Instant::now() + Duration::from_millis(80),
-            None,
-        )
+        .enqueue_claude_command(command, deadline, None)
         .unwrap();
-    std::thread::sleep(Duration::from_millis(120));
-    assert!(f.session.poll().is_err());
+    let prefix = f.root.join("partial-write-prefix");
+    while !prefix.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "child never received a command byte"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(std::fs::read(prefix).unwrap(), b"{");
+    assert!(
+        Instant::now() < deadline,
+        "partial write was not observed before expiry"
+    );
+    f.session.poll().unwrap();
     assert!(
         f.session
             .take_claude_receipts()
             .iter()
-            .any(|r| r.ticket == *ticket
-                && matches!(r.delivery, ClaudeDelivery::Indeterminate { .. }))
+            .all(|receipt| receipt.ticket != *ticket),
+        "the command must remain physically incomplete after its first byte"
+    );
+    std::thread::sleep(
+        deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+    );
+    assert_eq!(f.session.poll().unwrap_err().code(), "timeout");
+    let receipts = f.session.take_claude_receipts();
+    let receipt = receipts
+        .iter()
+        .find(|receipt| receipt.ticket == *ticket)
+        .unwrap();
+    assert!(matches!(
+        receipt.delivery,
+        ClaudeDelivery::Indeterminate { .. }
+    ));
+    assert!(receipt.physical_write.is_none());
+    assert!(f.session.take_claude_receipts().is_empty());
+    assert_eq!(
+        f.requests()
+            .iter()
+            .filter(|record| record["type"] == "user")
+            .count(),
+        1
     );
     assert!(f.session.requires_failure_cleanup());
     assert!(!f.session.process_ended);
