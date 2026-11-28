@@ -240,9 +240,9 @@ import ObjectiveC
     for cancelEditor in [false, true] {
         let prompt = cancelEditor ? "closed fork edit" : "background fork edit"
         let marker = home.appendingPathComponent(prompt)
-        let branch = MessageEditingSession(source: source.store, request: .init(message: latestMessage, conversationID: conversationID,
-            inPlace: true, isLast: true, revision: source.store.editability(of: latestMessage.id)!.revision), presentation: .sheet)
-        branch.start()
+        preference(.sheet)
+        source.edit(messageID: latestMessage.id)
+        guard let branch = source.editing else { fatalError("分叉编辑器未打开") }
         branch.placement = .fork
         branch.editor.restore(prompt, attachments: [])
         wait { branch.store.loadedConversationID == conversationID && !branch.store.isLoading }
@@ -255,15 +255,15 @@ import ObjectiveC
         precondition(branch.failure == nil, branch.failure ?? "分叉编辑未到达合成执行端")
         let forkID = runtimeID + ":" + (try! String(contentsOf: marker, encoding: .utf8))
         let before = workspace.tabCount
-        if cancelEditor { branch.cancel() } else { workspace.openInNewTab() }
+        if cancelEditor { source.finishMessageEditing(branch.id) } else { workspace.openInNewTab() }
         try! Data().write(to: marker.appendingPathExtension("release"))
         wait {
             reader.composerInputs.poll(force: true)
-            return reader.composerInputs.targetRecord(for: forkID)?.choices.choices.contains {
+            return !branch.store.isLoading && reader.composerInputs.targetRecord(for: forkID)?.choices.choices.contains {
                 $0.runtimeId == runtimeID && $0.choice.model == chosen
             } == true
         }
-        precondition(branch.failure == nil && source.store.loadedConversationID == conversationID)
+        precondition(branch.failure == nil && source.editing == nil && source.store.loadedConversationID == conversationID)
         let targets = workspace.conversationTabs.filter { $0.store.loadedConversationID == forkID }
         if cancelEditor {
             precondition(targets.isEmpty && workspace.tabCount == before, "关闭编辑器不能复活分叉 UI")
