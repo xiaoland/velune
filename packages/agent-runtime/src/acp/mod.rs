@@ -293,7 +293,7 @@ impl Client {
             self.owned_snapshot()
         });
         if outcome.is_err() {
-            self.fail();
+            self.discard_unconfirmed_session();
         }
         outcome
     }
@@ -325,7 +325,7 @@ impl Client {
             self.owned_snapshot()
         });
         if outcome.is_err() {
-            self.fail();
+            self.discard_unconfirmed_session();
         }
         outcome
     }
@@ -357,7 +357,7 @@ impl Client {
             self.owned_snapshot()
         });
         if outcome.is_err() {
-            self.fail();
+            self.discard_unconfirmed_session();
         }
         outcome
     }
@@ -1130,6 +1130,12 @@ impl Client {
         self._interaction_data.clear();
         self._initial_update_data.clear();
     }
+    fn discard_unconfirmed_session(&mut self) {
+        // Opening can receive history before the peer confirms the identity and its options.
+        self.clear_session();
+        self.fail();
+    }
+
     fn fail(&mut self) {
         self.rpc.shutdown();
         self.failed = true;
