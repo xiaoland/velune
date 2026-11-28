@@ -513,7 +513,10 @@ mod platform {
     }
 
     pub fn sync_dir(dir: &Dir) -> io::Result<()> {
-        dir.try_clone()?.into_std_file().sync_all()
+        // cap-std directory handles may use O_PATH on Linux; cloning one
+        // still cannot fsync it. Reopen the same directory for reading,
+        // relative to the held handle, without resolving an ambient path.
+        dir.open(".")?.sync_all()
     }
 }
 
