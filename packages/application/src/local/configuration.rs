@@ -887,13 +887,8 @@ mod runtime_start_tests {
             fs::read(root.join("composer-choices.json")).unwrap(),
             composer
         );
-        assert_eq!(
-            core.runtime_start_choice(runtime.id.clone())
-                .unwrap()
-                .permission_mode
-                .as_deref(),
-            Some("manual")
-        );
+        let stored_runtime = core.runtime_instance(&runtime.id).unwrap();
+        assert_eq!(stored_runtime.new_conversation_choice().unwrap(), policy);
         let committed = fs::read(root.join("generic-config.json")).unwrap();
         fs::create_dir(root.join("generic-config.json.tmp")).unwrap();
         runtime.type_id = RuntimeKind::Codex166;

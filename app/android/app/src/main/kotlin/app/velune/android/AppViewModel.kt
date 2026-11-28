@@ -58,10 +58,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val listing = devices.getValue(peer)
         val runtime = newSessionDefaults.getString("runtimeId", null)?.takeIf { id ->
             peer == lastPeer && listing.runtimes.any { it.id == id }
-        }
-        val cwd = if (peer == lastPeer) newSessionDefaults.getString("cwd", null) else listing.projects.firstOrNull()
+        } ?: listing.runtimes.first().id
+        // A saved draft may already have a directory outside the current suggestions.
+        val cwd = if (peer == lastPeer) newSessionDefaults.getString("cwd", null) else listing.suggestedWorkingDirectory(runtime)
         val draftId = newSessionDefaults.getString("draftId", null).takeIf { peer == lastPeer }
-        val target = ConversationTarget.New(runtime ?: listing.runtimes.first().id, cwd, draftId)
+        val target = ConversationTarget.New(runtime, cwd, draftId)
         rememberNewSession(peer, target)
         openConversation(peer, target)
     }
@@ -75,7 +76,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // A separate remote draft keeps the destination's existing input intact.
         val hasDraft = input.draft.isNotEmpty() || input.attachments.isNotEmpty()
         val draftId = target.draftId ?: if (hasDraft) UUID.randomUUID().toString() else null
-        val next = ConversationTarget.New(listing.runtimes.first().id, listing.projects.firstOrNull(), draftId)
+        val runtime = listing.runtimes.first().id
+        val next = ConversationTarget.New(runtime, listing.suggestedWorkingDirectory(runtime), draftId)
         current.model.pause()
         val destination = ConversationModel(checkNotNull(hub), peer, next, viewModelScope, initialDraft = input.draft.takeIf { draftId != null })
         stack = stack.dropLast(1) + Screen.Conversation(peer, destination)
@@ -94,7 +96,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun changeNewSessionProject(cwd: String?) {
         val current = screen as? Screen.Conversation ?: return
         val target = current.model.retargetableNewSession() ?: return
-        if (cwd != null && cwd !in workspace(current.peer).listing.value.projects) return
+        val projects = workspace(current.peer).listing.value.workingProjects(target.runtimeId)
+        if (cwd != null && projects.none { cwd in it.directories }) return
         val next = target.copy(cwd = cwd)
         current.model.updateNewSession(next)
         rememberNewSession(current.peer, next)

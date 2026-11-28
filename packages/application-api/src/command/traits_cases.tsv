@@ -34,7 +34,6 @@ SetConversationBrowserPreferences	{"command": "setConversationBrowserPreferences
 ReadComposerDrafts	{"command": "readComposerDrafts"}
 SetComposerDraft	{"command": "setComposerDraft", "parameters": {"conversation_id": "conversation", "text": "text"}}
 ReadComposerChoices	{"command": "readComposerChoices"}
-ReadRuntimeStartChoice	{"command": "readRuntimeStartChoice", "parameters": {"runtime_id": "runtime"}}
 SetNextTurnIntent	{"command": "setNextTurnIntent", "parameters": {"intent": {"conversationID": "conversation", "choices": []}}}
 SetRuntimeComposerChoices	{"command": "setRuntimeComposerChoices", "parameters": {"choices": {"runtimeID": "runtime", "runtimeType": "pi-1.0", "lastChosen": {}}}}
 SetConversationBrowserLimits	{"command": "setConversationBrowserLimits", "parameters": {"limits": {"page": 10, "total": 100}}}

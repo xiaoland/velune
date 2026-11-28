@@ -6,7 +6,7 @@
 
 app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 Pi RPC，不自行启动网关，也不承担跨包失败补偿。日常应用配置默认为 `~/.velune`；开发应用由签名的 `MacExecutionContext` 强制使用独立scope目录，不能通过缺省环境或错误目录回退到日常实例。提供商 API key 由 application 私有配置保存，OAuth 保留原来源刷新。各 Harness 拥有真实会话持久化。
 
-设备设置中的“本机连接 → 连接设置”按当前状态、连接方式和服务器组织，可选择公共中继、自定义服务器或不使用中继服务器；最后一项仍允许经可信设备中转。保存操作固定在底部，后台状态更新不覆盖草稿；其他服务器的访问资格与设施诊断在高级区域展开。已保存方式、应用结果和设施可达性分别显示，地址查找沿用当前配置。令牌不回显，以“令牌已保存”标记；留空保留，明确移除并保存后删除。网络切换由共享 Rust 服务持久化和应用，不改变设备身份与已配对记录。
+本机连接设置由共享 Rust 服务持久化和应用。Mac 的保存区独立于后台状态刷新，高级区域提供设施诊断。使用步骤与授权规则见[连接设置](../../docs/usage.md#连接设置)和[远控产品规范](../../docs/prd/remote-access.md)。
 
 ## 分享到 HAPI
 
@@ -14,11 +14,9 @@ app 通过生成的 UniFFI 接口消费 application 的完整用例，不解析 
 
 ## 开发与实现
 
-`svc run build-macos` 输出 `target/macos-dev/Velune Dev.app`；`build-macos-release` 为优化的开发产物，输出 `target/macos-dev-release/Velune Dev.app`。日常产物只有 `package-macos`／`reinstall-macos` 显式准备到 `target/macos/Velune.app`。开发运行使用 `start-macos-dev`／`status-macos-dev`／`stop-macos-dev`；身份、私有状态、运行副本与准确进程控制归[开发实例](../../docs/development/environment.md#mac-开发实例)。构建不安装或退出日常应用；日常安装与迁移由重装入口处理。Rust、UniFFI生成、Swift与资源按输入复用，优化profile与运行用途分开，不为身份重复编译依赖。
+工具链和依赖准备见 [Mac 构建](../../docs/development/platforms.md#mac-构建)。构建入口、产物路径和用途见[开发构建](../../docs/development/builds.md#默认开发循环)。开发实例由[隔离入口](../../docs/development/environment.md#mac-开发实例)管理。
 
 运行时设置展示 family、精确版本类型与配置实例，兼容区间见[运行时兼容表](../../packages/agent-runtime/README.md#版本与原生控制)。同类型可保存多个实例，工作目录属于具体会话。App 只消费通用消息与类型化权限／回答交互，不解析 ACP 或 app-server envelope；选择、回答和取消通过生成接口交给 adapter。各类型的可执行文件与 Node 等依赖见[运行时安装要求](../../docs/development/runtimes.md)。添加实例后即可浏览会话，新建表单选择实例／模型，目录可选；Mac首次发送才准备运行时并创建原生会话，继续历史时自动准备。恢复 Codex／DSH 缺少提供商身份的模型选择须明确指定，不宣称恢复上次 Velune 路由。编辑实例时可在“运行环境”中选择 HOME：继承当前用户、指定目录，或由 Velune 管理。Velune 管理时“运行时目录”隐去，由 core 在该 HOME 中推出；已保存实例显示 core 解析出的位置，可在 Finder 中显示（首次使用时创建）。“运行位置”可选本机或 SSH：SSH 填本机 OpenSSH 程序、主机（名或 ~/.ssh/config 别名，须预先完成非交互认证与主机信任）、可选端口，以及类型描述声明 `remoteResources` 时必填的远端辅助目录；远端实例的路径字段是执行机器上的绝对路径，不提供本机选择面板、`~` 展开或可执行文件自动发现，远端 managed HOME 需远端根目录。保存经 `upsert_runtime_with_execution`，保留表单不编辑的其他设置；设置列表在类型后标注“SSH 主机”。Store 按实例读取已保存的运行位置。类型描述声明 `launchOptions` 时（当前为通用 ACP），编辑器另有“启动参数”（逐个传给入口，不经 shell）与“环境变量”，经 `upsert_acp_runtime` 一并保存；声明 `agentInfo` 时，已保存实例可“读取 Agent 信息”：启动一次 Agent，展示名称、版本、会话能力与其报告的登录方式（登录由 Agent 自身完成）。
-
-构建前只需安装 runtime-support，huihua parser 依赖及许可证随 bundle 打包；不分发 Agent runtime 或完整 Pi SDK。具体步骤见 [开发说明](../../docs/development.md#原生运行时与历史读取)。构建产物不等于已安装或完成用户路径验收。
 
 会话内容消费 Rust 的类型权威，Mac 只派生展示行与展开、滚动状态。用户内容在右侧气泡，assistant 正文及工具左对齐；客户端扩展通知同样在右侧，运行时状态在左侧，工具输出不按 LLM Markdown 解析。Markdown 由固定 SwiftPM 依赖 swift-markdown 解析，许可证随应用分发；不恢复手写 fence 解析。虚拟列表使用稳定行身份，打开／发送到底，阅读历史时暂停流式跟随。
 

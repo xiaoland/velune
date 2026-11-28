@@ -16,6 +16,7 @@ import app.velune.bindings.application.MessagePayload
 import app.velune.bindings.application.PermissionMode
 import app.velune.bindings.application.RuntimeInstance
 import app.velune.bindings.application.RuntimeModel
+import app.velune.bindings.application.WorkingDirectoryProject
 import app.velune.bindings.conversation.BackgroundTaskInfo
 import app.velune.bindings.conversation.BackgroundTaskList
 import app.velune.bindings.conversation.BackgroundTaskOutput
@@ -45,6 +46,9 @@ internal object PreviewFixtures {
     const val windowsPeer = "win"
     private const val macProject = "/Users/demo/Development/velune"
     private const val windowsProject = "C:\\work\\velune"
+    private const val blogProject = "/Users/demo/Writing/blog"
+    private const val designProject = "/Users/demo/Development/design-system"
+    private const val releaseProject = "C:\\work\\release-tools"
     private const val completedId = "c2"
     private const val runningId = "c1"
     private const val failedId = "c4"
@@ -110,6 +114,15 @@ internal object PreviewFixtures {
     private val parentSummary = summary(parentId, "Android 发布准备", "claude", macProject)
     private val childSummary = summary(childId, "检查 Compose 列表键", "claude", macProject, parent = completedId)
     private val collaboratorSummary = summary(collaboratorId, "核对构建产物", "codex", macProject)
+    private val macWorkingProjects = listOf(
+        WorkingDirectoryProject(macProject, "velune", false, listOf(macProject)),
+        WorkingDirectoryProject(blogProject, "博客", false, listOf(blogProject)),
+        WorkingDirectoryProject(designProject, "design-system", false, listOf(designProject)),
+    )
+    private val windowsWorkingProjects = listOf(
+        WorkingDirectoryProject(windowsProject, "velune", false, listOf(windowsProject)),
+        WorkingDirectoryProject(releaseProject, "release-tools", false, listOf(releaseProject)),
+    )
 
     val listings = listOf(
         devices[0] to DeviceListing(
@@ -117,13 +130,13 @@ internal object PreviewFixtures {
                 listed(runningSummary, pinned = true),
                 listed(completedSummary),
                 listed(summary("c3", "为 remote 包补充断线重连文档", "codex", macProject, 18), unread = true),
-                listed(summary("c5", "整理博客草稿的图片", "codex", "/Users/demo/Writing/blog", 60 * 26)),
+                listed(summary("c5", "整理博客草稿的图片", "codex", blogProject, 60 * 26)),
                 listed(summary("c6", "解释这段正则表达式", "pi", null, 60 * 72)),
             ),
             runtimes = runtimes,
             runtimeLabels = runtimeLabels,
-            projectNames = mapOf(macProject to "velune", "/Users/demo/Writing/blog" to "博客"),
-            projects = listOf(macProject, "/Users/demo/Writing/blog", "/Users/demo/Development/design-system"),
+            projectNames = mapOf(macProject to "velune", blogProject to "博客"),
+            workingDirectoryProjects = mapOf("claude" to macWorkingProjects, "codex" to macWorkingProjects),
             active = mapOf(runningId to ActiveConversation("claude", runningId, RunState.RUNNING, 1u, null)),
             loaded = true,
             path = "直连 12 ms",
@@ -133,7 +146,7 @@ internal object PreviewFixtures {
             runtimes = runtimes.take(2),
             runtimeLabels = runtimeLabels,
             projectNames = mapOf(windowsProject to "velune"),
-            projects = listOf(windowsProject, "C:\\work\\release-tools"),
+            workingDirectoryProjects = mapOf("claude" to windowsWorkingProjects, "codex" to windowsWorkingProjects),
             loaded = true,
             path = "中继 48 ms",
         ),

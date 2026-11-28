@@ -35,7 +35,6 @@ SetConversationBrowserPreferences	Effect	false	false	true	false	[false, false, f
 ReadComposerDrafts	Observation	false	false	true	false	[false, false, false]	owner	ReadComposerDrafts	-	-
 SetComposerDraft	Effect	false	false	true	false	[false, false, false]	owner	SetComposerDraft	-	-
 ReadComposerChoices	Observation	false	false	true	false	[false, false, false]	owner	ReadComposerChoices	-	-
-ReadRuntimeStartChoice	Observation	false	false	true	false	[false, false, false]	owner	ReadRuntimeStartChoice	-	-
 SetNextTurnIntent	Effect	false	false	true	false	[false, false, false]	owner	SetNextTurnIntent	-	-
 SetRuntimeComposerChoices	Effect	false	false	true	false	[false, false, false]	owner	SetRuntimeComposerChoices	-	-
 SetConversationBrowserLimits	Effect	false	false	true	false	[false, false, false]	owner	SetConversationBrowserLimits	-	-

@@ -22,7 +22,6 @@ import app.velune.bindings.application.DeliveredBlock
 import app.velune.bindings.application.DeliveredImageSource
 import app.velune.bindings.application.DeliveredSnapshot
 import app.velune.bindings.application.MessagePayload
-import app.velune.bindings.application.PermissionMode
 import java.util.Base64
 import app.velune.bindings.conversation.ControlHandoff
 import app.velune.bindings.conversation.ConversationSummary
@@ -79,17 +78,9 @@ data class ConversationState(
     val canCancel: Boolean = false,
     val canCompact: Boolean = false,
     val controlHandoff: ControlHandoff? = null,
-    val models: List<RuntimeModel> = emptyList(),
-    /** None: follow the conversation's current model, or the runtime's default. */
-    val selection: ModelSelection? = null,
-    val hasCurrent: Boolean = false,
-    val currentModelName: String? = null,
-    val efforts: List<String> = emptyList(),
-    val effort: String? = null,
-    val currentEffort: String? = null,
-    val permissionModes: List<PermissionMode> = emptyList(),
-    val permissionMode: String? = null,
-    val currentPermissionMode: PermissionMode? = null,
+    val nextTurn: NextTurn? = null,
+    /** The user's kept choice before core applies current settings or defaults. */
+    val explicitTurnChoice: TurnChoice? = null,
     val editable: Map<String, EditableMessage> = emptyMap(),
     val canFork: Boolean = false,
     val busy: Boolean = false,
@@ -127,6 +118,7 @@ data class ConversationState(
     val isCompacting: Boolean = false,
 ) {
     val running: Boolean get() = runState == RunState.RUNNING || runState == RunState.STOPPING
+    val selection: ModelSelection? get() = explicitTurnChoice?.model
     val usesCurrentRuntime: Boolean get() = selectedRuntimeId == contextRuntimeId
     val activeBackgroundTaskCount: Int get() = backgroundTasks?.takeIf { it.live }?.tasks.orEmpty().count {
         it.status == BackgroundTaskStatus.RUNNING || it.status == BackgroundTaskStatus.STOPPING
@@ -168,7 +160,7 @@ class ConversationModel(
     private var composerBindingBaseline: ULong? = null
     private var composerLoaded = false
     private val composerLock = Mutex()
-    private var composerCatalogRuntime: String? = null
+    private var composerCatalog: Pair<String, List<RuntimeModel>>? = null
     private var composerSave: Job? = null
     private val composerKey: String get() = peer + "/" + (composerConversationId() ?: "new")
     private var snapshot: DeliveredSnapshot? = null
@@ -184,7 +176,7 @@ class ConversationModel(
                 composer = saved.input; composerPending = saved.pending; composerBaseline = saved.baseline; composerUnbound = saved.unbound; composerRevision = saved.directoryRevision; pendingCreation = saved.creation; composerRestored = true; composerBindingRevision = saved.bindingRevision; composerBindingBaseline = saved.bindingBaseline
                 targetChoices = normalizeComposerTargetChoices(saved.target ?: targetChoices); targetRevision = saved.targetRevision; targetPending = saved.targetPending; targetBaseline = saved.targetBaseline
                 val runtime = selectedRuntimeId()
-                _state.update { it.copy(draft = saved.input.content.text, attachments = saved.input.content.attachments, selectedRuntimeId = runtime, selection = targetChoices.choices.firstOrNull { choice -> choice.runtimeId == runtime }?.choice?.model) }
+                _state.update { it.copy(draft = saved.input.content.text, attachments = saved.input.content.attachments, selectedRuntimeId = runtime, explicitTurnChoice = explicitChoice(runtime)) }
             }
         }.onFailure { error -> composerCacheBlocked = true; _state.update { it.copy(composerFailure = composerError(error)) } }
         if (initialDraft != null && initialDraft != _state.value.draft) editDraft(initialDraft)
@@ -228,14 +220,8 @@ class ConversationModel(
         val previous = retargetableNewSession() ?: return
         if (next.runtimeId != previous.runtimeId) {
             preparedComposerTarget = null
-            composerCatalogRuntime = null
-            _state.update {
-                it.copy(
-                    composerReady = false, models = emptyList(), selection = null, selectedRuntimeId = next.runtimeId,
-                    hasCurrent = false, currentModelName = null, efforts = emptyList(), effort = null, currentEffort = null,
-                    permissionModes = emptyList(), permissionMode = null, currentPermissionMode = null,
-                )
-            }
+            composerCatalog = null
+            _state.update { it.withRuntime(next.runtimeId) }
         }
         target = next
         if (next.runtimeId != previous.runtimeId) scope.launch { pollComposer() }
@@ -328,7 +314,8 @@ class ConversationModel(
         payloads = payloads.filter { (id, loaded) -> fresh[id]?.let { it.stamp == loaded.stamp } ?: (id in order) }
         snapshot = next
         _state.update { state ->
-            state.copy(
+            val composerState = state.withRuntime(selectedRuntimeId())
+            composerState.copy(
                 conversation = next.conversation,
                 runState = next.runState,
                 entries = entries(next),
@@ -336,7 +323,7 @@ class ConversationModel(
                 canSend = next.actions.canSend,
                 contextRuntimeId = next.contextRuntimeId,
                 canSwitch = next.actions.canSwitch,
-                selectedRuntimeId = selectedRuntimeId(),
+                composerReady = composerState.composerReady && previous?.contextRuntimeId == next.contextRuntimeId,
                 inputAccess = next.actions.inputAccess,
                 canCompact = next.followUp.canCompact,
                 controlHandoff = next.followUp.controlHandoff,
@@ -376,6 +363,9 @@ class ConversationModel(
     private fun selectedRuntimeId(): String =
         choicesForExecution().runtimeId ?: snapshot?.contextRuntimeId ?: target.runtimeId
 
+    private fun ConversationState.withRuntime(runtime: String) = if (runtime == selectedRuntimeId) this else
+        copy(selectedRuntimeId = runtime, nextTurn = null, explicitTurnChoice = null, composerReady = false)
+
     fun selectRuntime(runtimeId: String) {
         val current = _state.value
         val owner = composerOwner ?: return
@@ -387,16 +377,14 @@ class ConversationModel(
                 composerLock.withLock {
                     if (!_state.value.canSwitch || _state.value.busy) return@withLock
                     targetBaseline = targetRevision
-                    targetChoices = targetChoices.copy(runtimeId = runtimeId, runtimeOwnerId = owner)
+                    targetChoices = targetChoices.copy(runtimeId = runtimeId, runtimeOwnerId = owner, choiceEdited = true)
                     targetPending = true
                     preparedComposerTarget = null
-                    composerCatalogRuntime = null
+                    composerCatalog = null
                     _state.update {
                         it.copy(
                             selectedRuntimeId = runtimeId, composerReady = false, composerFailure = null,
-                            models = emptyList(), selection = null, hasCurrent = false, currentModelName = null,
-                            efforts = emptyList(), effort = null, currentEffort = null, permissionModes = emptyList(),
-                            permissionMode = null, currentPermissionMode = null,
+                            nextTurn = null, explicitTurnChoice = null,
                         )
                     }
                     cacheComposer()
@@ -412,36 +400,19 @@ class ConversationModel(
         if (_state.value.busy || _state.value.switchingRuntime || effectiveNextTurn() == null) return
         val runtime = selectedRuntimeId()
         val owner = composerOwner ?: return
-        val previous = targetChoices.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == owner }?.choice ?: TurnChoice(model = null, effort = null, permissionMode = null)
+        val previous = explicitChoice(runtime, owner) ?: TurnChoice()
         val updated = transform(previous)
         targetBaseline = targetRevision
         targetChoices = targetChoices.copy(choices = targetChoices.choices.filter { it.runtimeId != runtime || it.ownerId != owner } + ComposerRuntimeChoice(owner, runtime, updated), choiceEdited = true)
         targetPending = true
-        applyResolvedNextTurn(updated)
+        val next = effectiveNextTurn()
+        _state.update { it.copy(nextTurn = next, explicitTurnChoice = updated) }
         cacheComposer()
         scope.launch { pollComposer(wait = true) }
     }
 
-    private fun applyResolvedNextTurn(explicit: TurnChoice? = null) {
-        val next = effectiveNextTurn()
-        val runtime = choicesForExecution().runtimeId ?: preparedComposerTarget?.defaultRuntimeId ?: snapshot?.contextRuntimeId ?: target.runtimeId
-        val choice = explicit ?: targetChoices.choices.firstOrNull { it.runtimeId == runtime && it.ownerId == composerOwner }?.choice
-        _state.update { state ->
-            state.copy(
-                models = next?.models ?: state.models,
-                selectedRuntimeId = selectedRuntimeId(),
-                selection = choice?.model,
-                hasCurrent = next?.hasCurrent ?: state.hasCurrent,
-                currentModelName = next?.modelName,
-                efforts = next?.efforts ?: state.efforts,
-                effort = choice?.effort,
-                currentEffort = next?.currentEffort,
-                permissionModes = next?.permissionModes ?: state.permissionModes,
-                permissionMode = choice?.permissionMode,
-                currentPermissionMode = next?.currentPermissionMode,
-            )
-        }
-    }
+    private fun explicitChoice(runtime: String, owner: String? = null): TurnChoice? =
+        targetChoices.choices.firstOrNull { it.runtimeId == runtime && (owner == null || it.ownerId == owner) }?.choice
 
     fun select(selection: ModelSelection?) = updateTurnChoice { it.copy(model = selection) }
     fun selectEffort(effort: String?) = updateTurnChoice { it.copy(effort = effort) }
@@ -502,8 +473,11 @@ class ConversationModel(
 
     private fun effectiveNextTurn(): NextTurn? = preparedComposerTarget?.let { prepared ->
         if (prepared.request != composerTargetRequest() || snapshot?.let { it.contextRuntimeId != prepared.defaultRuntimeId } == true) return@let null
-        resolveComposerTarget(prepared, choicesForExecution(), _state.value.models.takeIf { composerCatalogRuntime == prepared.basis.runtimeId })
+        resolveComposerTarget(prepared, choicesForExecution(), catalogFor(prepared.basis.runtimeId))
     }
+    private fun catalogFor(runtime: String): List<RuntimeModel>? =
+        composerCatalog?.takeIf { it.first == runtime }?.second
+
     private fun targetContext(owner: String) = composerConversationId()?.let { ComposerContextKey.Conversation(owner, it) } ?: ComposerContextKey.NewConversation
     private fun composerError(error: Throwable) = error.describe() + if (targetWriteFailed) "；重新选择以采用当前配置" else ""
     private fun composerChanged() {
@@ -583,10 +557,7 @@ class ConversationModel(
             targetChoices = received
             val runtime = selectedRuntimeId()
             _state.update {
-                it.copy(
-                    selectedRuntimeId = runtime,
-                    selection = targetChoices.choices.firstOrNull { choice -> choice.runtimeId == runtime && choice.ownerId == owner }?.choice?.model,
-                )
+                it.withRuntime(runtime).copy(explicitTurnChoice = explicitChoice(runtime, owner))
             }
         }
     }
@@ -648,25 +619,17 @@ class ConversationModel(
             val choices = choicesForExecution()
             check(choices.runtimeOwnerId == null || choices.runtimeOwnerId == owner) { "所选运行时位于另一设备，输入已保留" }
             val selectedRuntime = choices.runtimeId ?: prepared.defaultRuntimeId
-            val catalog = if (composerCatalogRuntime == selectedRuntime) _state.value.models else io(NativeOperation.CONFIGURATION_READ) { it.runtimeModels(selectedRuntime) }
+            val catalog = catalogFor(selectedRuntime) ?: io(NativeOperation.CONFIGURATION_READ) { it.runtimeModels(selectedRuntime) }
             if (request != composerTargetRequest()) return
-            composerCatalogRuntime = selectedRuntime
-            val resolved = resolveComposerTarget(prepared, choices, catalog)
-            val ready = (snapshot == null || snapshot?.contextRuntimeId == prepared.defaultRuntimeId)
-                && resolved?.chosenModelUnavailable == false
+            composerCatalog = selectedRuntime to catalog
+            val resolved = effectiveNextTurn()
             _state.update {
-                it.copy(
-                    models = resolved?.models ?: catalog,
-                    composerReady = ready,
-                    hasCurrent = resolved?.hasCurrent ?: it.hasCurrent,
-                    currentModelName = resolved?.modelName,
-                    efforts = resolved?.efforts ?: emptyList(),
-                    currentEffort = resolved?.currentEffort,
-                    permissionModes = resolved?.permissionModes ?: emptyList(),
-                    currentPermissionMode = resolved?.currentPermissionMode,
+                it.withRuntime(selectedRuntimeId()).copy(
+                    nextTurn = resolved,
+                    explicitTurnChoice = explicitChoice(selectedRuntimeId(), owner),
+                    composerReady = resolved?.chosenModelUnavailable == false,
                 )
             }
-            applyResolvedNextTurn()
             saveComposer()
             _state.update {
                 it.copy(composerFailure = if (resolved?.chosenModelUnavailable == true) "所选模型在此设备不可用，请重新选择" else null)

@@ -61,7 +61,14 @@ fun NewConversationContext(context: NewSessionContext, enabled: Boolean, hasAtta
     var choosingDevice by remember { mutableStateOf(false) }
     var choosingRuntime by remember { mutableStateOf(false) }
     var choosingProject by remember { mutableStateOf(false) }
-    val project = target.cwd?.let { listing.projectNames[it] ?: lastPathComponent(it) }
+    val projects = listing.workingProjects(target.runtimeId)
+    val directories = remember(projects) {
+        projects.asSequence()
+            .flatMap { project -> project.directories.asSequence().map { it to project.name } }
+            .distinctBy { it.first }
+            .toList()
+    }
+    val project = target.cwd?.let { cwd -> directories.firstOrNull { it.first == cwd }?.second ?: lastPathComponent(cwd) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp * spacing),
         horizontalArrangement = Arrangement.Center,
@@ -109,7 +116,7 @@ fun NewConversationContext(context: NewSessionContext, enabled: Boolean, hasAtta
             ContextButton("项目", project ?: "默认目录", enabled) { choosingProject = true }
         }
     }
-    if (choosingProject) ProjectSheet(listing, target.cwd, dismiss = { choosingProject = false }) {
+    if (choosingProject) ProjectSheet(directories, target.cwd, dismiss = { choosingProject = false }) {
         choosingProject = false
         context.selectProject(it)
     }
@@ -138,12 +145,13 @@ private fun ContextDivider() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProjectSheet(listing: DeviceListing, cwd: String?, dismiss: () -> Unit, select: (String?) -> Unit) {
+private fun ProjectSheet(directories: List<Pair<String, String>>, cwd: String?, dismiss: () -> Unit, select: (String?) -> Unit) {
     var search by rememberSaveable { mutableStateOf("") }
     val query = search.trim()
-    val paths = remember(query, listing) {
-        listing.projects.filter { query.isEmpty() || it.contains(query, ignoreCase = true) ||
-            listing.projectNames[it]?.contains(query, ignoreCase = true) == true }
+    val paths = remember(query, directories) {
+        directories.filter { (path, name) ->
+            path.contains(query, ignoreCase = true) || name.contains(query, ignoreCase = true)
+        }
     }
     ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = dismiss) {
         Text("项目", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp))
@@ -164,8 +172,8 @@ private fun ProjectSheet(listing: DeviceListing, cwd: String?, dismiss: () -> Un
                     Text("最近项目", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 24.dp, top = 12.dp, bottom = 4.dp))
                 }
             }
-            items(paths, key = { "project/$it" }) { path ->
-                ProjectChoice(listing.projectNames[path] ?: lastPathComponent(path), path, path == cwd) { select(path) }
+            items(paths, key = { "project/${it.first}" }) { (path, name) ->
+                ProjectChoice(name, path, path == cwd) { select(path) }
             }
             if (paths.isEmpty()) {
                 item(key = "empty") {

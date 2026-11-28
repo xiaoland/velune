@@ -338,8 +338,7 @@
         "bash",
         "scripts/build-macos.sh",
         "--profile",
-        "dev",
-        "--build-only"
+        "dev"
       ],
       "env": {
         "CARGO_BUILD_JOBS": "2"
@@ -388,8 +387,7 @@
         "bash",
         "scripts/build-macos.sh",
         "--profile",
-        "release",
-        "--build-only"
+        "release"
       ],
       "env": {
         "CARGO_BUILD_JOBS": "2"
@@ -411,8 +409,7 @@
         "--profile",
         "release",
         "--purpose",
-        "daily",
-        "--build-only"
+        "daily"
       ],
       "env": {
         "CARGO_BUILD_JOBS": "2"
