@@ -55,13 +55,11 @@ def build(out: Path) -> None:
     subprocess.run(["cargo", "build", "--locked", "-p", "velune-bindings"], cwd=REPO, check=True)
     library = next(path for name in ("libvelune_bindings.dylib", "libvelune_bindings.so")
                    if (path := REPO / "target/host-rust/debug" / name).exists())
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    subprocess.run(["cargo", "run", "--locked", "--target-dir", "target/build-tools", "-p", "velune-build-tools",
-                    "--bin", "velune-bindgen", "--", "generate", "--library", str(library), "--no-format",
-                    "--language", "python", "--out-dir", str(out)], cwd=REPO, check=True)
+    out.mkdir(parents=True, exist_ok=True)
     shutil.copy2(library, out / library.name)
+    subprocess.run([sys.executable, "scripts/build-support.py", "bindgen", "--library", str(library),
+                    "--language", "python", "--out-dir", str(out), "--artifact", str(out / library.name)],
+                   cwd=REPO, check=True)
 
 
 def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
@@ -96,6 +94,28 @@ def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
     return 0 if result["status"] != "failed" else 1
 
 
+def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
+    """A result is evidence only when its reporting process also exited cleanly."""
+    try:
+        result = json.loads(path.read_text())
+        if (not isinstance(result, dict) or result.get("case") != name
+                or result.get("status") not in ("passed", "skipped", "failed")
+                or not isinstance(result.get("checks", {}), dict)
+                or not isinstance(result.get("facts", {}), dict)):
+            raise ValueError("expected a case result with a known status and check records")
+    except FileNotFoundError:
+        result = {"case": name, "status": "failed", "error": f"worker produced no result; see {log.name}"}
+    except (OSError, ValueError) as error:
+        result = {"case": name, "status": "failed", "error": f"worker produced an invalid result: {error}; see {log.name}"}
+    result["worker_returncode"] = returncode
+    if returncode != 0:
+        result["status"] = "failed"
+        detail = f"worker exited with status {returncode}; see {log.name}"
+        result["error"] = f"{result['error']}; {detail}" if result.get("error") else detail
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
 def main() -> int:
     if len(sys.argv) == 6 and sys.argv[1] == "_worker":
         return worker(sys.argv[2], json.loads(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]))
@@ -118,7 +138,7 @@ def main() -> int:
     if args.build:
         build(args.bindings)
     sys.path.insert(0, str(HERE))
-    from velune_acceptance import bindings
+    from velune_acceptance import bindings, provenance
 
     tools = {tool: str(getattr(args, tool).expanduser().resolve(strict=True))
              for tool in TOOLS if getattr(args, tool) is not None}
@@ -136,6 +156,8 @@ def main() -> int:
         "run": run_id,
         "source": {"head": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain")), "label": args.label},
         "bindings_sha256": bindings.digest(bindings.library(Path(config["bindings"]))),
+        "inputs": provenance.capture(Path(config["bindings"]),
+                                     Path(config["resources"]) if config["resources"] else None, HERE),
         "tools": {tool: {"path": path, "version": tool_version(Path(path), tool_search_path)}
                   for tool, path in tools.items()},
         "cases": [],
@@ -146,17 +168,16 @@ def main() -> int:
         root = Path(tempfile.mkdtemp(prefix=f"velune-acceptance-{name}-")).resolve()
         try:
             with log_path.open("w") as log:
-                subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
-                                json.dumps(config), str(result_path), str(root)],
-                               cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
-                               env={"PATH": os.environ.get("PATH", "")})
+                done = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "_worker", name,
+                                       json.dumps(config), str(result_path), str(root)],
+                                      cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
+                                      env={"PATH": os.environ.get("PATH", "")})
         finally:
             shutil.rmtree(root)
-        result = json.loads(result_path.read_text()) if result_path.exists() else {
-            "case": name, "status": "failed", "error": f"worker produced no result; see {log_path.name}"}
+        result = worker_result(name, result_path, done.returncode, log_path)
         manifest["cases"].append({key: value for key, value in result.items() if key != "traceback"})
         mark = {"passed": "PASS", "skipped": "SKIP", "failed": "FAIL"}[result["status"]]
-        print(f"{mark} {name}" + (f" — {result.get('reason') or result.get('error')}" if mark != "PASS" else
+        print(f"{mark} {name}" + (f" — {result.get('reason') if mark == 'SKIP' else result.get('error')}" if mark != "PASS" else
                                   f" ({len(result.get('checks', {}))} checks, {result.get('seconds')}s)"))
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     print(f"manifest: {out / 'manifest.json'}")

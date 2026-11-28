@@ -266,22 +266,42 @@ def main():
                 flags.append('--child-activity-dark')
         if args.workspace_only:
             flags = ['--check-message-experience', '--experience-workspace-only']
-        with (output / 'native.log').open('w') as log:
-            child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *flags], env=env,
-                                     cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            receipt['pid'] = child.pid
-            try:
-                receipt['exitCode'] = child.wait(timeout=180)
-            except BaseException:
-                os.killpg(child.pid, signal.SIGTERM)
+        phases = [('initial', flags, 'native.log')]
+        if flags == ['--check-composer-ownership']:
+            phases.append(('reopen', ['--check-composer-ownership', '--composer-check-reopen'], 'reopen.log'))
+        elif flags == ['--check-message-experience']:
+            phases.append(('reopen', ['--check-message-experience', '--experience-reopen'], 'reopen.log'))
+        receipt['phases'] = []
+        # Retain the same private home across two independent processes. The
+        # second phase starts only after the writer has exited successfully.
+        for name, phase_flags, log_name in phases:
+            phase = {'name': name, 'arguments': phase_flags, 'log': log_name, 'startedAt': time.time()}
+            receipt['phases'].append(phase)
+            with (output / log_name).open('w') as log:
+                child = subprocess.Popen([str(copied / 'Contents/MacOS' / context['executable']), *phase_flags], env=env,
+                                         cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                phase['pid'] = child.pid
+                if name == 'initial':
+                    receipt['pid'] = child.pid
                 try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL); child.wait()
-                raise
-            finally:
-                receipt['finishedAt'] = time.time()
-                (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+                    phase['exitCode'] = child.wait(timeout=180)
+                    receipt['exitCode'] = phase['exitCode']
+                except BaseException as error:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL); child.wait()
+                    phase['exitCode'] = child.returncode
+                    phase['error'] = type(error).__name__
+                    receipt['exitCode'] = phase['exitCode']
+                    raise
+                finally:
+                    phase['finishedAt'] = time.time()
+                    receipt['finishedAt'] = phase['finishedAt']
+                    (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+            if receipt['exitCode'] != 0:
+                break
         # Copy only explicit result artifacts; application state stays private.
         exported = []
         for result in evidence.iterdir():
@@ -305,7 +325,8 @@ def main():
         if args.check in ['fork-send', 'claude-compact-edit'] and receipt['exitCode'] == 0:
             receipt['loopbackRequests'] = 1
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-        print((output / 'native.log').read_text(), end='')
+        for phase in receipt['phases']:
+            print((output / phase['log']).read_text(), end='')
         print('Evidence:', output)
         return receipt['exitCode']
 

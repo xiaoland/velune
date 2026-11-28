@@ -295,7 +295,8 @@ extension ConversationWindowModel {
         first.restore(saved)
         let restored = first.model(for: .conversation("synthetic-A"), tab: tab)
         precondition(restored.id == saved.conversations["synthetic-A"] && restored.submission == "跨设备完整输入" && restored.attachments.count == 1 && firstDevice.composerInputs.targetChoices(for: "synthetic-A")?.runtimeId == "synthetic-runtime")
-        precondition(FileManager.default.isReadableFile(atPath: restored.attachments[0].path))
+        precondition(try! Data(contentsOf: restored.attachments[0]) == Data("synthetic attachment bytes".utf8),
+                     "新进程必须从持久化附件恢复原始字节")
         note("PASS new process: same InputID, text, attachment bytes and execution choices restored")
         exit(0)
     }

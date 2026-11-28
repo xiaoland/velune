@@ -23,6 +23,21 @@
 | `scripts/check-pi-child-history.py --pi <路径>` | Pi 子任务历史的写出格式 |
 | `scripts/check-pi-projection-snapshot.mjs <路径>` | Pi 会话投影快照 |
 
+Rust 中需要已安装 CLI 的导入／读取检查使用 `#[ignore]`，默认测试不执行它们。显式启用后必须提供对应的绝对路径；缺条件会失败，不能作为通过记录。例如：
+
+```sh
+VELUNE_TEST_CODEX_BINARY=/absolute/path/to/codex cargo test --locked -p velune-agent-runtime --test native_import_ownership -- --ignored
+VELUNE_TEST_CODEX_BINARY=/absolute/path/to/codex cargo test --locked -p velune-agent-runtime --test native_context_deletion installed_codex -- --ignored
+VELUNE_TEST_CLAUDE_BINARY=/absolute/path/to/claude cargo test --locked -p velune-agent-runtime --test native_context_deletion installed_claude -- --ignored
+```
+
+`pi_background_cold` 和应用层 `real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns` 的显式检查还需要 `VELUNE_TEST_PI_SYNTHETIC_FIXTURE`、`VELUNE_TEST_PI_BINARY` 和 `VELUNE_TEST_NODE_BINARY`；fixture 必须是经授权的合成会话目录，不能指向日常 Harness HOME。它们克隆 fixture 后分别观察实际 SDK 的冷读取／后台任务和删除历史，不调用模型。默认层继续保留原生历史格式和导入内容的合成检查。提供这些变量后分别执行：
+
+```sh
+cargo test --locked -p velune-agent-runtime --test pi_background_cold -- --ignored
+cargo test --locked -p velune-application real_pi_sdk_cold_core_deletion_preserves_replies_without_model_turns -- --ignored
+```
+
 | 检查项 | 通过依据 |
 | --- | --- |
 | 发现与启动 | 专用适配器用实际 CLI 版本匹配对应类型。握手后可读取运行时公开的能力。扩大区间时，验证目标版本通过准入，区间外版本得到含实际版本的诊断。 |

@@ -24,6 +24,13 @@ class Isolated:
         return path
 
 
+def resource_sources() -> dict[str, Path]:
+    sources = {script.name: script for script in RESOURCE_SCRIPTS.iterdir() if script.is_file()}
+    sources.update({name: RUNTIME_SUPPORT / name for name in ("node_modules", "xurl")
+                    if (RUNTIME_SUPPORT / name).exists()})
+    return sources
+
+
 def resources(root: Path, explicit: Path | None) -> Path:
     """Use a build's own resources when given; otherwise assemble the runtime
     helper scripts from the source tree and the installed runtime support."""
@@ -32,12 +39,8 @@ def resources(root: Path, explicit: Path | None) -> Path:
         target.symlink_to(explicit, target_is_directory=True)
         return target
     target.mkdir(mode=0o700)
-    for script in RESOURCE_SCRIPTS.iterdir():
-        if script.is_file():
-            (target / script.name).symlink_to(script)
-    for name in ("node_modules", "xurl"):
-        if (RUNTIME_SUPPORT / name).exists():
-            (target / name).symlink_to(RUNTIME_SUPPORT / name)
+    for name, source in resource_sources().items():
+        (target / name).symlink_to(source, target_is_directory=source.is_dir())
     return target
 
 

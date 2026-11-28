@@ -36,7 +36,8 @@ def _repair(code: str, filename: str) -> str:
         except SyntaxError as error:
             lines = code.splitlines(keepends=True)
             line = lines[error.lineno - 1]
-            if (error.msg != "parameter without a default follows parameter with a default"
+            if (error.msg not in ("parameter without a default follows parameter with a default",
+                                  "non-default argument follows default argument")
                     or "def __init__(self, " not in line):
                 raise
             lines[error.lineno - 1] = line.replace("def __init__(self, ", "def __init__(self, *, ", 1)

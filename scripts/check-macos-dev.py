@@ -47,13 +47,19 @@ class RestartTests(unittest.TestCase):
 
     def test_unmatched_instance_is_not_stale(self):
         app = {'pid': 123, 'launchedAt': 1000.0}
-        receipt = dict(app, pid=124, home='/tmp/synthetic', source='/tmp/Dev.app', profile='dev', sourceFingerprint='sha256:old')
-        try:
-            launcher.reuse(app, receipt, Path('/tmp/synthetic'), 'scope', Path('/tmp/Dev.app'), 'dev', 'sha256:old')
-        except launcher.StaleInstance:
-            self.fail('an instance without a matching receipt must not be quit')
-        except launcher.LauncherError:
-            pass
+        matched = dict(app, home='/tmp/synthetic', source='/tmp/Dev.app', profile='dev', sourceFingerprint='sha256:old')
+        marker = dict(schemaVersion=1, purpose='development', scope='scope')
+        with patch.object(launcher, 'read_private_json', return_value=marker):
+            def reuse(receipt):
+                return launcher.reuse(app, receipt, Path('/tmp/synthetic'), 'scope', Path('/tmp/Dev.app'), 'dev', 'sha256:old')
+            self.assertTrue(reuse(matched)['reused'], 'the complete matching fixture must be admissible')
+            for receipt in (dict(matched, pid=124), dict(matched, launchedAt=1001.0),
+                            dict(matched, home='/tmp/another-synthetic-home'), None):
+                with self.subTest(receipt=receipt):
+                    with self.assertRaisesRegex(launcher.LauncherError, '没有匹配的 PID／出生时间／开发目录记录') as rejected:
+                        reuse(receipt)
+                    self.assertIs(type(rejected.exception), launcher.LauncherError,
+                                  'an unmatched instance must never authorize stale-instance restart')
 
     def test_restart_quits_only_a_stale_instance(self):
         calls = []

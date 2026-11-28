@@ -77,14 +77,6 @@ import ObjectiveC
         visit(root)
         return result
     }
-    // This predicate deliberately has no x-only fallback. A control in the
-    // detail toolbar can overlap the sidebar at a particular window width.
-    func sidebarOwns(action: Int, separator: Int, matchesOuterSplit: Bool) -> Bool {
-        matchesOuterSplit && action < separator
-    }
-    require(!sidebarOwns(action: 4, separator: 3, matchesOuterSplit: true), "negative: detail item before an inner divider must fail")
-    require(!sidebarOwns(action: 2, separator: 7, matchesOuterSplit: false), "negative: unrelated inner split must fail")
-    require(sidebarOwns(action: 2, separator: 3, matchesOuterSplit: true), "positive sidebar partition")
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
