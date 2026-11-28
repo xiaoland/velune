@@ -103,7 +103,11 @@ import ObjectiveC
             host.view.layoutSubtreeIfNeeded()
             guard let toolbar = window.toolbar, toolbar === shell.toolbar.toolbar else { fail("window toolbar must be the shell's: \(name)") }
             if let requestedSidebarWidth {
-                outer.setPosition(requestedSidebarWidth, ofDividerAt: 0)
+                if mode == "right" {
+                    outer.setPosition(outer.bounds.width - requestedSidebarWidth - outer.dividerThickness, ofDividerAt: 1)
+                } else {
+                    outer.setPosition(requestedSidebarWidth, ofDividerAt: 0)
+                }
                 for _ in 0..<5 { host.view.layoutSubtreeIfNeeded(); settle() }
             }
             let nativeFrame = window.contentView!.superview!
@@ -143,17 +147,31 @@ import ObjectiveC
             require(sidebarPart == [.toggleSidebar], "the sidebar part holds only the sidebar button: \(name), \(sidebarPart)")
             require(back.count == 1 && forward.count == 1, "navigation identities must resolve uniquely: \(name)")
             require(back[0] > separator.0 && forward[0] > separator.0, "navigation belongs to detail partition")
-            if mode == "solo" || mode == "shared" {
-                let ids = identifiers(sidebarView)
+            if mode != "hidden" {
+                let column = mode == "right" ? host.inspectorItem.viewController.view : sidebarView
+                let ids = identifiers(column)
                 require(ids.contains("conversation-list-filter") && ids.contains("conversation-list-new"),
-                        "the list in the sidebar carries its own filter and new conversation: \(name)")
-                guard let searchField = descendants(sidebarView).first(where: { $0 is NSSearchField && !$0.isHiddenOrHasHiddenAncestor }) else {
-                    fail("missing the list's search field: \(name)")
+                        "missing list filter or new action in its own column: \(name)")
+                let fields = descendants(column).compactMap { $0 as? NSSearchField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                require(fields.count == 1, "the list has exactly one search field: \(name)")
+                let searchRect = fields[0].convert(fields[0].bounds, to: column)
+                require(searchRect.width > 0 && searchRect.minX >= -1 && searchRect.maxX <= column.bounds.width + 1,
+                        "search field must fit its column: \(name)")
+                if let requestedSidebarWidth {
+                    require(abs(column.bounds.width - requestedSidebarWidth) <= 2, "actual column width \(column.bounds.width) in \(name)")
+                    let buttons = descendants(column).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                    // Measure the actual list action row relative to its search field;
+                    // a shared tool strip sits above it.
+                    let header = buttons.filter { $0.convert($0.bounds, to: column).intersects(
+                        NSRect(x: -column.bounds.width, y: searchRect.midY - 1, width: 3 * column.bounds.width, height: 2)) }
+                    require(header.contains { $0 is NSPopUpButton } && header.contains { !($0 is NSPopUpButton) },
+                            "missing native actions beside the search field: \(name)")
+                    for button in header {
+                        let rect = button.convert(button.bounds, to: column)
+                        require(rect.width > 0 && rect.minX >= -1 && rect.maxX <= column.bounds.width + 1,
+                                "list action extends beyond its column: \(name), \(rect)")
+                    }
                 }
-                let searchRect = searchField.convert(searchField.bounds, to: nativeFrame)
-                require(searchRect.minX >= sidebarRect.minX && searchRect.maxX <= sidebarRect.maxX,
-                        "search field must remain inside the sidebar: \(name)")
-                if requestedSidebarWidth != nil { require(sidebarRect.width >= 190, "the sidebar keeps its minimum width") }
             }
             if mode == "solo" || mode == "shared" {
                 for index in back + forward {
@@ -180,8 +198,14 @@ import ObjectiveC
         capture("sidebar-solo-\(tone)-720", width: 720, mode: "solo")
         capture("sidebar-solo-\(tone)-1440", width: 1440, mode: "solo")
         capture("sidebar-minimum-\(tone)-requested190", width: 1060, mode: "solo", requestedSidebarWidth: 190)
+        for columnWidth: CGFloat in [240, 420] {
+            capture("sidebar-solo-\(tone)-\(Int(columnWidth))", width: 1200, mode: "solo", requestedSidebarWidth: columnWidth)
+        }
         var shared = ToolWindowLayout(); shared[.outline] = ToolWindowState(place: .docked(.left))
         model.tools = shared
+        for columnWidth: CGFloat in [240, 420] {
+            capture("sidebar-shared-\(tone)-\(Int(columnWidth))", width: 1200, mode: "shared", requestedSidebarWidth: columnWidth)
+        }
         capture("sidebar-shared-\(tone)", width: 1060, mode: "shared")
         model.tools = ToolWindowLayout()
         capture("sidebar-restored-\(tone)", width: 1060, mode: "solo")
@@ -198,6 +222,9 @@ import ObjectiveC
         require(model.tools.tools(in: .left) == [.list], "Show Sidebar must bring the list back")
         var right = ToolWindowLayout(); right[.list].place = .docked(.right)
         model.tools = right
+        for columnWidth: CGFloat in [240, 420] {
+            capture("sidebar-right-\(tone)-\(Int(columnWidth))", width: 1200, mode: "right", requestedSidebarWidth: columnWidth)
+        }
         capture("sidebar-right-\(tone)", width: 1060, mode: "right")
         require(!host.inspectorItem.isCollapsed, "the right area must open the inspector")
         model.tools = ToolWindowLayout()

@@ -84,10 +84,10 @@ import ObjectiveC
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         safe()
     }
-    func wait(_ ready: () -> Bool) {
+    func wait(line: UInt = #line, _ ready: () -> Bool) {
         let end = Date().addingTimeInterval(20)
         while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)); safe() }
-        precondition(ready(), "离屏编辑器检查超时")
+        precondition(ready(), "离屏编辑器检查超时", line: line)
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
     var measurements: [[String: Any]] = []
@@ -155,6 +155,9 @@ import ObjectiveC
     let draftFile = home.appendingPathComponent("ordinary-draft.txt")
     try! Data("ordinary draft attachment".utf8).write(to: draftFile)
     ordinary.restore("普通输入草稿必须保留", attachments: [draftFile])
+    // The remote snapshot and the device configuration have independent reads.
+    // A user can only choose a runtime after it appears in the menu.
+    wait { device.enabledRuntimeInstances.contains { $0.id == "review" } }
     ComposerContext(tab: source, model: ordinary).selectNextTurnRuntime("review")
     wait { source.store.nextTurn?.runtimeId == "review" }
     let originalChoice = source.store.nextTurn?.choice
@@ -229,6 +232,47 @@ import ObjectiveC
     precondition(placementPicker.titleOfSelectedItem == "原会话（替换后续内容）", "原生picker必须显示原会话选择")
     wait { latest.placement == .inPlace && latest.canSubmit }
     latest.cancel()
+
+    // Keep the peer's turn ACK pending while the user changes tabs or closes
+    // the editing session. Read the saved result from another Core client.
+    let reader = DeviceStore(transport: transport)
+    reader.composerInputs.poll(force: true)
+    for cancelEditor in [false, true] {
+        let prompt = cancelEditor ? "closed fork edit" : "background fork edit"
+        let marker = home.appendingPathComponent(prompt)
+        let branch = MessageEditingSession(source: source.store, request: .init(message: latestMessage, conversationID: conversationID,
+            inPlace: true, isLast: true, revision: source.store.editability(of: latestMessage.id)!.revision), presentation: .sheet)
+        branch.start()
+        branch.placement = .fork
+        branch.editor.restore(prompt, attachments: [])
+        wait { branch.store.loadedConversationID == conversationID && !branch.store.isLoading }
+        branch.loadTargetCatalog()
+        let chosen = ModelSelection.native(providerId: "openai", modelId: "synthetic-editor-model")
+        branch.target.chooseModel(chosen)
+        wait { branch.canSubmit }
+        branch.send(in: workspace)
+        wait { FileManager.default.fileExists(atPath: marker.path) || branch.failure != nil }
+        precondition(branch.failure == nil, branch.failure ?? "分叉编辑未到达合成执行端")
+        let forkID = runtimeID + ":" + (try! String(contentsOf: marker, encoding: .utf8))
+        let before = workspace.tabCount
+        if cancelEditor { branch.cancel() } else { workspace.openInNewTab() }
+        try! Data().write(to: marker.appendingPathExtension("release"))
+        wait {
+            reader.composerInputs.poll(force: true)
+            return reader.composerInputs.targetRecord(for: forkID)?.choices.choices.contains {
+                $0.runtimeId == runtimeID && $0.choice.model == chosen
+            } == true
+        }
+        precondition(branch.failure == nil && source.store.loadedConversationID == conversationID)
+        let targets = workspace.conversationTabs.filter { $0.store.loadedConversationID == forkID }
+        if cancelEditor {
+            precondition(targets.isEmpty && workspace.tabCount == before, "关闭编辑器不能复活分叉 UI")
+        } else {
+            precondition(targets.count == 1 && workspace.focused === targets[0] && workspace.tabCount == before + 2,
+                         "原标签离开焦点后，回执仍须只打开一次分叉")
+        }
+        workspace.selectTab(source.id)
+    }
     // Image restoration is an input concern; no image is sent to the fake Codex.
     let pixel = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -328,7 +372,7 @@ import ObjectiveC
         _ = try transport.sendTurn(sourceRuntimeID: runtimeID, conversationID: conversationID, targetRuntimeID: runtimeID, selection: nil,
             turn: ComposedTurn(text: "SECOND CONCURRENT MESSAGE", effort: nil, permissionMode: nil, attachments: []))
     } catch { fatalError("第二次合成写入失败：\(error.localizedDescription)") }
-    wait { edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
+    wait { edit.store.checkAccess.pollProjection(); return edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
     edit.send(in: workspace)
     precondition(edit.confirmationRevision != confirmedRevision && !edit.submitting && !closed,
                  "再次变化必须再次确认，不能无条件覆盖")
@@ -360,7 +404,7 @@ import ObjectiveC
         fresh.send(in: workspace)
     }
     wait { closed }
-    wait { source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
+    wait { source.store.checkAccess.pollProjection(); return source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
     precondition(source.store.loadedConversationID == conversationID)
     wait { source.store.nextTurn?.runtimeId == runtimeID }
     precondition((source.store.keptComposerChoices.choices[runtimeID] ?? TurnChoice()) == (fresh.choices.choices[runtimeID] ?? TurnChoice()),
@@ -482,7 +526,7 @@ import ObjectiveC
     let peer = home.appendingPathComponent("synthetic-editor-codex")
     let script = #"""
 #!/usr/bin/python3
-import json, pathlib, sys, uuid
+import json, pathlib, sys, time, uuid
 root = pathlib.Path(__file__).parent
 path = root / 'editor-native.json'
 if '--version' in sys.argv:
@@ -518,6 +562,11 @@ for line in sys.stdin:
     elif method == 'thread/start':
         current = str(uuid.uuid4()); db[current] = []; save(db)
         result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
+    elif method == 'thread/fork':
+        index = next(i for i, t in enumerate(db[identity]) if t['id'] == p['lastTurnId'])
+        current = str(uuid.uuid4())
+        db[current] = db[identity][:index + 1]; save(db)
+        result = {'thread':thread(db,current),'model':'synthetic-editor-model'}
     elif method == 'thread/revert':
         index = next(i for i,t in enumerate(db[identity]) if t['id'] == p['beforeTurnId'])
         db[identity] = db[identity][:index]; save(db); result = {'thread':thread(db,identity)}
@@ -525,6 +574,12 @@ for line in sys.stdin:
         n = max([int(t['id'].split('-')[-1]) for t in db[identity]] + [0]) + 1
         text = '\n'.join(i.get('text','') for i in p.get('input',[]) if i.get('type') == 'text')
         value = turn(n,text); value['items'][0]['content'] = p.get('input',[]); db[identity].append(value); save(db)
+        if text in ('closed fork edit', 'background fork edit'):
+            (root / text).write_text(identity)
+            deadline = time.monotonic() + 20
+            while not (root / (text + '.release')).exists():
+                if time.monotonic() >= deadline: sys.exit('fork edit ACK was not released')
+                time.sleep(.01)
         emit({'id':request['id'],'result':{'turn':{'id':value['id']}}})
         notify('turn/started',{'threadId':identity,'turn':{'id':value['id']}})
         for item in value['items']:

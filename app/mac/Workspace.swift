@@ -962,14 +962,6 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
     /// sheet is actually on screen. Split panes are independently visible;
     /// an unselected tab in either pane is not.
     static func isConversationStoreVisible(_ store: ConversationStore) -> Bool {
-#if VELUNE_DEV_CHECKS
-        if DevelopmentCheck.allowsSyntheticPolling { return true }
-#endif
-        return isConversationStoreSelectedAndVisible(store)
-    }
-
-    /// Visibility under the native window and pane lifecycle.
-    static func isConversationStoreSelectedAndVisible(_ store: ConversationStore) -> Bool {
         guard !NSApp.isHidden else { return false }
         return openWindows.contains { model in
             if model.detached.hasVisibleComposerWindow(for: store) { return true }

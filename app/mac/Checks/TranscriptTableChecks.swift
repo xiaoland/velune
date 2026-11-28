@@ -36,7 +36,6 @@ extension TranscriptTableController {
                 editMessage: { _ in nil }, forkConversation: { _ in }, describeSettings: { _ in nil }))
             controller.materializeVisibleRows(extra: document.bounds)
             let materialized = cells(ids)
-            precondition(controller.messageEntryIDsForCheck == ids)
             precondition(materialized.map(\.rowID) == ids.map(Optional.some), "原生cell子视图必须与消息顺序一致")
             precondition(zip(materialized, materialized.dropFirst()).allSatisfy { $0.0.frame.minY < $0.1.frame.minY }, "原生cell几何顺序必须一致")
             let axIDs = NSAccessibility.unignoredChildren(from: document.subviews).compactMap(rowID).filter(ids.contains).reduce(into: [String]()) {

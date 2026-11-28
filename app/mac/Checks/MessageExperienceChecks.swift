@@ -89,7 +89,7 @@ import VeluneBindings
             guard edit.editor.submission == replacement else { fail("原生编辑器没有提交修改后的正文") }
             guard until({ edit.canSubmit }) else { fail(edit.noticeText ?? "编辑器禁止提交") }
             edit.send(in: workspace)
-            guard until({ edit.failure != nil || (source.editing == nil && textVisible("edited reply received")) }),
+            guard until({ source.store.checkAccess.pollProjection(); return edit.failure != nil || (source.editing == nil && textVisible("edited reply received")) }),
                   edit.failure == nil else { fail(edit.failure ?? "编辑提交后未收到 Claude 回复") }
             guard source.store.loadedConversationID == sourceID, workspace.focused.id == source.id else {
                 fail("原地提交切换了标签或会话 ID")
@@ -144,7 +144,7 @@ import VeluneBindings
         }
         let sourceBefore = source.store.loadedConversationID
         workspace.composerContext(for: tab).send()
-        guard until({ !store.inputSubmissionAllowed || store.transcript.rows.contains { row in
+        guard until({ store.checkAccess.pollProjection(); return !store.inputSubmissionAllowed || store.transcript.rows.contains { row in
             row.message.blocks.contains(.text(text: "fork reply received"))
         } }), store.inputSubmissionAllowed else { fail("首次发送后未收到回复 \(store.inputAccess) \(store.device.problems.first?.detail ?? "")") }
         guard store.loadedConversationID == targetID, source.store.loadedConversationID == sourceBefore,
@@ -160,10 +160,11 @@ import VeluneBindings
 /// turn's settings. No runtime or daily state directory is opened.
 @MainActor private func forkExperienceChecks(home: URL) {
     ConversationStore.checkConcurrentForkDispatch(home: home)
+    checkWorkspaceWindowRestoration()
     let local = DeviceStore(preview: true)
     let source = DeviceStore(preview: true, peerID: "synthetic-fork-peer")
     let window = ConversationWindowModel(application: local, kind: .workspace)
-    let title = "Synthetic conversation whose descriptive title is too wide for a tab (1)"
+    let title = "Synthetic conversation whose descriptive title is too wide for a tab (123)"
     let summary = ConversationSummary(id: "synthetic-fork", title: .native(title), updatedAtUnixMs: nil,
         createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: true, canDelete: true,
         parentConversationId: nil, nativeReadState: nil)
@@ -178,16 +179,36 @@ import VeluneBindings
         transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
         actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
         followUp: .init(), subAgents: [], collaborators: []))
-    let originalTab = window.focused.id
-    window.openFork(adopting: result, device: source, opening: .newTab)
+    let defaults = UserDefaults.standard
+    let originalPreferences = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+    defer { defaults.setVolatileDomain(originalPreferences, forName: UserDefaults.argumentDomain) }
+    func openingPreference(_ value: String?) {
+        var preferences = originalPreferences
+        preferences["forkConversationOpening"] = value
+        defaults.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
+    }
+    // Each tab receives its own snapshot, so the actual native label exercises
+    // both truncation modes without changing the title after the assertion.
+    for (preference, shownTitle, truncation): (String?, String, NSLineBreakMode) in [
+        (nil, "Long ordinary conversation", .byTruncatingTail),
+        ("unknown-placement", "Long conversation (2b)", .byTruncatingTail),
+        ("newTab", title, .byTruncatingMiddle),
+    ] {
+        openingPreference(preference)
+        precondition(defaults.string(forKey: "forkConversationOpening") == preference)
+        var snapshot = result.snapshot!
+        if preference != "newTab" { snapshot.conversation.id = "fork-" + (preference ?? "default") }
+        snapshot.conversation.title = .native(shownTitle)
+        let before = window.tabCount, originalTab = window.focused.id
+        window.openFork(adopting: SnapshotResult(snapshot: snapshot), device: source)
+        precondition(window.tabCount == before + 1 && window.focused.id != originalTab && window.layout.paneIDs.count == 1
+                     && window.allTabs.contains { $0.id == originalTab })
+        let item = TabItemView(tab: window.focused, bar: nil, model: window)
+        item.refresh()
+        let label = item.subviews.compactMap { $0 as? NSTextField }.first
+        precondition(label?.lineBreakMode == truncation && label?.stringValue == shownTitle && item.toolTip == shownTitle)
+    }
     let store = window.focused.store
-    precondition(window.tabCount == 2 && window.allTabs.contains { $0.id == originalTab })
-    precondition(window.focused.title == title)
-    let tabItem = TabItemView(tab: window.focused, bar: nil, model: window)
-    tabItem.refresh()
-    let tabLabel = tabItem.subviews.compactMap { $0 as? NSTextField }.first
-    precondition(tabLabel?.lineBreakMode == .byTruncatingMiddle && tabItem.toolTip == title,
-                 "长标题应留出尾部编号，提示仍显示完整标题")
     precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
     precondition(store.loadedConversationID == "synthetic-fork" && !store.isLoading)
     precondition(store.nextTurn != nil, "接收快照后立即提供执行配置，不等待列表扫描")
@@ -199,7 +220,8 @@ import VeluneBindings
 
     let split = ConversationWindowModel(application: local, kind: .workspace)
     let originalPane = split.focusedPaneID
-    split.openFork(adopting: result, device: source, opening: .rightSplit)
+    openingPreference("rightSplit")
+    split.openFork(adopting: result, device: source)
     precondition(split.layout.paneIDs == [originalPane, split.focusedPaneID] && split.tabCount == 2)
     precondition(split.focused.store.device === source && split.focused.title == title)
     split.focused.store.close()
@@ -213,7 +235,8 @@ import VeluneBindings
         model.start(restoring: nil, seed: seed)
         openedWindow = model
     }
-    sourceWindow.openFork(adopting: result, device: source, opening: .newWindow)
+    openingPreference("newWindow")
+    sourceWindow.openFork(adopting: result, device: source)
     precondition(sourceWindow.tabCount == 1 && sourceWindow.focused.id == sourceTab)
     precondition(openedWindow?.focused.store.device === source && openedWindow?.focused.title == title)
     precondition(openedWindow?.focused.store.nextTurn != nil)

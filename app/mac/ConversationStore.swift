@@ -102,6 +102,10 @@ final class ConversationStore: ObservableObject {
     /// Same-conversation refresh invalidates requests, not viewport demand.
     private var navigationID = UUID()
     private var timer: Timer?
+#if VELUNE_DEV_CHECKS
+    // The event-only check has a real peer and intentionally no timer or visible window.
+    var receivesOffscreenNativeWakesForCheck = false
+#endif
     private var pollPending = false
     private var nativeUserMessageWakePending = false
     private var needsResync = false
@@ -2140,8 +2144,12 @@ final class ConversationStore: ObservableObject {
     /// A native wake carries only an address. Keep one pending read if a
     /// delivery that began before the native event is already in flight.
     private func readNativeUserMessage(for conversationID: String?) {
-        guard let loadedConversationID, conversationID == nil || conversationID == loadedConversationID,
-              ConversationWindowModel.isConversationStoreVisible(self) else { return }
+        guard let loadedConversationID, conversationID == nil || conversationID == loadedConversationID else { return }
+#if VELUNE_DEV_CHECKS
+        guard receivesOffscreenNativeWakesForCheck || ConversationWindowModel.isConversationStoreVisible(self) else { return }
+#else
+        guard ConversationWindowModel.isConversationStoreVisible(self) else { return }
+#endif
         nativeUserMessageWakePending = true
         pollProjection()
     }
@@ -2449,10 +2457,6 @@ extension ConversationStore {
         var composerRequest: ComposerSubmission.Phase? {
             get { store.composerRequest }
             nonmutating set { store.composerRequest = newValue }
-        }
-        var acceptedSubmissions: UInt64 {
-            get { store.acceptedSubmissions }
-            nonmutating set { store.acceptedSubmissions = newValue }
         }
         var stopRequested: Bool {
             get { store.stopRequested }

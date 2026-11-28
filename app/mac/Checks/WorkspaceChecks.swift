@@ -1,5 +1,56 @@
 #if VELUNE_DEV_CHECKS
 import AppKit
+
+
+/// AppKit supplies the coder and later presents the returned window. Only the
+/// restoration delegate is exercised here, using windows that stay unordered.
+@MainActor func checkWorkspaceWindowRestoration() {
+    let manager = WorkspaceWindows.shared
+    precondition(manager.controllers.isEmpty)
+    manager.start(.init(store: DeviceStore(preview: true), previewEmpty: false, previewSettings: false))
+    func restore(_ bytes: Data) -> (NSWindow?, Error?) {
+        let archive = try! NSKeyedUnarchiver(forReadingFrom: bytes)
+        defer { archive.finishDecoding() }
+        var calls = 0
+        var result: (NSWindow?, Error?) = (nil, nil)
+        WorkspaceWindowRestoration.restoreWindow(withIdentifier: .init("restored-window"), state: archive) { window, error in
+            calls += 1
+            result = (window, error)
+        }
+        precondition(calls == 1)
+        return result
+    }
+    for (kind, device): (ConversationWindowKind, String?) in [(.workspace, nil), (.single, "fork-peer")] {
+        let id = UUID().uuidString
+        let original = manager.restore(kind, id: id, device: device)!
+        let controller = manager.controllers.first { $0.window === original }!
+        let archive = NSKeyedArchiver(requiringSecureCoding: true)
+        controller.window(original, willEncodeRestorableState: archive)
+        archive.finishEncoding()
+        original.close()
+        precondition(manager.controllers.isEmpty)
+        let (restored, error) = restore(archive.encodedData)
+        guard let restored, let reopened = manager.controllers.first(where: { $0.window === restored }) else {
+            preconditionFailure("窗口恢复回执缺失：\(String(describing: error))")
+        }
+        precondition(error == nil && restored !== original && reopened.id == id && reopened.kind == kind && reopened.device == device
+                     && restored.identifier?.rawValue == "velune.window.\(id)" && !restored.isVisible)
+        let (same, secondError) = restore(archive.encodedData)
+        precondition(same === restored && secondError == nil && manager.controllers.count == 1)
+        restored.close()
+    }
+    // Change one field in an otherwise admissible archived record.
+    for (id, kind) in [("broken-uuid", "conversation"), (UUID().uuidString, "broken-kind")] {
+        let archive = NSKeyedArchiver(requiringSecureCoding: true)
+        archive.encode(id as NSString, forKey: "veluneWindowID")
+        archive.encode(kind as NSString, forKey: "veluneWindowKind")
+        archive.finishEncoding()
+        let (window, error) = restore(archive.encodedData)
+        let failure = error as NSError?
+        precondition(window == nil && failure?.domain == NSCocoaErrorDomain && failure?.code == CocoaError.coderReadCorrupt.rawValue
+                     && manager.controllers.isEmpty, "损坏的恢复标识或类型必须拒绝，不能创建窗口")
+    }
+}
 import Combine
 import VeluneBindings
 

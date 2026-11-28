@@ -31,7 +31,7 @@ import VeluneBindings
             for tab in model.conversationTabs {
                 let store = tab.store
                 guard store.device.transport === transport, !store.isUnsentConversation,
-                      ConversationWindowModel.isConversationStoreSelectedAndVisible(store),
+                      ConversationWindowModel.isConversationStoreVisible(store),
                       let runtime = store.projectionRuntimeID, let conversation = store.loadedConversationID else { continue }
                 let item = ObservedConversation(runtimeId: runtime, conversationId: conversation)
                 if !result.contains(item) { result.append(item) }

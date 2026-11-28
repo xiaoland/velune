@@ -43,6 +43,7 @@ enum DevelopmentCheck {
 
     // First match wins within each lifecycle phase.
     private static let launchChecks: [LaunchCheck] = [
+        .init("--check-group-creation", .beforeSwiftUI, run: groupCreationCheck),
         .init("--check-conversation-requests", .beforeSwiftUI, run: conversationRequestChecks),
         .init("--check-notification-navigation", .beforeSwiftUI, run: notificationNavigationChecks),
         .init("--check-outgoing-submissions", .beforeSwiftUI, run: outgoingSubmissionChecks),
@@ -98,11 +99,6 @@ enum DevelopmentCheck {
         exit(0)
     }
 
-    /// Check fixtures can have no NSWindow while exercising data-driven polling.
-    static var allowsSyntheticPolling: Bool {
-        MacExecutionContext.admitted.isDevelopment && arguments.contains { $0.hasPrefix("--check-") }
-    }
-
     static func runAfterWindowStart(_ window: ConversationWindowModel) {
         if arguments.contains("--check-split-panes"), !window.isSplit {
             window.split(.horizontal)
@@ -118,7 +114,6 @@ enum DevelopmentCheck {
         if arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
         if arguments.contains("--check-list-actions") { window.checkListActions() }
         if arguments.contains("--check-side-chat") { window.checkSideChat() }
-        if arguments.contains("--check-group-creation") { window.checkGroupCreation() }
         if arguments.contains("--check-dock-areas") {
             window.tools.move(.outline, to: .docked(.left))
             window.tools.move(.list, to: .docked(.right))
@@ -129,7 +124,6 @@ enum DevelopmentCheck {
             window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
             UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
         }
-        if arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
     }
 }
 #endif

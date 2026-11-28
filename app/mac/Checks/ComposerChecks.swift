@@ -2,31 +2,26 @@
 import AppKit
 import VeluneBindings
 
-extension ConversationWindowModel {
-    /// Local invariant check; UI navigation and restoration are verified in
-    /// the running preview separately. No runtime request is issued here.
-    func checkComposerSharing() {
-        let store = ConversationStore(device: application)
+/// Isolated, hidden native checks. Never registers hotkeys, creates scenes or activates a window.
+@MainActor func composerOwnershipCheck() -> Never {
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    do {
+        let device = DeviceStore(preview: true)
+        let store = ConversationStore(device: device)
         let tab = ConversationTab(store: store, start: {})
-        let first = ComposerDrafts(device: application), second = ComposerDrafts(device: application)
-        let owner = ComposerDrafts.Owner.conversation("check-composer-sharing")
+        let first = ComposerDrafts(device: device), second = ComposerDrafts(device: device)
+        let owner = ComposerDrafts.Owner.conversation("shared-local-draft")
         let a = first.model(for: owner, tab: tab), b = second.model(for: owner, tab: tab)
         a.restore("SHARED LOCAL DRAFT", attachments: [])
-        precondition(b.submission == a.submission, "同一会话的不同编辑器必须同步输入与明确选择")
+        precondition(b.submission == "SHARED LOCAL DRAFT", "同一会话的不同编辑器必须同步输入与明确选择")
         a.clear(submitted: a.submission, attachments: [])
         precondition(b.isEmpty, "消费输入必须在其他编辑器中原子清空")
         a.restore("MOVED LOCAL DRAFT", attachments: [])
         first.move(a, to: .shared, tab: tab)
-        precondition(first.shared === a && b.id == a.id && b.submission == a.submission, "移动保留同一输入身份")
+        precondition(first.shared === a && b.id == a.id && b.submission == "MOVED LOCAL DRAFT", "移动保留同一输入身份")
         a.clear(submitted: a.submission, attachments: [])
         precondition(b.isEmpty, "消费后所有引用必须一同清空，不能留下独立副本")
-        FileHandle.standardError.write(Data("CHECK composer-sharing: session editors share input + intent; atomic consumption; move leaves no duplicate PASSED\n".utf8))
     }
-}
-
-/// Isolated, hidden native checks. Never registers hotkeys, creates scenes or activates a window.
-@MainActor func composerOwnershipCheck() -> Never {
-    NSApplication.shared.setActivationPolicy(.prohibited)
     if CommandLine.arguments.contains("--composer-check-tab-state") { composerTabStateCheck() }
     if CommandLine.arguments.contains("--composer-check-content-target") { composerContentTargetCheck() }
     func wait(_ condition: () -> Bool) {

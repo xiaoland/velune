@@ -156,6 +156,7 @@ extension ConversationStore {
         let device = DeviceStore(transport: transport)
         device.applyList(try transport.list())
         let store = ConversationStore(device: device)
+        store.receivesOffscreenNativeWakesForCheck = true
         store.checkAccess.modelCatalogs[runtimeID] = .ready([model])
         store.adopt(seed)
         store.checkAccess.started = true
@@ -197,7 +198,7 @@ extension ConversationStore {
         }
         wait { !store.checkAccess.isLoading }
         guard composer.submission == rejected, composer.attachments == [attachment],
-              store.transcript.rows.map(\.id) == history, store.checkAccess.acceptedSubmissions == 0 else {
+              store.transcript.rows.map(\.id) == history, store.acceptedSubmissions == 0 else {
             throw TransportError.rejected("rejected input must disappear from the list and restore its exact draft")
         }
         let retained = Set(device.composerInputs.state?.inputs.map(\.id) ?? [])
@@ -244,7 +245,7 @@ extension ConversationStore {
               staged.message.copiedText == prompt, staged.sending, composer.isEmpty else {
             throw TransportError.rejected("send must synchronously show its own in-flight message")
         }
-        wait { store.checkAccess.acceptedSubmissions == 1 && !store.checkAccess.isLoading }
+        wait { store.acceptedSubmissions == 1 && !store.checkAccess.isLoading }
         device.nativeUserMessageWakes.send("unrelated-conversation")
         guard !store.checkAccess.pollPending else {
             throw TransportError.rejected("a wake for another conversation must not start a read")
@@ -252,7 +253,7 @@ extension ConversationStore {
         // Release after both of the previous implementation's reads would
         // have fired. This Store has no periodic timer.
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        guard store.checkAccess.acceptedSubmissions == 1, lastUserRowID() == staged.id,
+        guard store.acceptedSubmissions == 1, lastUserRowID() == staged.id,
               store.transcript.rows.last?.sending == false, store.isGenerating else {
             throw TransportError.rejected("ACK must remove the sending badge without hiding the bubble while waiting for native history")
         }
@@ -287,11 +288,31 @@ extension ConversationStore {
         }
         let device = DeviceStore(transport: transport)
         device.applyList(try transport.list())
-        let store = ConversationStore(device: device)
+        let workspace = ConversationWindowModel(application: device, kind: .workspace)
+        let store = workspace.focused.store
         let native = ModelSelection.native(providerId: "openai", modelId: "synthetic-native")
         store.checkAccess.modelCatalogs["synthetic-codex"] = .ready([RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])])
         store.adopt(seed)
         store.checkAccess.started = true
+        // The shell is attached to a hidden native window. The normal entry
+        // points refuse reads even for its selected transcript.
+        let hidden = OffscreenMessageEditorWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                                                   styleMask: [.borderless], backing: .buffered, defer: true)
+        let anchor = NSView(frame: hidden.frame)
+        hidden.contentView = anchor
+        workspace.register(workspace.focusedPaneID) { anchor }
+        require(workspace.window === hidden && !hidden.isVisible && ConversationWindowModel.isConversationStoreSelected(store, in: workspace))
+        func requireNoRead() {
+            store.noteVisible()
+            device.nativeUserMessageWakes.send(store.loadedConversationID)
+            require(!store.checkAccess.pollPending, "hidden or closed transcript must not dispatch a Core read")
+        }
+        requireNoRead()
+        workspace.openInNewTab()
+        require(!ConversationWindowModel.isConversationStoreSelected(store, in: workspace))
+        requireNoRead()
+        workspace.noteWindowClosed()
+        requireNoRead()
         // Reuse the provider-confirmed owner from the completed seed turn.
         wait("idle seed") { store.checkAccess.pollProjection(); return store.checkAccess.snapshot?.runState == .idle }
         let target = resolveNextTurn(input: NextTurnInput(runtimeId: "synthetic-codex",
@@ -336,7 +357,7 @@ extension ConversationStore {
         require(store.checkAccess.isLoading, "native stop must reach peer before ordinary ACK release")
         try Data().write(to: home.appendingPathComponent("release-send"))
         wait("ordinary ACK release") { !store.checkAccess.isLoading }
-        require(accepted == 1 && store.checkAccess.acceptedSubmissions == 1, "Send receipt must settle exactly once")
+        require(accepted == 1 && store.acceptedSubmissions == 1, "Send receipt must settle exactly once")
         let promptProcesses = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
         require(promptProcesses.count == 2 && Set(promptProcesses).count == 1, "warm Send must reuse the confirmed owner without replay")
         note("Store/Core/helper: held warm Send ACK does not block poll/question, coalesced payload, one-shot reply or native stop; one accepted receipt, no replay")
@@ -384,54 +405,36 @@ extension ConversationStore {
         device.composerInputs.poll(force: true)
         wait("composer authority for operation-owned promotion") { device.composerInputs.ownerID != nil && device.composerInputs.state != nil }
 
-        // Hold the real createAndSend boundary after Core creation, before its
-        // Send dispatch. This exercises the production two-stage publisher and
-        // queue with an observable Core poll between creation and final receipt.
+        // Hold the peer's ACK while the public Store Send consumes its created
+        // identity and a real Core poll. Neither callback is assembled by the check.
         let creating = ConversationStore(device: device)
-        creating.checkAccess.modelCatalogs["synthetic-codex"] = .ready([RuntimeModel(selection: native, name: "Synthetic", reasoningEfforts: [])])
-        guard let seedSnapshot = seed.snapshot else { throw TransportError.rejected("synthetic seed omitted its projection") }
-        var creationDraft = BindingMapping.snapshot(seedSnapshot)
-        creationDraft.conversation = Conversation(id: "draft:real-create-gate", title: "Synthetic creation", updatedAtUnixMs: nil, runtimeID: "synthetic-codex", cwd: home.path)
-        creationDraft.messages = []; creationDraft.transcriptTurns = []; creationDraft.transcriptItems = []
-        creationDraft.transcriptOutline = []; creationDraft.transcriptMessageIdentities = []
-        creating.checkAccess.isDraft = true
-        creating.checkAccess.apply(creationDraft)
-        creating.checkAccess.started = true
-        let creationDraftID = creationDraft.conversation.id
+        require(creating.createConversation(runtimeID: "synthetic-codex", cwd: home.path))
+        let creationDraftID = creating.unsentContextID
         let creationInput = ComposerModel()
         device.composerInputs.bind(creationDraftID, input: creationInput)
         wait("creation input binding") { device.composerInputs.inputID(for: creationDraftID) == creationInput.id }
-        let creationTicket = SendProjectionTicket(scope: creating.checkAccess.projectionScope(), input: creationInput, device: device)
-        let releaseCreation = DispatchSemaphore(value: 0)
-        var creationEvents = 0, creationReceipts = 0
+        creating.checkAccess.started = true
+        var creationEvents = 0, creationReceipts: [String?] = []
         let creationWatch = creating.composerEvents.sink { if case .created = $0 { creationEvents += 1 } }
-        creating.checkAccess.enqueue({
-            try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, selection: native,
-                turn: ComposedTurn(text: "one created submission", effort: nil, permissionMode: nil, attachments: [])) { created in
-                    DispatchQueue.main.async {
-                        creating.checkAccess.publishCreatedIdentity(created, ticket: creationTicket, previous: creationDraftID)
-                    }
-                    _ = releaseCreation.wait(timeout: .now() + 20)
-                }
-        }, consumeReceipt: { result in
-            if case .success = result { creationReceipts += 1; creating.checkAccess.acceptedSubmissions &+= 1 }
-        }) { value in creating.checkAccess.applySnapshotResult(value, scope: creationTicket.scope) }
-        wait("created identity before Send") { !creating.checkAccess.isDraft && creationEvents == 1 }
+        require(creating.send(text: "one created submission", next: target, input: creationInput,
+                              onAccepted: { creationReceipts.append($0) }))
+        wait("created identity and submitted wire before ACK") {
+            !creating.isUnsentConversation && creationEvents == 1 && FileManager.default.fileExists(atPath: home.appendingPathComponent("created-send-entered").path)
+        }
+        let createdID = creating.loadedConversationID!
         let createdEpoch = creating.checkAccess.projectionEpoch
         creating.checkAccess.needsResync = true
         creating.checkAccess.pollProjection()
-        wait("Core poll between onCreated and Send") { !creating.checkAccess.pollPending && creating.checkAccess.projectionEpoch > createdEpoch }
-        require(creating.checkAccess.isLoading && creationReceipts == 0, "created identity and a consumed Core poll must precede Send receipt")
-        let promptsBeforeCreatedSend = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
-        require(promptsBeforeCreatedSend.count == promptProcesses.count, "onCreated and Core poll must finish before created Send reaches the wire")
-        releaseCreation.signal()
-        wait("created Send receipt") { !creating.checkAccess.isLoading }
-        require(creationReceipts == 1 && creating.checkAccess.acceptedSubmissions == 1 && !creating.checkAccess.isDraft
-                && creating.loadedConversationID == creationTicket.createdID && creationEvents == 1, "created identity and Accepted must survive the intermediate Core poll")
+        wait("Core poll between creation and ACK") { !creating.checkAccess.pollPending && creating.checkAccess.projectionEpoch > createdEpoch }
+        require(creating.isLoading && creationReceipts.isEmpty, "poll must finish before the accepted receipt")
+        try Data().write(to: home.appendingPathComponent("release-created-send"))
+        wait("created Send receipt") { !creating.isLoading }
+        require(creationReceipts == [createdID] && creating.acceptedSubmissions == 1 && creating.loadedConversationID == createdID
+                && creationEvents == 1, "an intermediate poll must preserve the created identity and exactly one receipt")
         let promptsAfterCreation = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
         require(promptsAfterCreation.count == promptProcesses.count + 1, "created Send must reach wire once, never replay")
         creationWatch.cancel(); creating.close()
-        note("real createAndSend: onCreated identity → completed Core poll → exactly one Send wire/receipt")
+        note("real Store Send: created identity → completed Core poll → exactly one accepted wire submission")
 
         let client = device.composerInputs
         let newEntry = Self.draftConversationPrefix + "new-conversation"
@@ -442,40 +445,24 @@ extension ConversationStore {
         wait("closed creation source binding") { client.inputID(for: newEntry) == closedInput.id }
         client.captureTarget(closedInput.id, choices: submittedChoices)
         let closedCreation = ConversationStore(device: device)
-        closedCreation.checkAccess.modelCatalogs["synthetic-codex"] = .ready([])
-        closedCreation.checkAccess.isDraft = true; closedCreation.checkAccess.apply(creationDraft)
-        let closedTicket = SendProjectionTicket(scope: closedCreation.checkAccess.projectionScope(), input: closedInput, device: device)
-        let releaseClosedSend = DispatchSemaphore(value: 0)
-        var closedEvents = 0, closedReceipts = 0, promotionStagedOnce = false
+        require(closedCreation.createConversation(runtimeID: "synthetic-codex", cwd: home.path))
+        var closedEvents = 0, closedReceipts: [String?] = []
         let closedWatch = closedCreation.composerEvents.sink { if case .created = $0 { closedEvents += 1 } }
-        closedCreation.checkAccess.enqueue({
-            try transport.createAndSend(runtimeID: "synthetic-codex", cwd: home.path, selection: native,
-                turn: ComposedTurn(text: "closed-create", effort: nil, permissionMode: nil, attachments: [])) { created in
-                    DispatchQueue.main.async {
-                        closedCreation.close()
-                        closedCreation.checkAccess.publishCreatedIdentity(created, ticket: closedTicket, previous: creationDraftID)
-                        closedCreation.checkAccess.publishCreatedIdentity(created, ticket: closedTicket, previous: creationDraftID)
-                        if let id = closedTicket.createdID { promotionStagedOnce = client.pendingPromotions[id]?.choices == submittedChoices }
-                    }
-                    _ = releaseClosedSend.wait(timeout: .now() + 20)
-                }
-        }, consumeReceipt: { result in
-            if case .success = result { closedReceipts += 1; closedCreation.checkAccess.acceptedSubmissions &+= 1 }
-        }) { value in closedCreation.checkAccess.applySnapshotResult(value, scope: closedTicket.scope) }
+        require(closedCreation.send(text: "closed-create", next: target, input: closedInput,
+                                    onAccepted: { closedReceipts.append($0) }))
         closedInput.clear(submitted: "closed-create", attachments: [])
         client.consumeNewConversationInput(closedInput)
-        wait("closed onCreated promoted without a window subscriber") {
-            guard let id = closedTicket.createdID else { return false }
-            return client.state?.creations.contains { $0.conversationId == id && $0.inputId == closedInput.id.uuidString.lowercased() } == true
-                && client.pendingPromotions[id] == nil
+        closedCreation.close() // On the main actor before the created callback can run.
+        wait("closed created Send receipt") { !closedCreation.isLoading && !closedReceipts.isEmpty }
+        guard let closedID = closedReceipts[0] else { throw TransportError.rejected("closed create lost identity") }
+        wait("closed source promoted without a window subscriber") {
+            client.state?.creations.contains { $0.conversationId == closedID && $0.inputId == closedInput.id.uuidString.lowercased() } == true
+                && client.pendingPromotions[closedID] == nil
         }
-        guard let closedID = closedTicket.createdID else { throw TransportError.rejected("closed create lost identity") }
-        require(promotionStagedOnce && client.targetChoices(for: closedID) == submittedChoices, "duplicate created callback must not consume/overwrite submitted choices twice")
-        require(closedEvents == 0 && closedCreation.loadedConversationID == creationDraftID, "closed creation must not reopen the old view or emit navigation")
-        releaseClosedSend.signal()
-        wait("closed created Send receipt") { !closedCreation.checkAccess.isLoading }
-        require(closedReceipts == 1 && closedCreation.checkAccess.acceptedSubmissions == 1
-                && client.state?.creations.filter { $0.conversationId == closedID }.count == 1, "closed operation must retain one accepted receipt and one promotion")
+        require(client.targetChoices(for: closedID) == submittedChoices && closedEvents == 0
+                && closedCreation.loadedConversationID == closedCreation.unsentContextID, "closed view must not reopen or lose its submitted choices")
+        require(closedReceipts.count == 1 && closedCreation.acceptedSubmissions == 1
+                && client.state?.creations.filter { $0.conversationId == closedID }.count == 1, "closed operation must retain one receipt and one promotion")
         closedWatch.cancel()
 
         let failureInput = ComposerModel()
@@ -485,11 +472,7 @@ extension ConversationStore {
         wait("failed creation source binding") { client.inputID(for: newEntry) == failureInput.id }
         client.captureTarget(failureInput.id, choices: submittedChoices)
         let failedCreation = ConversationStore(device: device)
-        failedCreation.checkAccess.modelCatalogs["synthetic-codex"] = .ready([])
-        var failureDraft = creationDraft
-        failureDraft.runState = .idle
-        failureDraft.actions = ConversationActions(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true)
-        failedCreation.checkAccess.isDraft = true; failedCreation.checkAccess.apply(failureDraft)
+        require(failedCreation.createConversation(runtimeID: "synthetic-codex", cwd: home.path))
         var failedID: String?, failedReceipts = 0
         var clearedRevision: UInt64?
         require(failedCreation.send(text: failureText, next: target, input: failureInput, onFailure: { createdID in
@@ -508,11 +491,11 @@ extension ConversationStore {
             client.state?.creations.contains { $0.conversationId == failedID && $0.inputId == failureInput.id.uuidString.lowercased() } == true
                 && client.pendingPromotions[failedID] == nil && !client.isDirty(failureInput.id)
         }
-        require(failedCreation.isUnsentConversation && failedCreation.loadedConversationID == creationDraftID, "closed failure must not reopen presentation")
+        require(failedCreation.isUnsentConversation && failedCreation.loadedConversationID == failedCreation.unsentContextID, "closed failure must not reopen presentation")
         require(client.inputID(for: newEntry) == untouchedNewInput && untouchedNewInput != failureInput.id,
                 "created failure must not restore the consumed input to a fresh creation entry even when the closed Store looks draft")
         require(client.inputID(for: failedID) == failureInput.id && client.targetChoices(for: failedID) == submittedChoices
-                && client.draft(failureInput.id)?.text == failureText && failedCreation.checkAccess.acceptedSubmissions == 0,
+                && client.draft(failureInput.id)?.text == failureText && failedCreation.acceptedSubmissions == 0,
                 "created identity, submitted choices and failed draft must survive independently of the closed view")
         let promptsAfterClosedCases = try String(contentsOf: home.appendingPathComponent("prompt-wire"), encoding: .utf8).split(separator: "\n")
         require(promptsAfterClosedCases.count == promptsAfterCreation.count + 2, "closed success and created rejection each dispatch once without recreation or resend")

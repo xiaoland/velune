@@ -94,7 +94,7 @@ ARK Coding Plan 沿既有订阅模板创建，连接页分为模型认证和独�
 
 新会话的工作目录菜单直接消费 core 的 `workingDirectoryProjects`（按目标运行时返回的完整项目文件夹），按项目显示主文件夹及附加文件夹，不再从侧栏会话反推或截取 5 项。本机可“选择目录…”或“输入路径…”（支持 `~/`）；SSH 与远程设备仅输入执行机器的路径。已有选择可恢复默认，创建失败在 composer 就近说明并保留草稿和路径。
 
-会话列表组菜单的“新建会话”调用窗口的 `createConversation(in:)`，与菜单和工具栏的 `createConversation()` 一样新开标签（当前标签已是未发送的新会话时原地改目标），草稿创建复用 `ConversationStore.createConversation(runtimeID:cwd:)`：运行时组指定实例，项目组取 `ConversationProject.primaryFolder`，原生项目另取 `nativeRuntimeId`；项目的不透明身份不当成路径。组显式指定的运行时同步到新标签的 composer，保证共享输入区的明确选择与新目标一致；正文和附件继续按既有草稿归属保留，首发前不创建原生会话。`--check-group-creation` 使用合成配置直接检查同一窗口动作的运行时、主目录和共享输入结果，不发送全局鼠标／键盘事件；配合 `--check-split-panes --check-dock-areas`，以后台隔离副本运行。
+会话列表组菜单的“新建会话”调用窗口的 `createConversation(in:)`，与菜单和工具栏的 `createConversation()` 一样新开标签（当前标签已是未发送的新会话时原地改目标），草稿创建复用 `ConversationStore.createConversation(runtimeID:cwd:)`：运行时组指定实例，项目组取 `ConversationProject.primaryFolder`，原生项目另取 `nativeRuntimeId`；项目的不透明身份不当成路径。组显式指定的运行时同步到新标签的 composer，保证共享输入区的明确选择与新目标一致；正文和附件继续按既有草稿归属保留，首发前不创建原生会话。`--check-group-creation` 使用合成配置直接检查同一窗口动作的运行时、主目录和共享输入结果，不发送全局鼠标／键盘事件。用 `python3 scripts/check-macos-composer.py group-creation` 在后台隔离副本运行。
 
 “会话 → 选择工作目录…”、命令面板与 `/cwd` 共用可搜索的目录候选及当前选择，命令可配置快捷键、默认不占用按键；仅未首发的新会话可用。原生目录面板与路径输入由窗口的 `WorkingDirectorySelection.swift` 共用呈现，不依赖 composer 是否挂载；异步确认时复核原会话和运行时，避免改到后来切换的目标。
 
@@ -126,7 +126,7 @@ iPad 构建要求见 [iOS README](../ios/README.md#构建)。
 
 `MessageEditorSheet` 复用核心的每条消息编辑资格，不因 composer 暂选其他运行时隐藏入口；重新发送目标明确显示为会话当前上下文的运行时。成功后才关闭编辑窗口，失败保留正文及附件；不能精确原地回退时只提供在新会话中继续并说明上下文参考语义。
 
-锁定原因入口复用操作行；核心提交准入与本地 `draftEditable` 分开，外部控制不禁止草稿文本、粘贴和附件编辑。输入框最低一行，drawer 下限计入操作行及布局标题；低空间时附件／队列收进“输入详情”，展开按实际内容限高，不增加说明带。`--preview --preview-composer-access --check-dock-areas` 提供空闲／外部控制／运行的合成会话；另加 `--check-composer-minimum` 在独立预览中设置最小高度并开启该副本的系统窗口恢复，供关键路径截图与实际退出重启验证。`--check-composer-sharing` 只在预览中运行局部同步／消费／移动不留副本检查，不发运行时请求。
+锁定原因入口复用操作行；核心提交准入与本地 `draftEditable` 分开，外部控制不禁止草稿文本、粘贴和附件编辑。输入框最低一行，drawer 下限计入操作行及布局标题；低空间时附件／队列收进“输入详情”，展开按实际内容限高，不增加说明带。`--preview --preview-composer-access --check-dock-areas` 提供空闲／外部控制／运行的合成会话；另加 `--check-composer-minimum` 在独立预览中设置最小高度并开启该副本的系统窗口恢复，供关键路径截图与实际退出重启验证。后台 `ownership` 检查同时验证同一输入的同步、消费与移动后身份。
 
 侧聊标题来自核心的“侧聊：来源标题”，选择器允许下一轮运行时／模型／推理强度／权限。`SendSideChat` 携带实际下一轮配置；切换配置由核心创建新的临时上下文并保留引用历史和已显示问答，原会话与原生持久会话文件不改写。
 
