@@ -31,6 +31,7 @@ class NativeInputsTests(unittest.TestCase):
             "app/ios/Velune.xcodeproj/project.pbxproj": {"ios"},
             "app/android/gradle/wrapper/gradle-wrapper.properties": {"android"},
             "app/windows/packages.lock.json": {"windows"},
+            "global.json": {"windows"},
             "scripts/render-windows-icon.ps1": {"windows"},
             "scripts/install-runtime-support.sh": {"macos", "windows"},
             "scripts/install-xurl.py": {"macos", "windows"},

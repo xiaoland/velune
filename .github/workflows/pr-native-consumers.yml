@@ -121,6 +121,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Report the resolved .NET SDK
+        run: dotnet --version
       - uses: actions/setup-go@v5
         with:
           go-version-file: packages/ai-provider/relaykit-bridge/go.mod
