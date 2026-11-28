@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links', 'requests', 'interactions', 'drag-provider', 'typography', 'admission', 'navigation', 'group-creation'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -144,6 +144,8 @@ def main():
         parser.error('--workspace-only requires experience')
     if args.child_activity and args.check != 'background-notifications':
         parser.error('--child-activity requires background-notifications')
+    if args.child_open and args.check != 'ownership':
+        parser.error('--child-open requires ownership')
     app = args.app.resolve()
     context = validate_bundle(app, purpose='development')
     output = (args.output or ROOT / 'target/checks' / ('macos-' + args.check + ('-dark' if args.dark else ''))).resolve()
@@ -177,6 +179,19 @@ def main():
         if args.check == 'editor':
             env['VELUNE_HOME'] = str(evidence / 'state')
         flags = ['--check-continuation-preparation'] if args.check == 'continuation' else ['--check-composer-ownership', '--composer-check-content-target']
+        named_flags = {
+            'requests': ['--check-conversation-requests'],
+            'interactions': ['--check-runtime-interactions'],
+            'drag-provider': ['--check-message-experience', '--experience-drag-provider-only'],
+            'typography': ['--check-message-experience', '--experience-typography-only'],
+            'admission': ['--check-message-experience', '--experience-admission-only'],
+            'navigation': ['--check-message-experience', '--experience-navigation-only'],
+            'group-creation': ['--check-group-creation'],
+        }
+        if args.check in named_flags:
+            flags = named_flags[args.check]
+            if args.check == 'interactions' and args.dark:
+                flags.append('--interaction-check-dark')
         if args.check == 'editor':
             flags = ['--check-message-experience', '--experience-message-editor-offscreen']
             if args.dark:

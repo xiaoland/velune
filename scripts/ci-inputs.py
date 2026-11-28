@@ -7,11 +7,13 @@ import sys
 def requires_rust(names):
     rust_files = {'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'clippy.toml',
                   '.github/workflows/pr-checks.yml', 'scripts/ci-inputs.py',
-                  'scripts/check-ci-inputs.py', 'scripts/build-support.py'}
+                  'scripts/check-ci-inputs.py', 'scripts/build-support.py',
+                  'scripts/run-migrations.py'}
     # Crates embed Python, JavaScript, Markdown and fixture bytes as well as
     # Rust. File extensions cannot identify their compile/test inputs. Keep
     # their owner trees together; the acceptance suite consumes the built FFI.
-    rust_trees = ('packages/', 'tools/', 'third-party/', '.cargo/', 'tests/acceptance/')
+    rust_trees = ('packages/', 'tools/', 'third-party/', '.cargo/', 'tests/acceptance/',
+                  'scripts/migrations/')
     return any(
         name.endswith('.rs') or name in rust_files or name.endswith('/Cargo.toml')
         or name.startswith(rust_trees)

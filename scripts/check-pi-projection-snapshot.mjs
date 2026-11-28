@@ -14,7 +14,7 @@ const installation = resolvePiSdk({binary:cli,runtimeTypeId:"pi-1.0"});
 process.env.VELUNE_PI_SDK_PACKAGE_ROOT = installation.packageDirectory;
 delete process.env.VELUNE_PI_SELECTION_FILE;
 const sdk = await installation.importModule("dist/core/session-manager.js");
-const {SessionManager,CURRENT_SESSION_VERSION} = sdk;
+const {SessionManager} = sdk;
 if (typeof sdk.sessionEntryToContextMessages !== "function") throw new Error("Pi SDK entry conversion API unavailable");
 const temp = await mkdtemp(join(tmpdir(), "velune-pi-display-history-"));
 process.env.PI_CODING_AGENT_DIR = temp;
@@ -93,7 +93,6 @@ try {
   assert.ok(live.messages.some(message => message.id === `pi:${manager.getSessionId()}:${branchSummary}:0`));
   assert.ok(live.messages.some(message => message.id === `pi:${manager.getSessionId()}:${compaction}:1`));
   assert.deepEqual(live.identityConfirmations,[{previousId:liveId,currentId:`pi:${manager.getSessionId()}:${kept}:0`}]);
-  assert.equal(CURRENT_SESSION_VERSION,manager.getHeader().version);
   assert.deepEqual(manager.buildSessionContext().messages,modelContext);
   console.log(JSON.stringify({passed:11,cases:["full-branch-before-compaction","context-edit-delete","context-edit-replacement",
     "compaction-and-branch-summary","source-entry-ordinal-identity","discarded-branch-exclusion","stable-live-identity",

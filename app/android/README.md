@@ -46,6 +46,7 @@ adb -s "$android_serial" shell am start -S -W -n app.velune.android/.GalleryActi
 | `failed` | 失败轮次及“继续执行”操作。 |
 | `new` | 直接打开新会话，可切换设备、运行时或搜索项目，切换时保留草稿正文。 |
 | `appearance` | 实时预览界面、消息、代码字号与显示密度，可保存或恢复 Gallery 专用设置。 |
+| `network` | 合成连接设置，可切换中继模式、编辑地址与访问凭据，并查看模拟设施状态；不修改实际网络配置。 |
 
 `app/src/debug/kotlin/app/velune/android/preview/` 中的 [PreviewFixtures.kt](app/src/debug/kotlin/app/velune/android/preview/PreviewFixtures.kt) 按领域组织设备、运行时与模型目录、权限模式、会话、后台任务与输出、Agent 协作、附件及排队项等样本。[PreviewCatalog.kt](app/src/debug/kotlin/app/velune/android/preview/PreviewCatalog.kt) 集中登记场景的 ID、中文标题、说明和分组。扩展样本时在 `PreviewFixtures.kt` 增加数据函数，新增可进入的场景时在 `PreviewCatalog.kt` 注册。
 
