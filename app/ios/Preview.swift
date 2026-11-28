@@ -90,12 +90,12 @@ enum PreviewData {
         }
     }
     static func draft() -> ConversationModel {
-        let model = ConversationModel(client: RemoteClient(), peer: "synthetic", target: .init(runtime: "sample", cwd: "/sample/velune"))
+        let model = ConversationModel(client: RemoteClient(), peer: "preview", target: .init(runtime: "sample", cwd: "/sample/velune"))
         model.loading = false; model.models = models
         return model
     }
     static func model() -> ConversationModel {
-        let model = ConversationModel(client: RemoteClient(), peer: "synthetic", target: .init(runtime: "sample", cwd: nil))
+        let model = ConversationModel(client: RemoteClient(), peer: "preview", target: .init(runtime: "sample", cwd: nil))
         let user = DeliveredMessage(stamp: 1, completed: true, id: "user", role: .user, timestampUnixMs: nil, blocks: [.text(text: "帮我检查 iPad 控制端的构建结果。")])
         var assistant = DeliveredMessage(stamp: 2, completed: true, id: "assistant", role: .assistant, timestampUnixMs: nil, blocks: [
             .tool(toolId: "build", title: "检查构建", state: .completed, output: .inline(text: "Build succeeded"), linkedConversationId: nil),
@@ -137,7 +137,7 @@ enum PreviewData {
         draft.chooseRuntime("sample")
         assert(draft.selection == models[0].selection && draft.target.key == identity)
         draft.selection = nil
-        let restored = ConversationModel(client: RemoteClient(), peer: "synthetic", target: draft.target)
+        let restored = ConversationModel(client: RemoteClient(), peer: "preview", target: draft.target)
         restored.restore(try! JSONDecoder().decode(ComposerState.self, from: JSONEncoder().encode(draft.composerState)))
         var withModel = snapshot
         withModel.modelRecordKey = "previous-model"
