@@ -80,7 +80,7 @@ for line in sys.stdin:
             continue
     elif method in ("session/load", "session/resume") and mode == "reject-open":
         chunk("unconfirmed history", params["sessionId"])
-        emit(id=rpc_id, error={"code": -32000, "message": "not opened", "data": {"target": params["sessionId"]}})
+        emit(id=rpc_id, error={"code": -32603, "message": "not opened", "data": {"target": params["sessionId"]}})
         continue
     elif method == "session/load":
         chunk("authoritative replay", params["sessionId"])
@@ -109,7 +109,7 @@ for line in sys.stdin:
         else:
             assert config == "opaque/model-id"
             if mode == "reject":
-                emit(id=rpc_id, error={"code": -32000, "message": "synthetic rejected", "data": {"native": "kept"}})
+                emit(id=rpc_id, error={"code": -32603, "message": "synthetic rejected", "data": {"native": "kept"}})
                 continue
             result = {"configOptions": options("model/b")}
             if mode == "accepted-disconnect":
@@ -123,7 +123,7 @@ for line in sys.stdin:
             emit(id=rpc_id, result={"stopReason": "end_turn"})
         elif mode == "prompt-error":
             chunk("output before error")
-            emit(id=rpc_id, error={"code": -32000, "message": "after execution", "data": {"toolRan": True}})
+            emit(id=rpc_id, error={"code": -32603, "message": "after execution", "data": {"toolRan": True}})
         elif mode == "disconnect":
             form()
             while not (root / "disconnect-now").exists():

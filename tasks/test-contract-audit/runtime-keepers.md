@@ -27,4 +27,3 @@
 | P2 | pi_session/port_tests.rs 原四 keeper 改 branch(EditPlacement::Fork)，NewSession 独立保留；无调用 fork_at(None)/typed Clone 退役。真实 Pi port 与 scope receipt/event 两类风险保留。 |
 | P3 | projection/tests.rs：17 类 cold/live 独立分类仍逐项；布局由 subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries（plain/mixed）及 transcript owner 承接；wait_outcomes_join_work_and_preserve_native_text 保留成功/失败/未知未来与固定正文。 |
 | X1 | tests/codex_inter_agent_context.rs：delivery_metadata_preserves_function_and_custom_tool_order；plaintext_agent_body_keeps_attribution_as_assistant_context；newest_compaction_replacement_keeps_agent_context_and_suffix；metadata_does_not_allow_unknown_rollout_or_response_items；encrypted_agent_payload_requires_a_source_summary；opaque_and_unknown_agent_content_are_rejected_even_in_replacements。两文件都直接运行同一 Python helper，原“不同公开层”表述撤回。 |
-| ID | 原声明 | 最终动作 | keeper / 实际理由 |

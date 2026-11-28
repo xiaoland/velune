@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Stdio,
     sync::{
         Arc, Condvar, Mutex,
