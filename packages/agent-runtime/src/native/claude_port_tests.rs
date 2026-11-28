@@ -19,7 +19,7 @@ impl Fixture {
         std::fs::write(root.join("mode"), mode).unwrap();
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
-import json,sys,os,time
+import fcntl,json,sys,os,time
 root=os.path.dirname(__file__)
 if '--version' in sys.argv:
  print('2.1.292 (Claude Code)');sys.exit(0)
@@ -34,7 +34,9 @@ def terminal():
  emit({'type':'system','subtype':'task_notification','task_id':'shell','run_id':'one','status':'completed','summary':'done'})
 for line in sys.stdin:
  request=json.loads(line)
- with open(os.path.join(root,'requests.jsonl'),'a') as f: f.write(json.dumps(request)+'\n')
+ with open(os.path.join(root,'requests.jsonl'),'a') as f:
+  fcntl.flock(f,fcntl.LOCK_EX)
+  f.write(json.dumps(request)+'\n')
  if request.get('type')=='fixture_emit': emit(request['record']);continue
  if request.get('type')=='fixture_batch':
   for record in request['records']: emit(record)
@@ -161,7 +163,11 @@ for line in sys.stdin:
             .unwrap();
     }
     fn requests(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.root.join("requests.jsonl"))
+        // The child can still be appending a multi-megabyte JSON record.
+        // Read a complete snapshot and keep malformed completed records fatal.
+        let file = std::fs::File::open(self.root.join("requests.jsonl")).unwrap();
+        file.lock_shared().unwrap();
+        std::io::read_to_string(file)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())

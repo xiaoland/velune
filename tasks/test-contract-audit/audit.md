@@ -45,7 +45,7 @@ OpenClaw 的公开整合方法用于分工、逐项盘点、删除前对照及�
 | 职责 | 基线 | 候选 | 变化 |
 | --- | ---: | ---: | ---: |
 | 产品实现 | 8,175 | 8,338 | +163 |
-| 测试／夹具 | 20,654 | 21,820 | +1,166 |
+| 测试／夹具 | 20,654 | 21,826 | +1,172 |
 | 验收 runner、CI 与执行支撑 | 739 | 893 | +154 |
 
 ## 验证记录
@@ -62,7 +62,7 @@ OpenClaw 的公开整合方法用于分工、逐项盘点、删除前对照及�
 
 Pi 控制槽用例在同一个旧二进制上重复 12 次，有 2 次失败。它的旧日志没有打印错误，不能单凭这两次推断物理 writer 满。另加的管道回归在旧产品实现精确观察到容量满导致断线，修复后九帧及票据断言通过。Claude partial-write 的一次旧失败发生于 admission，日志明确是“运行时请求尚未派发”。新夹具把字节已进管道列为硬前提。
 
-单独运行 Claude 空导入检查时，已安装的 2.1.327 在改动前报 `Session ID … is already in use`。同一旧记录直接用 `--resume` 则报找不到会话。四个私有目录和回环上游对照验证了新原生记录只补会话身份：请求中只有本轮用户输入和 CLI 自带的 system 配置。在旧转换记录之前或之后追加另一条用户消息，两种顺序都能保留该消息。上述对照未请求外部服务。
+单独运行 Claude 空导入检查时，已安装的 2.1.327 在改动前报 `Session ID … is already in use`。同一旧记录直接用 `--resume` 则报找不到会话。六组私有目录和回环上游对照验证了新原生记录只补会话身份。请求中只有本轮用户输入和 CLI 自带的 system 配置。在旧转换记录之前或之后追加另一条用户消息，两种顺序都能保留该消息。将生产 opener 临时恢复为旧逻辑后，同一个 installed 测试再次在 initialize 收到 `Session ID … is already in use`。逐字节还原后通过。Python helper 并发升级、备份发布失败及重试也在合成目录验证。
 
 Linux 的初次全量运行中，两个 `management::fs` 用例执行真实文件写入时返回 `Bad file descriptor (os error 9)`。首次验证还暴露了锁常量的跨平台 Clippy 类型差别，已修复。此次 Linux 同时观察到五个 mesh 路由超时，后续验证按相同路由契约进行。[初次 Linux 运行记录](https://github.com/xiaoland/velune/actions/runs/46098292864)
 
@@ -80,11 +80,11 @@ Mac 开发包的四项后台原生检查通过。ownership 和 experience 各自
 | Codex 会话生命周期 | 8 项。冷重开、外部写锁释放、继续发送、队列只派发一次，以及停止后重开并再次发送。 |
 | Codex → Pi 交接 | 10 项。加密上下文触发摘要，取消和失败保留队列，准备后只发队首，实际 Pi 收到摘要和输入各一次，冷重开能读到维护事件。 |
 
-使用 Codex `0.171.0-alpha.13`、Claude Code `2.1.327`、Pi `1.4.0` 与 Node `24.22.1`。清单位于 `target/verification/acceptance/20261128T025524Z-fe63bd/manifest.json` 和 `20261128T025534Z-02ab3c/manifest.json`。另显式运行了四个已安装 Codex 的 Rust 读取／导入检查，全部通过。最新提交的全工作区门禁、Claude 空导入回归和验收清单汇总在 [PR #17](https://github.com/xiaoland/velune/pull/17)。
+使用 Codex `0.171.0-alpha.13`、Claude Code `2.1.327`、Pi `1.4.0` 与 Node `24.22.1`。清单位于 `target/verification/acceptance/20261128T025524Z-fe63bd/manifest.json` 和 `20261128T025534Z-02ab3c/manifest.json`。另显式运行了四个已安装 Codex 的 Rust 读取／导入检查，全部通过。包含 Claude 空导入修复的 `c64ce84ce` 在本机干净工作树通过 820 项 Rust 检查，11 项按条件忽略。重新生成绑定后，六个验收场景在同一份清单中通过 36 项检查，清单为 `target/verification/acceptance/20261128T031250Z-57b3a1/manifest.json`。随后 Linux 在假进程追加 2 MiB JSON 时读到半条记录，报 `EOF while parsing a string`。夹具现在对同一文件使用读写双方遵守的文件锁，完整记录仍必须正常解析，未知请求仍必须恰好收到一次拒绝。该夹具的变更不进入产品二进制。最新提交的全工作区门禁汇总在 [PR #17](https://github.com/xiaoland/velune/pull/17)。
 
 ## 限制与后续边界
 
-真实 CLI 使用隔离 HOME、合成会话和本机回环上游。本轮没有使用日常会话、真实账户或计费服务，真实服务端到端行为仍待相应场景验收。需要指定合成会话目录的 Pi SDK 历史夹具也未运行。
+真实 CLI 使用隔离 HOME、合成会话和本机回环上游。本轮没有使用日常会话、真实账户或计费服务，真实服务端到端行为仍待相应场景验收。需要指定合成会话目录的 Pi SDK 历史夹具也未运行。Claude 空导入与并发升级实测为 2.1.327，最低支持版本、Windows 锁分支及真实断电恢复未实测。
 
 在 Android／iOS 源码中未找到独立的 test source set／XCTest 套件。Android 有具名 debug gallery，Windows 主要依赖构建、token 对照和人工验收。本轮未执行这三个平台的原生验收。Mac 后台检查覆盖程序化检查入口，系统键盘、输入法、AX 与通知点击仍需单独操作验证。
 
