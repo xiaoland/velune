@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.0-alpha.3](https://github.com/xiaoland/velune/compare/v0.1.0-alpha.2...v0.1.0-alpha.3) (2026-11-28)
+
+
+### Features
+
+* **conversation:** 支持分叉打开方式并保留编号 ([3dec108](https://github.com/xiaoland/velune/commit/3dec108553081eab6d1f9f38ef170037e7cab6c7))
+
+
+### Bug Fixes
+
+* **acceptance:** 校验验收子进程退出和检查记录 ([5cd694b](https://github.com/xiaoland/velune/commit/5cd694b75a31d4b46e67eaff7a43169facd082df))
+* **mac:** 以系统窗口身份恢复工作区 ([8ad20db](https://github.com/xiaoland/velune/commit/8ad20db1b8c5cc6014b477d923ecdeee6ac551a4))
+* **pi:** 避免压缩展示提示误判为编辑冲突 ([b10b39a](https://github.com/xiaoland/velune/commit/b10b39a3b9ef94b9e6308c095dca4c98c928a8fe))
+* **remote:** 恢复相邻 Alpha 的远控兼容 ([6f941a5](https://github.com/xiaoland/velune/commit/6f941a5245157769ffcbec1b91b02900b284517e))
+
+
+### Miscellaneous Chores
+
+* **release:** 准备 0.1.0-alpha.3 发布 ([50fa657](https://github.com/xiaoland/velune/commit/50fa6570ac4bc19aee7388de8366fccf96ebe59b))
+
 ## [0.1.0-alpha.2](https://github.com/xiaoland/velune/compare/v0.1.0-alpha.1...v0.1.0-alpha.2) (2026-11-28)
 
 
