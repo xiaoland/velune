@@ -347,6 +347,7 @@ pub(super) fn write(
     if !matches!(node.state, EntryState::Missing) && node.node != Node::File {
         return Err(invalid("只能写入普通文件"));
     }
+    let sync_parent = platform::prepare_dir_sync(&parent).map_err(io_error)?;
     let current = metadata(&parent, &name)?.map(|info| platform::mode(&info));
     let mut random = [0; 12];
     getrandom::fill(&mut random)
@@ -387,7 +388,7 @@ pub(super) fn write(
                 io_error(error)
             });
         }
-        platform::sync_dir(&parent).map_err(io_error)?;
+        sync_parent().map_err(io_error)?;
         let mut hash = digest(Node::File, mode);
         hash.update(bytes);
         Ok(NodeInfo {
@@ -413,17 +414,19 @@ pub(super) fn delete(root: &Path, path: &str, expected: &ExpectedRevision) -> Re
         return Err(Error::new(ErrorCode::Missing, "资源不存在"));
     }
     let parent = parent.ok_or_else(|| Error::new(ErrorCode::Missing, "资源父目录不存在"))?;
+    let sync_parent = platform::prepare_dir_sync(&parent).map_err(io_error)?;
     match node.node {
         Node::File => parent.remove_file(&name),
         Node::Directory => parent.remove_dir(&name),
         _ => return Err(invalid("只能删除文件或空目录")),
     }
     .map_err(io_error)?;
-    platform::sync_dir(&parent).map_err(io_error)
+    sync_parent().map_err(io_error)
 }
 
 #[cfg(unix)]
 mod platform {
+    use cap_fs_ext::OpenOptionsMaybeDirExt;
     use cap_std::fs::{
         Dir, DirBuilder, DirBuilderExt, Metadata, MetadataExt, OpenOptions, OpenOptionsExt,
     };
@@ -512,8 +515,11 @@ mod platform {
             })
     }
 
-    pub fn sync_dir(dir: &Dir) -> io::Result<()> {
-        dir.try_clone()?.into_std_file().sync_all()
+    pub fn prepare_dir_sync(dir: &Dir) -> io::Result<impl FnOnce() -> io::Result<()>> {
+        // The cap-std anchor may be O_PATH. Open the same directory for sync
+        // before publishing changes, without resolving its pathname again.
+        let handle = dir.open_with(".", OpenOptions::new().read(true).maybe_dir(true))?;
+        Ok(move || handle.sync_all())
     }
 }
 
@@ -568,8 +574,8 @@ mod platform {
 
     /// NTFS journals directory changes; a directory handle cannot be flushed
     /// without write access to it.
-    pub fn sync_dir(_: &Dir) -> io::Result<()> {
-        Ok(())
+    pub fn prepare_dir_sync(_: &Dir) -> io::Result<impl FnOnce() -> io::Result<()>> {
+        Ok(|| Ok(()))
     }
 }
 
