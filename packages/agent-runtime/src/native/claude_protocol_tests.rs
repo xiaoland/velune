@@ -272,7 +272,13 @@ fn claude_background_refresh_requires_a_matching_ack_and_new_snapshot() {
     assert_eq!(approvals.len(), 1);
     f.session.available_models = vec![json!({"value":"existing-model"})];
 
-    f.session.claude_refresh_background_tasks();
+    f.session.refresh_background_tasks(false);
+    f.fence();
+    assert!(!f.requests().iter().any(|frame| {
+        frame["request"]["subtype"] == "initialize" && frame["request"].get("hooks").is_none()
+    }));
+
+    f.session.refresh_background_tasks(true);
     let first = f
         .session
         .claude
@@ -281,7 +287,7 @@ fn claude_background_refresh_requires_a_matching_ack_and_new_snapshot() {
         .unwrap()
         .request_id
         .clone();
-    f.session.claude_refresh_background_tasks();
+    f.session.refresh_background_tasks(true);
     let pending = f.session.claude.task_refresh.as_mut().unwrap();
     assert_eq!(pending.request_id, first);
     pending.deadline = Instant::now();
@@ -291,7 +297,7 @@ fn claude_background_refresh_requires_a_matching_ack_and_new_snapshot() {
     assert_eq!(timed_out.tasks, vec![known.clone()]);
     assert!(f.session.turn_running() && !f.session.failed);
 
-    f.session.claude_refresh_background_tasks();
+    f.session.refresh_background_tasks(true);
     let retry = f
         .session
         .claude
