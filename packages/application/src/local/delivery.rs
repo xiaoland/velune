@@ -476,7 +476,7 @@ mod quota_tests {
     fn rebuilding_a_view_at_the_same_sequence_changes_its_payload_stamp() {
         let tool_message = |output: &str| Message {
             blocks: vec![MessageBlock::Tool {
-                tool_id: "tool".into(),
+                tool_id: Some("tool".into()),
                 title: "Generate a report".into(),
                 state: velune_conversation::ToolState::Completed,
                 output: Some(output.into()),
