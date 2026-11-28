@@ -28,6 +28,8 @@ pub(crate) fn prepare_command(version: u16, command: &mut Command) -> Result<(),
             operation: SendQueueOperation::Withdraw { .. },
             ..
         } => return Err(upgrade_required()),
+        // Alpha 1 resolves the running session by conversation ID alone. After
+        // a handoff, even a target equal to runtime_id can name the old runtime.
         Command::SteerTurn {
             target_runtime_id,
             turn,
@@ -306,5 +308,56 @@ mod tests {
             FailureKind::Unsupported
         );
         prepare_command(APPLICATION_WIRE_VERSION, &mut write).unwrap();
+    }
+
+    #[test]
+    fn v3_steering_requires_no_explicit_target_or_permission() {
+        let steer = |target: Option<&str>, permission: Option<&str>| Command::SteerTurn {
+            runtime_id: "runtime".into(),
+            conversation_id: "session".into(),
+            target_runtime_id: target.map(str::to_owned),
+            turn: velune_application_api::ComposedTurn {
+                text: "continue this turn".into(),
+                effort: None,
+                permission_mode: permission.map(str::to_owned),
+                attachments: vec!["attachment".into()],
+            },
+        };
+        let mut legacy = steer(None, None);
+        prepare_command(PROTOCOL_VERSION, &mut legacy).unwrap();
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap(),
+            json!({
+                "command": "steerTurn",
+                "parameters": {
+                    "runtime_id": "runtime",
+                    "conversation_id": "session",
+                    "turn": {
+                        "text": "continue this turn",
+                        "effort": null,
+                        "permissionMode": null,
+                        "attachments": ["attachment"],
+                    },
+                },
+            }),
+        );
+
+        for mut command in [
+            steer(Some("runtime"), None),
+            steer(Some("other-runtime"), None),
+            steer(None, Some("workspace")),
+        ] {
+            let before = serde_json::to_value(&command).unwrap();
+            for version in PROTOCOL_VERSION + 1..=APPLICATION_WIRE_VERSION {
+                prepare_command(version, &mut command).unwrap();
+                assert_eq!(serde_json::to_value(&command).unwrap(), before);
+            }
+            assert_eq!(
+                prepare_command(PROTOCOL_VERSION, &mut command)
+                    .unwrap_err()
+                    .kind,
+                FailureKind::Unsupported,
+            );
+        }
     }
 }

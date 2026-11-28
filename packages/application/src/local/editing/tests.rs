@@ -145,6 +145,175 @@ fn linked_edit_accepts_legacy_error_prefix_but_rejects_changed_source_content() 
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn linked_fork_respects_the_checked_native_segment_boundary() {
+    use crate::config::{ConversationCutoff, ConversationLink};
+    use std::io::Write as _;
+    use velune_agent_runtime::import::Block;
+
+    const SOURCE: &str = "22f06040-64f4-4337-aa3d-92003f66d522";
+    const TAIL: &str = "92d7c668-03a3-49c2-a190-00365e9c49bb";
+    let root = velune_test_support::TempRoot::new("sealed-fork");
+    let project = root.dir("native/projects/synthetic");
+    let file = |session: &str| project.join(format!("{session}.jsonl"));
+    let record = |session: &str, role: &str, id: &str, parent: Option<&str>, text: &str| {
+        json!({
+            "type": role, "uuid": id, "parentUuid": parent,
+            "sessionId": session, "cwd": root.path(),
+            "message": {"role": role, "id": id, "stop_reason": "end_turn", "content": text}
+        })
+    };
+    let mut source = std::fs::File::create(file(SOURCE)).unwrap();
+    for entry in [
+        record(SOURCE, "user", "u1", None, "first prompt"),
+        record(SOURCE, "assistant", "a1", Some("u1"), "first answer"),
+        record(SOURCE, "user", "u2", Some("a1"), "last sealed prompt"),
+        record(SOURCE, "assistant", "a2", Some("u2"), "last sealed answer"),
+    ] {
+        writeln!(source, "{entry}").unwrap();
+    }
+    let mut tail = std::fs::File::create(file(TAIL)).unwrap();
+    for entry in [
+        record(TAIL, "user", "u3", None, "active prompt"),
+        record(TAIL, "assistant", "a3", Some("u3"), "active answer"),
+    ] {
+        writeln!(tail, "{entry}").unwrap();
+    }
+    let mut app = crate::Application::open(crate::Options {
+        home_directory: root.join("app"),
+        resources_directory: root.path().to_owned(),
+    })
+    .unwrap();
+    let core = &mut app.runtime;
+    core.runtime_instances = ["source", "tail"]
+        .into_iter()
+        .map(|id| RuntimeInstance {
+            enabled: true,
+            id: id.into(),
+            name: id.into(),
+            type_id: RuntimeKind::ClaudeCode,
+            gateway_id: String::new(),
+            settings: serde_json::from_value(json!({
+                "binary": root.join("unused"),
+                "agentDir": root.join("native"),
+            }))
+            .unwrap(),
+        })
+        .collect();
+    let source_id = format!("source:{SOURCE}");
+    let original = core.read_history("source", &source_id).unwrap();
+    let mut sealed = core.segment_reference(&original).unwrap();
+    sealed.cutoff = Some(ConversationCutoff {
+        message_count: original.messages.len() as u64,
+        prefix_digest: super::super::continuation::prefix_digest(&original.messages).unwrap(),
+    });
+    writeln!(
+        source,
+        "{}",
+        record(SOURCE, "user", "u4", Some("a2"), "later external prompt")
+    )
+    .unwrap();
+    writeln!(
+        source,
+        "{}",
+        record(
+            SOURCE,
+            "assistant",
+            "a4",
+            Some("u4"),
+            "later external answer"
+        )
+    )
+    .unwrap();
+    let source_bytes = std::fs::read(file(SOURCE)).unwrap();
+    let context_text = |context: &velune_agent_runtime::import::Context| {
+        context
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                Block::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let old_full_export = velune_agent_runtime::history::export_context(
+        &core
+            .history_config(core.runtime_instance("source").unwrap())
+            .unwrap(),
+        SOURCE,
+    )
+    .unwrap();
+    assert!(context_text(&old_full_export).contains(&"later external prompt".to_owned()));
+
+    // Returning to the original runtime must not select its sealed session
+    // as a direct native fork source.
+    for tail_runtime in ["tail", "source"] {
+        let tail = core
+            .read_history(tail_runtime, &format!("{tail_runtime}:{TAIL}"))
+            .unwrap();
+        let link = ConversationLink {
+            id: source_id.clone(),
+            segments: vec![sealed.clone(), core.segment_reference(&tail).unwrap()],
+        };
+        core.conversation_links = vec![link.clone()];
+        let (tail, view) = core.read_link(&link).unwrap();
+        core.present_history(tail, Some(view));
+        let current = core.current_snapshot().unwrap();
+        assert_eq!(
+            context_text(
+                &core
+                    .translated_branch_context(&current, "segment-0:u1", ForkBoundary::ThroughTurn)
+                    .unwrap()
+                    .context
+            ),
+            ["first prompt", "first answer"]
+        );
+        assert_eq!(
+            context_text(
+                &core
+                    .translated_branch_context(&current, "segment-0:u2", ForkBoundary::BeforeTurn)
+                    .unwrap()
+                    .context
+            ),
+            ["first prompt", "first answer"]
+        );
+        assert_eq!(
+            context_text(
+                &core
+                    .translated_branch_context(&current, "segment-1:u3", ForkBoundary::ThroughTurn)
+                    .unwrap()
+                    .context
+            ),
+            ["active prompt", "active answer"]
+        );
+        let failure = crate::Failure::from(
+            core.fork_message("source", &source_id, "segment-0:u2")
+                .unwrap_err(),
+        );
+        assert_eq!(failure.code, "fork_sealed_boundary_unavailable");
+        assert_eq!(core.current_snapshot().unwrap().conversation.id, source_id);
+        assert_eq!(core.conversation_links, [link]);
+        assert_eq!(std::fs::read(file(SOURCE)).unwrap(), source_bytes);
+        assert_eq!(std::fs::read_dir(&project).unwrap().count(), 2);
+    }
+
+    // A changed reply in the sealed prefix is a conflict even though the
+    // selected user still has the same identity and text.
+    let changed = String::from_utf8(source_bytes)
+        .unwrap()
+        .replace("first answer", "changed answer");
+    std::fs::write(file(SOURCE), changed).unwrap();
+    let current = core.current_snapshot().unwrap();
+    let error = core
+        .translated_branch_context(&current, "segment-0:u1", ForkBoundary::ThroughTurn)
+        .err()
+        .expect("changed sealed prefix must be rejected");
+    assert!(error.to_string().contains("会话来源已改变"));
+    app.close_stopping_work().unwrap();
+}
+
 #[test]
 fn edit_revision_survives_finished_activity_projection_reload() {
     let root =

@@ -8,6 +8,8 @@
 
 每次接口代际变化都清除本 service 的旧 peer 缓存并发送 `DiscoveryEvent::Expired`。这个事件也表示旧接口范围的记录失效，不能解释为远端设备已经离线。保留旧记录会导致暂停时失去过期事件来源，却永远返回旧地址。已有 resolve 窗口仍保持原截止时间，可以接收新代际的发现结果；订阅不需要重新创建。最近 publish 的 EndpointData 保留并在恢复发现时重新应用。
 
+Actor 直接消费 resolve 定时任务的完成结果，并移除到期的订阅者。已完成的任务随即从 `JoinSet` 回收。
+
 `DropGuard::drop` 只调用 guardian task 的 `abort`；Acto 的 `ActoCell::drop` 随后 abort supervised children。代际确认不等于取消已完成、socket 已关闭或网络广告已撤回。本地有界人工实验可以观察自有进程的 5353 FD 最终归零，但这个观察不是同步 API 保证。
 
 完整服务关闭使用不同的屏障。每个 `MdnsAddressLookup` 拥有一份单 worker Tokio I/O runtime，所有 clone 共享；actor、Swarm guardian、子任务、定时器与 callback 都在这份 runtime 的 `enter`／Handle 内创建，内部任务只持 Handle，不持 runtime owner。`close().await` 必须由外部 Tokio runtime 调用，不能从自定义 AddrFilter 回调在私有 runtime 内启动。它主动取走 runtime，在调用方 runtime 的 blocking pool 完整析构并等待，因此不受 registry 或外部 service clone 的存活影响。关闭任务句柄在等待前保存，取消一个 close Future 后另一调用仍会等待同一屏障；关闭失败保持失败。它不承诺远端缓存已撤销。未显式 close 的 Drop 仅 `shutdown_background`，属于非等待清理。

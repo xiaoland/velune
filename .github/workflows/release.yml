@@ -134,7 +134,7 @@ jobs:
           cargo --version
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.0'
+          go-version: '1.26.11'
       - name: Cache source-resolution downloads
         uses: actions/cache@v4
         with:
@@ -220,7 +220,7 @@ jobs:
             target/tools
             .build
             ~/.gradle/caches
-          key: velune-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'Package.resolved', 'app/android/gradle/libs.versions.toml', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
+          key: velune-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Package.resolved', 'app/android/**/*.gradle.kts', 'app/android/gradle.properties', 'app/android/gradle/wrapper/gradle-wrapper.properties') }}
       - name: Set up Node.js
         if: matrix.platform == 'macos'
         uses: actions/setup-node@v4
@@ -241,7 +241,7 @@ jobs:
         if: matrix.platform == 'macos'
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.1'
+          go-version: '1.26.11'
       - name: Set up Java 17
         if: matrix.platform == 'android'
         uses: actions/setup-java@v4

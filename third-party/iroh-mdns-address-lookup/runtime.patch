@@ -11,7 +11,9 @@
 +};
 @@ -105,0 +109 @@
 +    runtime: Arc<PrivateRuntime>,
-@@ -111,0 +116,55 @@
+@@ -109,0 +114,44 @@
++}
++
 +/// Swarm's guard aborts tasks without retaining every descendant join handle.
 +/// Isolating all of them in one runtime gives explicit close a complete resource barrier.
 +#[derive(Debug)]
@@ -54,8 +56,7 @@
 +            _ => unreachable!(),
 +        }
 +    }
-+}
-+
+@@ -111,0 +160,11 @@
 +impl Drop for PrivateRuntime {
 +    fn drop(&mut self) {
 +        if let RuntimeState::Open(runtime) =
@@ -78,33 +79,35 @@
 +        interfaces: BTreeSet<Ipv4Addr>,
 +        applied: oneshot::Sender<Result<u64, AddressLookupBuilderError>>,
 +    },
-@@ -165,0 +233 @@
+@@ -119 +185,0 @@
+-    Timeout(EndpointId, usize),
+@@ -165,0 +232 @@
 +    ipv4_interfaces: Option<BTreeSet<Ipv4Addr>>,
-@@ -175,0 +244 @@
+@@ -175,0 +243 @@
 +            ipv4_interfaces: None,
-@@ -183,0 +253,8 @@
-+        self
-+    }
-+
+@@ -186,0 +255,8 @@
 +    /// Configure explicit IPv4 multicast interfaces with IPv4-only discovery.
 +    /// An empty set starts the actor without a discoverer or multicast sockets.
 +    /// Without this option the upstream automatic interface policy is retained.
 +    pub fn ipv4_interfaces(mut self, interfaces: BTreeSet<Ipv4Addr>) -> Self {
 +        self.ipv4_interfaces = Some(interfaces);
-@@ -230,4 +307,2 @@
++        self
++    }
++
+@@ -230,4 +306,2 @@
 -    /// Returns an error if the network does not allow ipv4 OR ipv6.
 -    ///
 -    /// # Panics
 -    /// This relies on [`tokio::runtime::Handle::current`] and will panic if called outside of the context of a tokio runtime.
 +    /// Returns an error if the private I/O runtime cannot be created or the network does not
 +    /// allow the requested address family. One worker is shared by this lookup's clones.
-@@ -243,0 +319 @@
+@@ -243,0 +318 @@
 +            self.ipv4_interfaces,
-@@ -275 +351,2 @@
+@@ -275 +350,2 @@
 -    /// unavailable.
 +    /// unavailable. This also includes invalidation of the service's previous
 +    /// interface scope; it does not establish that the remote device went offline.
-@@ -281,0 +359,7 @@
+@@ -281,0 +358,7 @@
 +struct DiscovererConfig {
 +    endpoint_id: EndpointId,
 +    advertise: bool,
@@ -112,15 +115,15 @@
 +    cadence: Duration,
 +}
 +
-@@ -294,4 +378 @@
+@@ -294,4 +377 @@
 -    /// Returns an error if the network does not allow ipv4 OR ipv6.
 -    ///
 -    /// # Panics
 -    /// This relies on [`tokio::runtime::Handle::current`] and will panic if called outside of the context of a tokio runtime.
 +    /// Returns an error if the private I/O runtime or discoverer cannot be created.
-@@ -303,0 +385 @@
+@@ -303,0 +384 @@
 +        mut ipv4_interfaces: Option<BTreeSet<Ipv4Addr>>,
-@@ -309,2 +391,9 @@
+@@ -309,2 +390,9 @@
 -        let rt = tokio::runtime::Handle::current();
 -        let address_lookup = MdnsAddressLookup::spawn_discoverer(
 +        let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -132,10 +135,10 @@
 +        let entered = runtime.enter();
 +        let rt = runtime.handle().clone();
 +        let config = DiscovererConfig {
-@@ -313,2 +401,0 @@
+@@ -312,2 +399,0 @@
 -            task_sender.clone(),
 -            BTreeSet::new(),
-@@ -316,0 +404,8 @@
+@@ -316,0 +403,8 @@
 +        };
 +        let mut generation = 0;
 +        let address_lookup = Self::spawn_discoverer(
@@ -144,7 +147,7 @@
 +            generation,
 +            ipv4_interfaces.as_ref(),
 +            None,
-@@ -318 +413,10 @@
+@@ -318 +412,10 @@
 -        )?;
 +        );
 +        let mut address_lookup = match address_lookup {
@@ -156,20 +159,38 @@
 +                return Err(error);
 +            }
 +        };
-@@ -323,0 +428 @@
+@@ -323,0 +427 @@
 +            let mut published_data: Option<EndpointData> = None;
-@@ -339,3 +443,0 @@
+@@ -330 +434 @@
+-            let mut timeouts = JoinSet::new();
++            let mut timeouts = JoinSet::<(EndpointId, usize)>::new();
+@@ -336,0 +441,12 @@
++                    Some(expired) = timeouts.join_next(), if !timeouts.is_empty() => {
++                        if let Ok((endpoint_id, id)) = expired {
++                            trace!(?endpoint_id, "resolution timeout");
++                            if let Some(senders_for_endpoint_id) = senders.get_mut(&endpoint_id) {
++                                senders_for_endpoint_id.remove(&id);
++                                if senders_for_endpoint_id.is_empty() {
++                                    senders.remove(&endpoint_id);
++                                }
++                            }
++                        }
++                        continue;
++                    }
+@@ -338,3 +453,0 @@
 -                        address_lookup.remove_all();
 -
 -                        // apply user-supplied filter
-@@ -343,15 +445,4 @@
+@@ -343,6 +456,2 @@
 -
 -
 -                        let addrs =
 -                            MdnsAddressLookup::socketaddrs_to_addrs(data.ip_addrs());
 -                        for addr in addrs {
 -                            address_lookup.add(addr.0, addr.1)
--                        }
++                        if let Some(discoverer) = &address_lookup {
++                            Self::publish_data(discoverer, &data);
+@@ -350,8 +459 @@
 -                        if let Some(relay) = data.relay_urls().next()
 -                            && let Err(err) = address_lookup.set_txt_attribute(RELAY_URL_ATTRIBUTE.to_string(), Some(relay.to_string()))  {
 -                                warn!("Failed to set the relay url in mDNS: {err:?}");
@@ -178,14 +199,11 @@
 -                            && let Err(err) = address_lookup.set_txt_attribute(USER_DATA_ATTRIBUTE.to_string(), Some(user_data.to_string())) {
 -                                warn!("Failed to set the user-defined data in mDNS: {err:?}");
 -                        }
-+                        if let Some(discoverer) = &address_lookup {
-+                            Self::publish_data(discoverer, &data);
-+                        }
 +                        published_data = Some(data);
-@@ -366 +457 @@
+@@ -366 +468 @@
 -                        address_lookup.remove_all();
 +                        drop(address_lookup.take());
-@@ -372 +463,44 @@
+@@ -372 +474,44 @@
 -                    Message::Discovered(discovered_endpoint_id, peer_info) => {
 +                    Message::SetIpv4Interfaces {
 +                        interfaces,
@@ -231,22 +249,48 @@
 +                        if observed_generation != generation {
 +                            continue;
 +                        }
-@@ -476,0 +611 @@
+@@ -449 +593,0 @@
+-                        let timeout_sender = task_sender.clone();
+@@ -452,5 +596 @@
+-                            trace!(?endpoint_id, "resolution timeout");
+-                            timeout_sender
+-                                .send(Message::Timeout(endpoint_id, id))
+-                                .await
+-                                .ok();
++                            (endpoint_id, id)
+@@ -459,9 +598,0 @@
+-                    Message::Timeout(endpoint_id, id) => {
+-                        trace!(?endpoint_id, "Mdns Message::Timeout");
+-                        if let Some(senders_for_endpoint_id) = senders.get_mut(&endpoint_id) {
+-                            senders_for_endpoint_id.remove(&id);
+-                            if senders_for_endpoint_id.is_empty() {
+-                                senders.remove(&endpoint_id);
+-                            }
+-                        }
+-                    }
+@@ -476,0 +608 @@
 +        drop(entered);
-@@ -478,0 +614,3 @@
+@@ -478,0 +611,3 @@
 +            runtime: Arc::new(PrivateRuntime(tokio::sync::Mutex::new(RuntimeState::Open(
 +                runtime,
 +            )))),
-@@ -482,0 +621,8 @@
-+    }
-+
+@@ -484,0 +620,8 @@
 +    /// Stop this lookup instance and wait until its private I/O runtime has destroyed all tasks.
 +    /// This closes every clone, including clones still registered with an endpoint. It does not
 +    /// promise that remote peers have removed previously advertised records. Concurrent calls
 +    /// share the same cancellation-safe barrier. Dropping without calling close is best effort.
 +    pub async fn close(&self) -> Result<(), AddressLookupBuilderError> {
 +        self.runtime.close().await
-@@ -495,0 +642,29 @@
++    }
++
+@@ -496,7 +639,35 @@
+-    fn spawn_discoverer(
+-        endpoint_id: PublicKey,
+-        advertise: bool,
+-        sender: mpsc::Sender<Message>,
+-        socketaddrs: BTreeSet<SocketAddr>,
+-        service_name: String,
+-        cadence: Duration,
 +    /// Apply a new exact IPv4 multicast scope without replacing this lookup actor or subscriptions.
 +    /// The initial generation is zero. A successfully applied identical set is a no-op.
 +    /// Empty pauses discovery; changes invalidate old cached records and emit `Expired`.
@@ -276,37 +320,32 @@
 +        AddressLookupBuilderError::from_err("mdns", std::io::Error::other(message))
 +    }
 +
-@@ -497,2 +672 @@
--        endpoint_id: PublicKey,
--        advertise: bool,
++    fn spawn_discoverer(
 +        config: &DiscovererConfig,
-@@ -500,3 +674,3 @@
--        socketaddrs: BTreeSet<SocketAddr>,
--        service_name: String,
--        cadence: Duration,
++        sender: mpsc::Sender<Message>,
 +        generation: u64,
 +        interfaces: Option<&BTreeSet<Ipv4Addr>>,
 +        data: Option<&EndpointData>,
-@@ -504 +678,4 @@
+@@ -504 +675,4 @@
 -    ) -> Result<DropGuard, AddressLookupBuilderError> {
 +    ) -> Result<Option<DropGuard>, AddressLookupBuilderError> {
 +        if interfaces.is_some_and(BTreeSet::is_empty) {
 +            return Ok(None);
 +        }
-@@ -507,2 +683,0 @@
+@@ -506,2 +679,0 @@
 -            trace!(endpoint_id, ?peer, "Received peer information from Mdns");
 -
-@@ -514 +689,5 @@
+@@ -514 +686,5 @@
 -                    .send(Message::Discovered(endpoint_id, peer))
 +                    .send(Message::Discovered {
 +                        generation,
 +                        endpoint_id,
 +                        peer,
 +                    })
-@@ -520 +699 @@
+@@ -520 +696 @@
 -            .encode(endpoint_id.as_bytes())
 +            .encode(config.endpoint_id.as_bytes())
-@@ -522,11 +701,11 @@
+@@ -522,11 +698,11 @@
 -        let mut discoverer = Discoverer::new_interactive(service_name, endpoint_id_str)
 -            .with_cadence(cadence)
 -            .with_callback(callback)
@@ -329,7 +368,7 @@
 +            None => discoverer.with_ip_class(IpClass::Auto),
 +        };
 +        let discoverer = discoverer
-@@ -534 +713,23 @@
+@@ -534 +710,7 @@
 -            .map_err(|e| AddressLookupBuilderError::from_err("mdns", e))
 +            .map_err(|error| AddressLookupBuilderError::from_err("mdns", error))?;
 +        if config.advertise
@@ -338,8 +377,7 @@
 +            Self::publish_data(&discoverer, data);
 +        }
 +        Ok(Some(discoverer))
-+    }
-+
+@@ -536,0 +719,16 @@
 +    fn publish_data(discoverer: &DropGuard, data: &EndpointData) {
 +        discoverer.remove_all();
 +        for (port, addresses) in Self::socketaddrs_to_addrs(data.ip_addrs()) {
@@ -354,3 +392,5 @@
 +        {
 +            warn!("Failed to set the user-defined data in mDNS: {error:?}");
 +        }
++    }
++

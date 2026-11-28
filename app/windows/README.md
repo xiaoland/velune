@@ -66,7 +66,7 @@ Windows 的完整端：在本机运行 Agent、Harness 与网关，也能控制�
 
 ## 构建与运行
 
-需要 Rust（MSVC 目标）、Visual Studio Build Tools、.NET 10 SDK、Go 与 llvm-mingw（后两者用于 RelayKit），以及收集许可全文的 Python 3，并先按 [开发说明](../../docs/development.md#windows-构建) 安装 runtime-support，然后执行：
+需要 Rust（MSVC 目标）、Visual Studio Build Tools、.NET 10 SDK、Go 与 llvm-mingw（后两者用于 RelayKit），以及收集许可全文的 Python 3。先按 [Windows 构建说明](../../docs/development/platforms.md#windows-构建) 准备 `target\runtime-support`，再执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-xurl.ps1
@@ -85,7 +85,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Profile rele
 
 ## 安装与更新
 
-Windows 发行使用 GitHub Releases 上的每用户 `Setup.exe`，安装身份固定为 `Velune`，默认安装在 `%LOCALAPPDATA%\Velune`。快捷方式与 `agents:` 协议指向安装根的稳定 `Velune.exe` 启动入口。构建固定使用 MIT 许可的 Velopack 1.2.161，Windows x64 beta 更新频道为 `win-x64-beta`，更新源为 `xiaoland/velune` 的 GitHub Releases，包含 prerelease。[Velopack Windows 目录结构](https://docs.velopack.io/packaging/operating-systems/windows)
+当前公开 Release 未提供 Windows 安装器。开发和本地试用可使用上节的独立构建目录。恢复发布后的每用户安装器为 `Velune-win-x64-beta-Setup.exe`，安装身份固定为 `Velune`，默认安装在 `%LOCALAPPDATA%\Velune`。快捷方式与 `agents:` 协议指向安装根的稳定 `Velune.exe` 启动入口。构建固定使用 MIT 许可的 Velopack 1.2.161，更新频道为 `win-x64-beta`，更新源为 `xiaoland/velune` 的 GitHub Releases，包含 prerelease。[开发发布说明](../../docs/development/builds.md#预览版发行) · [Velopack Windows 目录结构](https://docs.velopack.io/packaging/operating-systems/windows)
 
 “设置 → 通用 → 关于”提供检查、下载进度、就绪、失败与重试操作。启动后及每 12 小时只检查新版本，下载由用户发起。下载完成后，用户选择“退出并更新”并确认时机。应用先保留全部工作区布局并刷新输入草稿，再让更新程序等待本次准确进程退出，各窗口沿用正常关闭路径，最后执行 `Core.Shutdown()`。任一必要保存失败时保留窗口，在“问题”及更新状态中显示原因，修复后可重试。本机运行中的 Agent 会随退出停止，资源库有未保存修改时要求先保存。更新完成后重新打开应用。[Velopack 正常退出更新 API](https://docs.velopack.io/reference/cs/Velopack/UpdateManager)
 

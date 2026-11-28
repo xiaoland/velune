@@ -869,8 +869,9 @@ class ConversationModel(
             val turn = ComposedTurn(text = text, effort = next.effort, permissionMode = next.permissionMode?.id, attachments = submitted.attachments.map { "composer:" + it.id })
             try {
                 apply(submit(next, turn, input))
-            } catch (error: BindingException.RemoteRequest) {
+            } catch (error: BindingException.Diagnostic) {
                 if (error.code != "message_delivery_accepted") throw error
+                // The conversation poll will fetch the missing snapshot.
             }
             if (composer?.id == input.id && contentGeneration == submittedGeneration && content() == submitted) {
                 _state.update { it.copy(draft = "", attachments = emptyList()) }
