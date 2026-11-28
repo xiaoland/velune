@@ -331,7 +331,12 @@ def artifact_identity(platform, profile, command, purpose="development"):
     else:
         paths = {
             "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
+            # Xcode Debug's executable is a launcher; Swift code lives in this
+            # dylib. Release normally has only the executable. Record each
+            # existing output rather than treating the unchanged launcher as code.
+            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
+                    f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune",
+                    f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune.debug.dylib"],
         }[platform]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
 

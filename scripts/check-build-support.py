@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise build output and provenance promises with small isolated inputs."""
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('support', Path(__file__).with_name('build-support.py'))
 support = importlib.util.module_from_spec(spec)
@@ -60,6 +62,43 @@ class BuildSupportChecks(unittest.TestCase):
         self.assertTrue(support.generated_valid(directory,stamp))
         artifact.write_text('wrong native copy')
         self.assertFalse(support.generated_valid(directory,stamp))
+    def test_ios_receipt_tracks_loaded_debug_code_and_release_executable(self):
+        old_root, old_state = support.ROOT, support.STATE
+        support.ROOT, support.STATE = self.root, self.root/'target/build-state'
+        try:
+            subprocess.run(['git','init','-q',str(self.root)],check=True)
+            bundle='target/ios/Build/Products/Debug-iphonesimulator/Velune.app'
+            stub=bundle+'/Velune'; library=bundle+'/Velune.debug.dylib'
+            native='target/cross-rust/aarch64-apple-ios-sim/debug/libvelune_bindings.a'
+            first={stub:b'fixed Xcode Debug launcher',library:b'first Swift implementation',native:b'native implementation'}
+            for name, data in first.items():
+                path=self.root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(data)
+            args=argparse.Namespace(platform='ios',profile='dev',purpose='development',command=[sys.executable,'-c','pass'])
+            with patch.dict('os.environ',{'PLATFORM_NAME':'iphonesimulator'}):
+                self.assertEqual(support.run(args),0)
+                before=json.loads((support.STATE/'results/ios-dev.json').read_text())['artifacts']
+                changed=b'changed Swift implementation'
+                (self.root/library).write_bytes(changed)
+                self.assertEqual(support.run(args),0)
+                after=json.loads((support.STATE/'results/ios-dev.json').read_text())['artifacts']
+            self.assertNotEqual(before,after,'A fixed Debug launcher must not hide changed loaded Swift code')
+            self.assertEqual(before,{name:hashlib.sha256(data).hexdigest() for name,data in first.items()})
+            self.assertEqual(after,{**before,library:hashlib.sha256(changed).hexdigest()})
+
+            # Release embeds Swift code in the executable and has no debug dylib.
+            release={
+                'target/ios/Build/Products/Release-iphoneos/Velune.app/Velune':b'release executable',
+                'target/cross-rust/aarch64-apple-ios/release/libvelune_bindings.a':b'release native implementation',
+            }
+            for name,data in release.items():
+                path=self.root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(data)
+            args.profile='release'; args.command.append('iphoneos')
+            self.assertEqual(support.run(args),0)
+            receipt=json.loads((support.STATE/'results/ios-release.json').read_text())
+            self.assertEqual(receipt['artifacts'],{name:hashlib.sha256(data).hexdigest() for name,data in release.items()})
+            self.assertTrue(receipt['current'])
+        finally:
+            support.ROOT, support.STATE = old_root, old_state
     def test_changed_input_cannot_publish_current_success(self):
         old_root, old_state = support.ROOT, support.STATE
         support.ROOT, support.STATE = self.root, self.root/'target/build-state'
