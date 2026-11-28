@@ -288,27 +288,22 @@ impl CoreRuntime {
             let session = std::iter::once(&self.session)
                 .chain(&self.parked)
                 .find(|s| s.presents(id));
-            let Some(session) = session else {
-                run.phase = Phase::OutcomeUnknown;
-                run.detail = Some("运行会话已关闭；请查看会话结果，未自动重发".into());
-                self.scheduled_tasks.put_run(run)?;
-                continue;
-            };
-            if session.executing()
-                || session.projected().is_some_and(|s| {
-                    s.pending_interactions
-                        .iter()
-                        .any(|interaction| interaction.blocks_turn())
-                })
-            {
+            if session.is_some_and(|session| {
+                session.executing()
+                    || session.projected().is_some_and(|snapshot| {
+                        snapshot
+                            .pending_interactions
+                            .iter()
+                            .any(|interaction| interaction.blocks_turn())
+                    })
+            }) {
                 continue;
             }
-            run.phase = match run.turn_outcome {
-                Some(crate::TurnOutcome::Completed) => Phase::Completed,
-                Some(_) => Phase::Failed,
-                None => Phase::OutcomeUnknown,
-            };
-            self.scheduled_tasks.put_run(run)?;
+            let unknown_detail = session
+                .is_none()
+                .then_some("运行会话已关闭；请查看会话结果，未自动重发");
+            self.scheduled_tasks
+                .settle_inactive_run(run, unknown_detail)?;
         }
         let tasks = self.scheduled_tasks.tasks()?;
         for task in &tasks {
@@ -553,17 +548,8 @@ mod tests {
     use crate::TurnOutcome;
     use velune_test_support::TempRoot;
 
-    #[test]
-    fn known_scheduled_result_survives_a_failed_sqlite_write_without_rebinding_to_the_session() {
-        let temp = TempRoot::new("scheduled-result-retry");
-        let home = temp.dir("home");
-        let mut application = crate::Application::open(crate::Options {
-            home_directory: home.clone(),
-            resources_directory: temp.dir("resources"),
-        })
-        .unwrap();
-        let core = &mut application.runtime;
-        let mut task = ScheduledTask {
+    fn paused_schedule(core: &mut CoreRuntime) -> ScheduledTask {
+        let task = ScheduledTask {
             id: String::new(),
             revision: 0,
             name: "Synthetic previously scheduled work".into(),
@@ -584,12 +570,36 @@ mod tests {
             issue: None,
         };
         core.scheduled_tasks.save(task).unwrap();
-        task = core.scheduled_tasks.tasks().unwrap().remove(0);
-        core.scheduled_tasks.claim(&task, now(), None).unwrap();
-        let mut run = core.scheduled_tasks.runs().unwrap().remove(0);
+        core.scheduled_tasks.tasks().unwrap().remove(0)
+    }
+
+    fn running_schedule(core: &mut CoreRuntime, task: &ScheduledTask, due: i64) -> ScheduledRun {
+        core.scheduled_tasks.claim(task, due, None).unwrap();
+        let mut run = core
+            .scheduled_tasks
+            .runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.due_at_unix_ms == due)
+            .unwrap();
         run.phase = Phase::Running;
         run.conversation_id = Some("synthetic:closed".into());
         core.scheduled_tasks.put_run(&run).unwrap();
+        run
+    }
+
+    #[test]
+    fn known_scheduled_result_survives_a_failed_sqlite_write_without_rebinding_to_the_session() {
+        let temp = TempRoot::new("scheduled-result-retry");
+        let home = temp.dir("home");
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: home.clone(),
+            resources_directory: temp.dir("resources"),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let task = paused_schedule(core);
+        let run = running_schedule(core, &task, now());
 
         // Reject the terminal write only. An inadvertent OutcomeUnknown write
         // would succeed, so the sweep assertion tests protection of the fact.
@@ -636,5 +646,60 @@ mod tests {
         let restored = reopened.run(&run.id).unwrap().unwrap();
         assert_eq!(restored.phase, Phase::Completed);
         assert_eq!(restored.turn_outcome, Some(TurnOutcome::Completed));
+    }
+
+    #[test]
+    fn known_running_results_settle_after_session_closure_or_restart() {
+        let temp = TempRoot::new("scheduled-result-orphan");
+        let home = temp.dir("home");
+        let mut application = crate::Application::open(crate::Options {
+            home_directory: home.clone(),
+            resources_directory: temp.dir("resources"),
+        })
+        .unwrap();
+        let core = &mut application.runtime;
+        let task = paused_schedule(core);
+        let expected = [
+            (Some(TurnOutcome::Completed), Phase::Completed),
+            (Some(TurnOutcome::Failed), Phase::Failed),
+            (Some(TurnOutcome::Cancelled), Phase::Failed),
+            (None, Phase::OutcomeUnknown),
+        ];
+        let mut after_restart = Vec::new();
+        let mut after_sweep = Vec::new();
+        for (index, (outcome, phase)) in expected.iter().cloned().enumerate() {
+            let due = i64::try_from(index).unwrap() * 2;
+            let run = running_schedule(core, &task, due);
+            if let Some(outcome) = outcome {
+                core.scheduled_tasks
+                    .note_turn_result(run.id.clone(), outcome, true);
+            }
+            let stored = core.scheduled_tasks.run(&run.id).unwrap().unwrap();
+            assert_eq!(stored.phase, Phase::Running);
+            assert_eq!(stored.turn_outcome, outcome);
+            after_sweep.push((run.id, phase, outcome));
+        }
+        core.sweep_scheduled_tasks().unwrap();
+        for (id, phase, outcome) in &after_sweep {
+            let stored = core.scheduled_tasks.run(id).unwrap().unwrap();
+            assert_eq!((&stored.phase, stored.turn_outcome), (phase, *outcome));
+        }
+        for (index, (outcome, phase)) in expected.iter().cloned().enumerate() {
+            let due = i64::try_from(index).unwrap() * 2 + 1;
+            let run = running_schedule(core, &task, due);
+            if let Some(outcome) = outcome {
+                core.scheduled_tasks
+                    .note_turn_result(run.id.clone(), outcome, true);
+            }
+            after_restart.push((run.id, phase, outcome));
+        }
+        drop(application);
+
+        let reopened = crate::scheduled_tasks::Store::open(&home).unwrap();
+        for (id, phase, outcome) in after_restart {
+            let stored = reopened.run(&id).unwrap().unwrap();
+            assert_eq!((stored.phase, stored.turn_outcome), (phase, outcome));
+        }
+        assert_eq!(reopened.runs().unwrap().len(), 8);
     }
 }
