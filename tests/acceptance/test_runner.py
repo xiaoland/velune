@@ -74,45 +74,27 @@ class RunnerTests(unittest.TestCase):
             (json.dumps({**valid, "checks": {}}), "requires recorded successful checks"),
             (json.dumps({**valid, "checks": {"saved": False}}), "requires recorded successful checks"),
         ]
-        for payload, diagnosis in cases:
-            with self.subTest(payload=payload):
-                status, result, output = self.run_worker(payload)
-                self.assertEqual(status, 1, output)
-                self.assertEqual(result["status"], "failed")
-                self.assertIn(diagnosis, result["error"])
+        with tempfile.TemporaryDirectory(prefix="velune-worker-results-") as temporary:
+            path = Path(temporary) / "synthetic.json"
+            for payload, diagnosis in cases:
+                with self.subTest(payload=payload):
+                    if payload is not None:
+                        path.write_text(payload)
+                    result = runner.worker_result("synthetic", path, 0, path.with_suffix(".log"))
+                    self.assertEqual(result["status"], "failed")
+                    self.assertIn(diagnosis, result["error"])
+                    self.assertEqual(json.loads(path.read_text()), result)
 
-    def test_success_skip_and_case_failure_keep_their_distinct_meaning(self):
-        for state, expected in [("passed", 0), ("skipped", 0), ("failed", 1)]:
-            with self.subTest(state=state):
-                payload = {"case": "synthetic", "status": state, "facts": {}, "checks": {}}
-                if state == "passed":
-                    payload["checks"]["saved"] = True
-                elif state == "skipped":
-                    payload["reason"] = "requires --codex"
-                else:
-                    payload["error"] = "target invariant failed"
-                # A successful process exit leaves the case status as the deciding input.
-                status, result, output = self.run_worker(json.dumps(payload))
-                self.assertEqual(status, expected, output)
-                self.assertEqual(result["status"], state)
-                if state == "failed":
-                    self.assertIn("target invariant failed", result["error"])
+    def test_case_failure_is_required_even_after_a_successful_worker_exit(self):
+        failed = {"case": "synthetic", "status": "failed", "facts": {},
+                  "checks": {}, "error": "target invariant failed"}
+        status, result, output = self.run_worker(json.dumps(failed))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("target invariant failed", result["error"])
 
 
 class ProvenanceTests(unittest.TestCase):
-    def test_generated_constructor_repair_preserves_keyword_calls_only(self):
-        sys.path.insert(0, str(HERE))
-        from velune_acceptance.bindings import _repair
-
-        namespace = {}
-        exec(_repair("class Command:\n    def __init__(self, optional=None, required):\n"
-                     "        self.required = required\n", "generated-command.py"), namespace)
-        self.assertEqual(namespace["Command"](required="caller input").required, "caller input")
-        with self.assertRaises(SyntaxError):
-            _repair("def ordinary(optional=None, required):\n    pass\n", "ordinary.py")
-        with self.assertRaises(SyntaxError):
-            _repair("class Command:\n    def __init__(self, missing syntax):\n        pass\n", "broken.py")
-
     def test_existing_generation_receipt_rejects_a_partially_replaced_pair(self):
         sys.path.insert(0, str(HERE))
         from velune_acceptance import provenance

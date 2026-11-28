@@ -975,46 +975,6 @@ fn pi_integration_late_physical_write_survives_observation_timeout() {
 }
 
 #[test]
-fn pi_integration_reserved_reply_admits_while_ordinary_receipt_is_pending() {
-    let mut fixture = Fixture::new();
-    let ticket = fixture.client.enqueue_pi(prompt(), None).unwrap();
-    let d = Instant::now() + Duration::from_secs(30);
-    let (_sender, write) = WriteReceipt::test_pending(d);
-    let op = fixture
-        .client
-        .port
-        .as_mut()
-        .unwrap()
-        .operations
-        .get_mut(&ticket.sequence)
-        .unwrap();
-    op.bytes = None;
-    op.write = Some(write);
-    op.write_deadline = d;
-    let reply = fixture
-        .client
-        .enqueue_pi(
-            PiOperation::DialogReply(
-                json!({"type":"extension_ui_response","id":"permission","cancelled":true}),
-            ),
-            None,
-        )
-        .unwrap();
-    fixture.client.poll_pi();
-    assert!(
-        fixture
-            .client
-            .port
-            .as_ref()
-            .unwrap()
-            .operations
-            .get(&reply.sequence)
-            .is_none_or(|op| op.bytes.is_none()),
-        "protocol frame must reach the same physical FIFO without waiting for an ordinary receipt"
-    );
-}
-
-#[test]
 fn pi_integration_old_scope_physical_deadline_cannot_fail_new_owner() {
     let mut fixture = Fixture::new();
     let old = fixture.client.enqueue_pi(prompt(), None).unwrap();

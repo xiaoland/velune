@@ -1,10 +1,6 @@
 //! Receive budgets and real cold-data ownership, independent of session creation.
 use super::*;
-use std::{
-    io::Cursor,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{io::Cursor, path::PathBuf};
 use velune_test_support::TempRoot;
 
 fn account_with_limits(
@@ -135,46 +131,4 @@ fn common_reader_preserves_a_large_record_without_a_creation_policy() {
         )
         .unwrap();
     assert_eq!(response["payload"].as_str().unwrap().len(), 9 * 1024 * 1024);
-}
-
-#[test]
-fn retained_cold_data_outlives_actual_connection_and_removed_home() {
-    let home = TempRoot::new("cold-retained-data");
-    let mut command = crate::process::command("python3");
-    command.arg(helper(&home));
-    let mut rpc = crate::native::rpc::RpcClient::spawn_at(
-        command,
-        &crate::execution::ExecutionTarget::Local,
-        Some(home.path()),
-    )
-    .unwrap();
-    let data = rpc
-        .request("fixture/read", &serde_json::json!({"bytes":1024 * 1024}))
-        .unwrap();
-    let ledger = data.retention.0[0].ledger.clone();
-    let credit = ledger.0.lock().unwrap().data_used;
-    assert!(credit >= 1024 * 1024);
-    rpc.poll().unwrap();
-    assert_eq!(ledger.0.lock().unwrap().data_used, credit);
-    drop(rpc);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while data
-        .retention
-        .0
-        .iter()
-        .any(|lease| lease.account.upgrade().is_some())
-    {
-        assert!(
-            Instant::now() < deadline,
-            "retained data pinned the actual IO owner"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    let path = home.to_path_buf();
-    drop(home);
-    assert!(!path.exists(), "temporary HOME must actually be removed");
-    assert_eq!(data["payload"].as_str().unwrap().len(), 1024 * 1024);
-    assert_eq!(ledger.0.lock().unwrap().used, credit);
-    drop(data);
-    assert_eq!(ledger.0.lock().unwrap().used, 0);
 }

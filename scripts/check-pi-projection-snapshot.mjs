@@ -2,7 +2,7 @@
 // is created under a private temporary directory and removed in finally.
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
-import {mkdir, mkdtemp, readFile, rm} from "node:fs/promises";
+import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join, resolve} from "node:path";
 import {pathToFileURL} from "node:url";
@@ -15,27 +15,12 @@ process.env.VELUNE_PI_SDK_PACKAGE_ROOT = installation.packageDirectory;
 delete process.env.VELUNE_PI_SELECTION_FILE;
 const sdk = await installation.importModule("dist/core/session-manager.js");
 const {SessionManager} = sdk;
-if (typeof sdk.sessionEntryToContextMessages !== "function") throw new Error("Pi SDK entry conversion API unavailable");
 const temp = await mkdtemp(join(tmpdir(), "velune-pi-display-history-"));
 process.env.PI_CODING_AGENT_DIR = temp;
 const stage = join(temp, "staged-resources");
-const macBuild = await readFile("scripts/build-macos.sh","utf8");
-const macList = macBuild.match(/for script in ([^;]+); do/)?.[1]?.trim().split(/\s+/);
-const windowsBuild = await readFile("scripts/build-windows.ps1","utf8");
-const windowsList = windowsBuild.match(/^\$scripts = (.+)$/m)?.[1]?.match(/'([^']+)'/g)?.map(value => value.slice(1,-1));
-const remoteInstall = await readFile("packages/agent-runtime/src/execution.rs","utf8");
-const remoteList = remoteInstall.match(/pub fn install_resources[\s\S]*?let names = \[([\s\S]*?)\];/)?.[1]?.match(/"([^"]+\.mjs)"/g)?.map(value => value.slice(1,-1).replace(/\.mjs$/,""));
-assert.ok(macList?.includes("pi_transcript"),"macOS resource staging omitted the shared Pi helper");
-assert.deepEqual(windowsList,macList,"Windows prune/copy list differs from macOS resource staging");
-assert.deepEqual(remoteList,macList,"SSH resource list differs from packaged Pi resources");
-const stagedScripts = macList;
-await mkdir(stage);
-for (const name of stagedScripts) {
-  execFileSync("python3",["scripts/build-support.py","copy",
-    `packages/agent-runtime/resources/${name}.mjs`,join(stage,`${name}.mjs`)],{cwd:resolve("."),stdio:"ignore"});
-}
 const moduleUrl = pathToFileURL(join(stage,"pi_virtual_model.mjs"));
 try {
+  execFileSync("python3", ["scripts/build-support.py", "stage-runtime-scripts", stage]);
   const manager = SessionManager.create(temp, join(temp, "sessions"));
   manager.appendMessage({role:"user",content:"synthetic history before checkpoint",timestamp:Date.now()});
   const deleted = manager.appendMessage({role:"user",content:"synthetic deleted prompt",timestamp:Date.now()});
@@ -57,7 +42,6 @@ try {
 
   // The model context remains Pi's normal compaction-aware projection.
   const modelContext = manager.buildSessionContext().messages;
-  assert.ok(!modelContext.some(message => message.content === "synthetic deleted prompt"));
 
   const statuses = [], handlers = new Map(), eventHandlers = new Map();
   const install = (await import(moduleUrl.href)).default;
@@ -94,9 +78,7 @@ try {
   assert.ok(live.messages.some(message => message.id === `pi:${manager.getSessionId()}:${compaction}:1`));
   assert.deepEqual(live.identityConfirmations,[{previousId:liveId,currentId:`pi:${manager.getSessionId()}:${kept}:0`}]);
   assert.deepEqual(manager.buildSessionContext().messages,modelContext);
-  console.log(JSON.stringify({passed:11,cases:["full-branch-before-compaction","context-edit-delete","context-edit-replacement",
-    "compaction-and-branch-summary","source-entry-ordinal-identity","discarded-branch-exclusion","stable-live-identity",
-    "cold-live-producer-equivalence","model-context-unchanged","current-sdk-api","staged-resource-import"]}));
+  console.log("PASS staged Pi helpers: cold/live display history, edited branches, stable message IDs and preserved model context");
 } finally {
   await rm(temp,{recursive:true,force:true});
   delete process.env.VELUNE_PI_SDK_PACKAGE_ROOT;

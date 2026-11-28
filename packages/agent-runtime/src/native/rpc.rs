@@ -631,7 +631,7 @@ impl RpcClient {
 
     /// Budget-aware codec bridge for typed owners. The borrowed source is not
     /// copied into an intermediate Value; failure/slot checks precede encoding.
-    pub(crate) fn encode_frame(
+    fn encode_frame(
         &self,
         frame: &impl serde::Serialize,
         class: WriteClass,
@@ -645,7 +645,7 @@ impl RpcClient {
     /// Retry this owned frame unchanged after local rejection. Every class
     /// crosses the same recorded terminal barrier before physical admission.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn try_enqueue_owned_frame(
+    fn try_enqueue_owned_frame(
         &self,
         frame: OwnedFrame,
         class: WriteClass,

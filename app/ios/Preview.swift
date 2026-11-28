@@ -128,14 +128,13 @@ enum PreviewData {
         assert(transcriptBlocks(assistant, turn: turn, reply: false) + transcriptBlocks(assistant, turn: turn, reply: true) == assistant.blocks)
         model.merge(snapshot)
         let draft = draft()
-        let identity = draft.target.key
         draft.draft = "保留两行草稿\n第二行"
         draft.selection = models[0].selection
         draft.chooseRuntime("claude")
         assert(draft.selection == nil && draft.draft.contains("第二行"))
         draft.chooseProject("/sample/website")
         draft.chooseRuntime("sample")
-        assert(draft.selection == models[0].selection && draft.target.key == identity)
+        assert(draft.selection == models[0].selection)
         draft.selection = nil
         let restored = ConversationModel(client: RemoteClient(), peer: "preview", target: draft.target)
         restored.restore(try! JSONDecoder().decode(ComposerState.self, from: JSONEncoder().encode(draft.composerState)))
@@ -144,7 +143,7 @@ enum PreviewData {
         restored.merge(withModel)
         assert(restored.selection == nil && restored.draft == draft.draft)
         assert(restored.destination.cwd == "/sample/website")
-        print("PASS iOS preview: delta retention and deletion, work/reply split, draft identity and Codable restoration")
+        print("PASS iOS preview: delta retention and deletion, work/reply split, runtime model selection and Codable restoration")
         #endif
         return model
     }

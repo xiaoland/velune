@@ -14,11 +14,10 @@
 
 按适配器原有能力选择下表中的检查。通用 ACP 还要核对界面提供的操作与本次连接协商的能力一致。
 
-经 Velune 的回归先跑[验收用例](../../tests/acceptance/README.md)中声明了该 CLI 的用例。以下脚本不经 Velune，只用合成上游核对已安装 CLI 本身仍符合适配器依赖的行为，适合先判断差异是否来自上游：
+经 Velune 的回归先跑[验收用例](../../tests/acceptance/README.md)中声明了该 CLI 的用例。Codex 接续摘要另有[安装版适配器回归](../../packages/agent-runtime/tests/codex_handoff_summary.rs)，检查分叉、原生压缩、归档与源历史保全。以下脚本用已安装的 Pi 或 SDK 检查 Velune 运行资源与上游的配合。
 
 | 脚本 | 核对的上游行为 |
 | --- | --- |
-| `scripts/check-codex-sampling-route.py --codex <路径>` | Codex 持久分叉与采样请求的路由 |
 | `scripts/check-pi-child-host.mjs --pi <路径>` | Pi 与 pi-subagents 的前台、嵌套、并行与后台子任务托管 |
 | `scripts/check-pi-child-history.py --pi <路径>` | Pi 子任务历史的写出格式 |
 | `scripts/check-pi-projection-snapshot.mjs <路径>` | Pi 会话投影快照 |

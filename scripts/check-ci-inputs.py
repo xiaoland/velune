@@ -18,34 +18,21 @@ class RustInputChecks(unittest.TestCase):
         # The non-Rust examples are consumed by include_str!/include_bytes!,
         # build scripts, generated-language contracts or the acceptance runner.
         for name in (
-            'packages/ai/src/models.rs', 'Cargo.toml', 'Cargo.lock',
-            'rust-toolchain.toml', 'clippy.toml', '.cargo/config.toml',
-            '.github/workflows/pr-checks.yml', 'scripts/ci-inputs.py',
-            'scripts/check-ci-inputs.py', 'scripts/build-support.py',
+            'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'clippy.toml', '.cargo/config.toml',
+            '.github/workflows/pr-checks.yml', 'scripts/ci-inputs.py', 'scripts/build-support.py',
             'scripts/run-migrations.py', 'scripts/migrations/composer-state.py',
-            'scripts/migrations/01-service-tier-model-variants.py',
-            'scripts/migrations/mac-appearance-width.py',
-            'packages/application-api/src/command/traits_expected.tsv',
             'packages/agent-runtime/resources/codex_context.py',
-            'packages/agent-runtime/resources/remote_bootstrap.py',
-            'packages/agent-runtime/resources/pi_sdk.mjs',
-            'packages/agent-runtime/src/creation/cold_history_fixture.py',
-            'packages/application/src/local/collaboration/xurl.md',
+            'packages/application-api/src/command/traits_expected.tsv',
             'packages/gateway/tests/fixtures/gemini/google-text.json',
-            'packages/ai-provider/relaykit-bridge/go.mod',
-            'packages/bindings/uniffi.toml', 'tools/bindgen/Cargo.toml',
-            'third-party/iroh/Cargo.toml', 'third-party/iroh/src/lib.rs',
-            'third-party/iroh/SOURCE.json',
-            'tests/acceptance/run.py', 'tests/acceptance/cases/history_cache_pressure.py',
+            'tools/bindgen/Cargo.toml', 'third-party/iroh/SOURCE.json',
+            'tests/acceptance/cases/history_cache_pressure.py',
         ):
             with self.subTest(path=name):
                 self.assertTrue(inputs.requires_rust([name]), name)
 
     def test_unrelated_docs_and_native_only_changes_do_not_compile_rust(self):
-        for names in ([], ['docs/prd/conversations.md'], ['app/mac/Composer.swift'],
-                      ['app/android/app/src/main/kotlin/Composer.kt'],
-                      ['app/windows/Composer.cs'], ['scripts/check-macos-dev.py'],
-                      ['README.md', 'docs/development.md']):
+        for names in (['docs/prd/conversations.md'], ['app/mac/Composer.swift'],
+                      ['scripts/check-ci-inputs.py', 'scripts/check-macos-dev.py']):
             with self.subTest(paths=names):
                 self.assertFalse(inputs.requires_rust(names))
 

@@ -657,7 +657,7 @@ shell_snapshot = false
     assert!(!canary.exists());
     assert_eq!(provider.request_count(), baseline_http_requests + 6);
 
-    // A live model response can take longer than Codex thread/sample allowed.
+    // A valid native compaction can take longer than thirty seconds.
     provider.delay_next(Duration::from_secs(34));
     start_summary(&mut session, "slow-compaction", &source_id, None);
     let slow = wait_terminal(&mut session, "slow-compaction", Duration::from_secs(65));

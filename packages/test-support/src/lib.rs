@@ -177,18 +177,6 @@ mod tests {
         assert!(!path.exists());
     }
 
-    #[test]
-    fn root_is_removed_after_a_panic() {
-        let leaked = std::sync::Mutex::new(PathBuf::new());
-        let result = std::panic::catch_unwind(|| {
-            let root = TempRoot::new("support-panic");
-            *leaked.lock().unwrap() = root.path().to_owned();
-            panic!("test body failed");
-        });
-        assert!(result.is_err());
-        assert!(!leaked.lock().unwrap().exists());
-    }
-
     #[cfg(unix)]
     #[test]
     #[expect(

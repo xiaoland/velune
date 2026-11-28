@@ -102,12 +102,9 @@ jobs:
             echo "$forbidden"
             exit 1
           fi
-      - name: Link the shared Rust core and bindings on Linux
-        if: steps.changes.outputs.rust == 'true'
-        run: cargo build --locked --package velune-bindings --lib
       - name: Run the Rust workspace tests
         if: steps.changes.outputs.rust == 'true'
         run: cargo test --locked --workspace --no-fail-fast
-      - name: Run synthetic acceptance through the generated Python bindings
+      - name: Link the Rust core and run acceptance through the generated Python bindings
         if: steps.changes.outputs.rust == 'true'
         run: python3 tests/acceptance/run.py --build

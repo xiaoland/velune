@@ -7,7 +7,7 @@ import sys
 def requires_rust(names):
     rust_files = {'Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'clippy.toml',
                   '.github/workflows/pr-checks.yml', 'scripts/ci-inputs.py',
-                  'scripts/check-ci-inputs.py', 'scripts/build-support.py',
+                  'scripts/build-support.py',
                   'scripts/run-migrations.py'}
     # Crates embed Python, JavaScript, Markdown and fixture bytes as well as
     # Rust. File extensions cannot identify their compile/test inputs. Keep

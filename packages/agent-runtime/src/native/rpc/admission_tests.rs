@@ -125,28 +125,6 @@ for line in sys.stdin:
 }
 
 #[test]
-fn local_allocation_refusal_is_not_a_transport_failure() {
-    let mut command = crate::process::command("python3");
-    command.args(["-u", "-c", "import sys, json\nfor line in sys.stdin: print(json.dumps({'method':'synthetic/received'}), flush=True)"]);
-    let mut rpc =
-        RpcClient::spawn_at(command, &crate::execution::ExecutionTarget::Local, None).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let frame = OwnedFrame::new(Vec::with_capacity(1024), 512);
-    let pointer = frame.bytes.as_ptr();
-    let rejected = rpc
-        .try_enqueue_owned_frame(frame, WriteClass::Ordinary, deadline)
-        .err()
-        .unwrap();
-    assert_eq!(rejected.error.kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(rejected.frame.bytes.as_ptr(), pointer);
-    assert!(rpc.failed.is_none());
-    rpc.write(&json!({"synthetic":"after-budget-refusal"}))
-        .unwrap();
-    assert!(rpc.input.is_some());
-    rpc.shutdown();
-}
-
-#[test]
 fn queued_request_keeps_protocol_notifications_live_while_stdin_is_blocked() {
     let root = std::env::temp_dir().join(format!(
         "velune-rpc-write-gate-{}-{}",

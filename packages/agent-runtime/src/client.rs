@@ -528,61 +528,22 @@ impl Client {
             .filter(|id| !id.is_empty())
             .ok_or(Error::InvalidCommand)?
             .to_owned();
-        let frame = self.encode_frame(
+        let input = self.stdin.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Pi RPC input closed")
+        })?;
+        let frame = input.encode_json(
             &command,
             class,
             crate::transport::writer_policy_limit(),
             deadline,
         )?;
-        let receipt = self
-            .try_enqueue_owned_frame(frame, class, deadline)
+        let receipt = input
+            .try_enqueue(frame, class, deadline)
             .map_err(|rejected| Error::Io(rejected.into_error()))?;
         if let Err(error) = receipt.wait() {
             return Err(self.terminate(Some(format!("Pi RPC command send unconfirmed: {error}"))));
         }
         Ok(format!("{command_type}\0{id}"))
-    }
-
-    /// Finite streaming codec for typed Pi owners; caller-created input/base64
-    /// must be budgeted before this borrowed serialization boundary as well.
-    pub(crate) fn encode_frame(
-        &self,
-        frame: &impl serde::Serialize,
-        class: crate::transport::WriteClass,
-        allocation_limit: usize,
-        deadline: Instant,
-    ) -> std::io::Result<crate::transport::OwnedFrame> {
-        self.write_input()?
-            .encode_json(frame, class, allocation_limit, deadline)
-    }
-
-    /// Kind-neutral bridge for the Pi port. Classification and finite allocation
-    /// policy belong to the caller; a local refusal returns the identical frame.
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn try_enqueue_owned_frame(
-        &self,
-        frame: crate::transport::OwnedFrame,
-        class: crate::transport::WriteClass,
-        deadline: Instant,
-    ) -> std::result::Result<crate::transport::WriteReceipt, crate::transport::NotAdmitted> {
-        match self.write_input() {
-            Ok(input) => input.try_enqueue(frame, class, deadline),
-            Err(error) => Err(crate::transport::NotAdmitted::new(
-                frame, class, deadline, error,
-            )),
-        }
-    }
-
-    fn write_input(&self) -> std::io::Result<&crate::transport::PipeWriter> {
-        if let Some(error) = &self.terminal_error {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                error.clone(),
-            ));
-        }
-        self.stdin.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Pi RPC input closed")
-        })
     }
 
     fn receive(&mut self, method: &str, deadline: Instant) -> Result<Value> {
@@ -913,9 +874,6 @@ impl Drop for Client {
         let _ = self.shutdown();
     }
 }
-
-#[cfg(test)]
-mod admission_tests;
 
 #[cfg(test)]
 mod snapshot_tests;

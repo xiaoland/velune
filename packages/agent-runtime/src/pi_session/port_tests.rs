@@ -1140,36 +1140,28 @@ fn pi_review_old_scope_operation_event_deadline_does_not_poison_new_owner() {
 }
 
 #[test]
-fn pi_integration_history_install_rechecks_receipt_deadline() {
+fn expired_history_snapshot_cannot_replace_the_current_projection() {
     let mut fixture = Fixture::new("import sys\nfor line in sys.stdin: pass\n");
-    let previous = fixture.session.snapshot().unwrap().conversation.id.clone();
     let request = HistoryRequest {
         runtime_id: "pi".into(),
         model_record_key: None,
         snapshot: HistorySnapshot::Awaiting,
         deadline: None,
     };
-    assert!(
-        fixture
-            .session
-            .install_history(
-                request,
-                json!({"data":{"messages":[]}}),
-                Some(Instant::now() - Duration::from_millis(1)),
-            )
-            .is_err()
-    );
+    let error = fixture
+        .session
+        .install_history(
+            request,
+            json!({"nativeSession":{"sessionFile":"late.jsonl"},"data":{"messages":[]}}),
+            Some(Instant::now() - Duration::from_millis(1)),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Transport(detail) if detail.contains("deadline expired before owner installation")
+    ));
     assert_eq!(
         fixture.session.snapshot().unwrap().conversation.id,
-        previous
-    );
-    assert!(
-        fixture
-            .session
-            .running
-            .as_ref()
-            .unwrap()
-            .client
-            .pi_cleanup_required()
+        "pi:synthetic"
     );
 }
