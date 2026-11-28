@@ -160,7 +160,7 @@ import VeluneBindings
 /// turn's settings. No runtime or daily state directory is opened.
 @MainActor private func forkExperienceChecks(home: URL) {
     ConversationStore.checkConcurrentForkDispatch(home: home)
-    checkWorkspaceWindowRestoration()
+    checkWorkspaceWindowRestoration(home: home)
     let local = DeviceStore(preview: true)
     let source = DeviceStore(preview: true, peerID: "synthetic-fork-peer")
     let window = ConversationWindowModel(application: local, kind: .workspace)

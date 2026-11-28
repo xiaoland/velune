@@ -1,13 +1,17 @@
 #if VELUNE_DEV_CHECKS
 import AppKit
 
-
 /// AppKit supplies the coder and later presents the returned window. Only the
 /// restoration delegate is exercised here, using windows that stay unordered.
-@MainActor func checkWorkspaceWindowRestoration() {
+@MainActor func checkWorkspaceWindowRestoration(home: URL) {
     let manager = WorkspaceWindows.shared
     precondition(manager.controllers.isEmpty)
-    manager.start(.init(store: DeviceStore(preview: true), previewEmpty: false, previewSettings: false))
+    let directory = home.appendingPathComponent("restoration-core", isDirectory: true)
+    let transport = Transport(stateDirectory: directory, resourcesDirectory: Bundle.main.resourceURL!)
+    let application = DeviceStore(transport: transport)
+    MacNativePersistenceGate.open()
+    defer { MacNativePersistenceGate.close(); try! transport.close(stoppingWork: true) }
+    manager.start(.init(store: application, previewEmpty: false, previewSettings: false))
     func restore(_ bytes: Data) -> (NSWindow?, Error?) {
         let archive = try! NSKeyedUnarchiver(forReadingFrom: bytes)
         defer { archive.finishDecoding() }
@@ -22,6 +26,9 @@ import AppKit
     }
     for (kind, device): (ConversationWindowKind, String?) in [(.workspace, nil), (.single, "fork-peer")] {
         let id = UUID().uuidString
+        let saved = ConversationWindowModel(application: application, kind: kind, device: device).savedLayout
+        application.windowWorkspaceJournal.save(saved, id: id)
+        application.windowWorkspaceJournal.flush()
         let original = manager.restore(kind, id: id, device: device)!
         let controller = manager.controllers.first { $0.window === original }!
         let archive = NSKeyedArchiver(requiringSecureCoding: true)
@@ -35,6 +42,16 @@ import AppKit
         }
         precondition(error == nil && restored !== original && reopened.id == id && reopened.kind == kind && reopened.device == device
                      && restored.identifier?.rawValue == "velune.window.\(id)" && !restored.isVisible)
+        restored.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        // A hidden window need not mount its SwiftUI content on every host.
+        // Report that lifecycle boundary; whenever mounted its real onAppear
+        // must restore this window's journal, including its pane identity.
+        if reopened.model.acceptsWorkspacePersistence {
+            precondition(reopened.model.focusedPaneID == saved.focused && reopened.model.savedLayout.panes == saved.panes,
+                         "窗口内容启动后必须找回自身 journal 的 pane 和 tab")
+        }
+        print("Restored hidden \(kind.rawValue) content mounted: \(reopened.model.acceptsWorkspacePersistence)")
         let (same, secondError) = restore(archive.encodedData)
         precondition(same === restored && secondError == nil && manager.controllers.count == 1)
         restored.close()

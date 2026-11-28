@@ -36,6 +36,7 @@ enum DevelopmentCheck {
         "--experience-workspace-only",
     ]
     private static let retiredComposerChecks: Set<String> = [
+        "--check-composer-sharing",
         "--check-composer-state",
         "--check-composer-recovery-write",
         "--check-composer-recovery-read",

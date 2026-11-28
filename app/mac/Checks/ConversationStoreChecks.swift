@@ -311,7 +311,10 @@ extension ConversationStore {
         workspace.openInNewTab()
         require(!ConversationWindowModel.isConversationStoreSelected(store, in: workspace))
         requireNoRead()
+        workspace.selectTab(workspace.conversationTabs.first { $0.store === store }!.id)
+        require(ConversationWindowModel.isConversationStoreSelected(store, in: workspace), "the tab must be selected just before its window closes")
         workspace.noteWindowClosed()
+        require(!ConversationWindowModel.isConversationStoreSelected(store, in: workspace), "closing the workspace withdraws selection")
         requireNoRead()
         // Reuse the provider-confirmed owner from the completed seed turn.
         wait("idle seed") { store.checkAccess.pollProjection(); return store.checkAccess.snapshot?.runState == .idle }

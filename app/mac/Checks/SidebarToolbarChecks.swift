@@ -63,20 +63,25 @@ import ObjectiveC
     }
     func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.08)); safe() }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-    func identifiers(_ root: Any) -> Set<String> {
+    func accessibilityText(_ root: Any, labels: Bool) -> Set<String> {
         var visited = Set<ObjectIdentifier>(), result = Set<String>()
         func visit(_ value: Any) {
-            if let view = value as? NSView, let id = view.identifier?.rawValue { result.insert(id) }
+            if !labels, let view = value as? NSView, let id = view.identifier?.rawValue { result.insert(id) }
             guard let ax = value as? NSAccessibilityProtocol else { return }
             let object = value as AnyObject
             guard visited.insert(ObjectIdentifier(object)).inserted else { return }
-            if let id = ax.accessibilityIdentifier(), !id.isEmpty { result.insert(id) }
+            if labels {
+                for value in [ax.accessibilityLabel(), ax.accessibilityTitle(), ax.accessibilityValue() as? String].compactMap({ $0 }) {
+                    result.insert(value)
+                }
+            } else if let id = ax.accessibilityIdentifier(), !id.isEmpty { result.insert(id) }
             for child in ax.accessibilityChildren() ?? [] { visit(child) }
             if let view = value as? NSView { for child in view.subviews { visit(child) } }
         }
         visit(root)
         return result
     }
+    func identifiers(_ root: Any) -> Set<String> { accessibilityText(root, labels: false) }
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
@@ -166,6 +171,22 @@ import ObjectiveC
                         NSRect(x: -column.bounds.width, y: searchRect.midY - 1, width: 3 * column.bounds.width, height: 2)) }
                     require(header.contains { $0 is NSPopUpButton } && header.contains { !($0 is NSPopUpButton) },
                             "missing native actions beside the search field: \(name)")
+                    if mode == "shared" {
+                        let labels = accessibilityText(column, labels: true)
+                        require(["会话列表", "会话列表的位置", "隐藏会话列表"].allSatisfy(labels.contains),
+                                "shared list must expose its title, move menu and hide button: \(name), \(labels.sorted())")
+                        let headerRow = buttons.filter { button in
+                            let rect = button.convert(button.bounds, to: column)
+                            let distanceAboveSearch = column.isFlipped ? searchRect.midY - rect.midY : rect.midY - searchRect.midY
+                            return distanceAboveSearch > searchRect.height / 2 && distanceAboveSearch <= PaneChrome.barHeight + searchRect.height / 2
+                        }
+                        require(headerRow.filter { $0 is NSPopUpButton }.count == 1 && headerRow.filter { !($0 is NSPopUpButton) }.count == 1,
+                                "shared list needs its own two actions above search: \(name)")
+                        for button in headerRow {
+                            let rect = button.convert(button.bounds, to: column)
+                            require(!rect.isEmpty && column.bounds.contains(rect), "shared tool action outside column: \(name), \(rect)")
+                        }
+                    }
                     for button in header {
                         let rect = button.convert(button.bounds, to: column)
                         require(rect.width > 0 && rect.minX >= -1 && rect.maxX <= column.bounds.width + 1,

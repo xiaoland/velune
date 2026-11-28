@@ -11,12 +11,20 @@ import VeluneBindings
     source.store.selectConversation(id: "sample-0")
     let project = ConversationProject(path: "project:synthetic", primaryFolder: "/tmp/group-workspace", nativeRuntimeId: nil,
         name: "Synthetic", folders: [], worktrees: [], latestActivityUnixMs: nil)
-    device.applyList(ConfigurationSnapshot(conversations: [], conversationGroups: [], conversationProjects: [project],
-        workingDirectoryProjects: [:], showsArchived: false, historyFailures: [], gateways: [],
+    let nativeID = "native:multi-folder"
+    var nativeProject = project
+    nativeProject.path = nativeID
+    nativeProject.primaryFolder = "/tmp/native-primary"
+    nativeProject.nativeRuntimeId = "sample-instance"
+    let nativeFolders = ["/tmp/native-primary", "/tmp/native-extra"]
+    let workspace = WorkingDirectoryProject(project: nativeID, name: "Native workspace", canSelectProject: true, directories: nativeFolders)
+    var configuration = ConfigurationSnapshot(conversations: [], conversationGroups: [], conversationProjects: [project, nativeProject],
+        workingDirectoryProjects: ["sample-instance": [workspace]], showsArchived: false, historyFailures: [], gateways: [],
         runtimeInstances: device.runtimeInstances, runtimeTypes: device.runtimeTypes, modelTemplates: [],
         conversationBrowserLimits: device.conversationBrowserLimits, outlinePresentation: .popover, linkedConversationOpening: .currentTab,
         usageDisplay: .used, contextUsageDisplay: .used, conversationBrowserPreferences: ConversationBrowser().preferences,
-        statusLine: [], providerImportTypes: [], protocols: [], selectedRuntimeInstanceId: "sample-instance"))
+        statusLine: [], providerImportTypes: [], protocols: [], selectedRuntimeInstanceId: "sample-instance")
+    device.applyList(configuration)
     window.tools.move(.composer, to: .docked(.bottom))
     let originalCount = window.tabCount
     window.createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
@@ -36,6 +44,17 @@ import VeluneBindings
     window.createConversation(in: .runtime(runtimeId: "missing-synthetic-runtime"))
     precondition(window.focused === draft && window.tabCount == originalCount + 1 && draft.store.loadedConversationID == id
                  && window.composer(for: draft) === input && input.submission == "GROUP SHARED DRAFT")
+    window.createConversation(in: .project(path: nativeID))
+    let expected = NewConversationProject(key: nativeID, name: "Native workspace", runtimeID: "sample-instance", directories: nativeFolders)
+    precondition(draft.store.unsentConversation?.creationProject == expected && draft.store.loadedConversationWorkingDirectory == "/tmp/native-primary"
+                 && window.composerContext().nextTurnRuntimeID == "sample-instance" && window.composer(for: draft) === input)
+    window.selectTab(source.id)
+    configuration.workingDirectoryProjects = [:]
+    device.applyList(configuration)
+    window.createConversation(in: .project(path: nativeID))
+    precondition(window.focused === source && window.tabCount == originalCount + 1
+                 && device.problems.contains { $0.detail.contains("没有可用的完整工作区") },
+                 "缺少原生项目的完整工作区应说明原因并保留原标签，不能降级到主目录")
     print("PASS group creation: group actions open or retarget the selected tab, preserve its input and use the project’s primary folder")
     exit(0)
 }
