@@ -215,6 +215,8 @@ pub(crate) struct NetworkGeneration {
     pub(crate) mesh: crate::mesh::MeshNetwork,
     #[cfg(test)]
     blocked_outgoing: Mutex<std::collections::BTreeSet<String>>,
+    #[cfg(test)]
+    pub(crate) legacy_wire_only: AtomicBool,
     lookup_urls: Vec<String>,
     withdrawn_lookup_urls: std::collections::BTreeSet<String>,
     peer_lookup: crate::lookup::PeerLookup,
@@ -231,6 +233,14 @@ pub(crate) struct NetworkGeneration {
     requests: Semaphore,
 }
 impl NetworkGeneration {
+    pub(crate) fn supports_wire_version(&self, version: u16) -> bool {
+        #[cfg(test)]
+        if self.legacy_wire_only.load(Ordering::Acquire) {
+            return version == PROTOCOL_VERSION;
+        }
+        crate::protocol::supports_wire_version(version)
+    }
+
     pub(crate) async fn bind(
         service: Arc<ServiceState>,
         id: u64,
@@ -295,6 +305,8 @@ impl NetworkGeneration {
             mesh: crate::mesh::MeshNetwork::default(),
             #[cfg(test)]
             blocked_outgoing: Mutex::new(std::collections::BTreeSet::new()),
+            #[cfg(test)]
+            legacy_wire_only: AtomicBool::new(false),
             withdrawn_lookup_urls,
             lookup_urls,
             peer_lookup,
@@ -668,7 +680,15 @@ impl RemoteAccessService {
         let mut client = self
             .dial_locator(peer, contact.name, &contact.locator, session, true)
             .await?;
-        match client.rpc(Request::Hello).await? {
+        client.wire_version = crate::protocol::APPLICATION_WIRE_VERSION;
+        let hello = match client.rpc(Request::Hello).await {
+            Err(RemoteError::IncompatibleVersion) => {
+                client.wire_version = PROTOCOL_VERSION;
+                client.rpc(Request::Hello).await?
+            }
+            result => result?,
+        };
+        match hello {
             Reply::Hello(current) => {
                 current.validate(peer)?;
                 client.descriptor = current;
@@ -712,6 +732,7 @@ impl RemoteAccessService {
                 direct_addresses: locator.direct_addresses.clone(),
                 lookup_urls: locator.lookup_urls.clone(),
             },
+            wire_version: PROTOCOL_VERSION,
             session,
             route: None,
             authorized,
@@ -799,8 +820,14 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
                 };
                 let envelope =
                     read_frame::<Envelope<crate::protocol::Request>>(&mut recv, limit).await;
+                let version = envelope
+                    .as_ref()
+                    .ok()
+                    .map(|frame| frame.version)
+                    .filter(|version| owner.supports_wire_version(*version))
+                    .unwrap_or(PROTOCOL_VERSION);
                 let reply = match envelope {
-                    Ok(envelope) if envelope.version == PROTOCOL_VERSION => {
+                    Ok(envelope) if owner.supports_wire_version(envelope.version) => {
                         if matches!(
                             envelope.body,
                             Request::PairBegin { .. }
@@ -833,8 +860,8 @@ async fn serve_connection(network: Arc<NetworkGeneration>, slot: Arc<ConnectionS
                 write_frame(
                     &mut send,
                     Envelope {
-                        version: PROTOCOL_VERSION,
-                        body: reply,
+                        version,
+                        body: crate::compatibility::reply_for_wire(version, reply),
                     },
                 )
                 .await

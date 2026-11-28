@@ -1709,7 +1709,7 @@ for line in sys.stdin:
 }
 
 #[test]
-fn pi_preparation_diagnostics_are_not_native_history_changes() {
+fn pi_presentation_notices_are_not_native_history_changes() {
     let mut projection = PiProjection::default();
     let mut view: ConversationSnapshot = serde_json::from_value(json!({
             "revision":1,"conversation":{"id":"pi:synthetic","runtimeId":"pi","title":{"source":"native","text":"Synthetic"},"canRename":false,"canDelete":false},
@@ -1720,14 +1720,24 @@ fn pi_preparation_diagnostics_are_not_native_history_changes() {
     projection.snapshot = Some(view.clone());
     let history = json!({"messages":[
         {"id":"pi:session:user:0","role":"user","content":"original"},
-        {"id":"pi:session:reply:0","role":"assistant","content":"reply","stopReason":"stop"}
+        {"id":"pi:session:reply:0","role":"assistant","content":"reply","stopReason":"stop"},
+        {"id":"pi:session:compact:0","role":"compactionSummary","summary":"original summary"}
     ]});
     projection.replace_history(&history);
     view = projection.snapshot.clone().unwrap();
     projection.apply_event(&json!({"type":"extension_error","extensionPath":"synthetic.ts","event":"session_start","error":"synthetic startup failure"}));
+    projection.apply_event(&json!({"type":"compaction_start","reason":"manual"}));
+    projection.apply_event(&json!({"type":"compaction_end","reason":"manual","result":{}}));
     projection.replace_history(&history);
     let prepared = projection.snapshot.unwrap();
-    assert_eq!(prepared.messages.len(), view.messages.len() + 1);
+    assert_eq!(prepared.messages.len(), view.messages.len() + 2);
+    assert!(
+        prepared
+            .messages
+            .iter()
+            .any(|message| message.id.starts_with("pi-compaction-")),
+        "the live projection still displays its compaction status"
+    );
     assert!(same_edit_history(&view, &prepared.messages));
     assert!(same_edit_history(&prepared, &view.messages));
     for index in 0..view.messages.len() {

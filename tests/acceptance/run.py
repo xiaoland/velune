@@ -113,7 +113,7 @@ def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
     result["worker_returncode"] = returncode
     if returncode != 0:
         result["status"] = "failed"
-        detail = f"worker exited with status {returncode}; see {log.name}"
+        detail = f"worker exited with {returncode}; see {log.name}"
         result["error"] = f"{result['error']}; {detail}" if result.get("error") else detail
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result

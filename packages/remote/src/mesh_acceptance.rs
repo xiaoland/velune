@@ -621,6 +621,80 @@ fn business_kinds() -> [CommandKind; 3] {
     ]
 }
 
+#[test]
+fn adjacent_alpha_envelopes_keep_reads_and_single_writes_over_direct_and_routed_links() {
+    run(async {
+        let chain = Chain::new(&["compat-client", "compat-relay", "compat-host"]).await;
+        chain.pair().await;
+        chain.discover(0, 2).await;
+        let source = &chain.devices[0];
+        for host in &chain.devices[1..] {
+            let mut legacy_client = source
+                .service
+                .connect_client(&host.id, ClientSession::new().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                legacy_client.wire_version,
+                crate::protocol::APPLICATION_WIRE_VERSION
+            );
+            // The already released client always sends v3 request envelopes.
+            legacy_client.wire_version = PROTOCOL_VERSION;
+            assert!(matches!(
+                legacy_client.rpc(Request::Hello).await.unwrap(),
+                Reply::Hello(_)
+            ));
+            assert!(matches!(
+                legacy_client
+                    .call(view(), execution(), read())
+                    .await
+                    .unwrap()
+                    .response,
+                Response::ReadConversation(_)
+            ));
+            legacy_client
+                .call(view(), execution(), send("legacy client"))
+                .await
+                .unwrap();
+            assert_eq!(host.handler.sends.load(Ordering::SeqCst), 1);
+
+            // A released host rejects the v4 Hello before dispatch.
+            host.service
+                .network()
+                .unwrap()
+                .legacy_wire_only
+                .store(true, Ordering::Release);
+            let modern_client = source
+                .service
+                .connect_client(&host.id, ClientSession::new().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(modern_client.wire_version, PROTOCOL_VERSION);
+            assert_eq!(
+                modern_client.via_device_ids(),
+                if host.id == chain.devices[1].id {
+                    Vec::new()
+                } else {
+                    vec![chain.devices[1].id.clone()]
+                }
+            );
+            assert!(matches!(
+                modern_client
+                    .call(view(), execution(), read())
+                    .await
+                    .unwrap()
+                    .response,
+                Response::ReadConversation(_)
+            ));
+            modern_client
+                .call(view(), execution(), send("modern client"))
+                .await
+                .unwrap();
+            assert_eq!(host.handler.sends.load(Ordering::SeqCst), 2);
+        }
+    });
+}
+
 async fn exercise_requests(
     controller: &Controller,
     target: &Device,

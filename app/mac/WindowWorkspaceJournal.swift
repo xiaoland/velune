@@ -90,28 +90,6 @@ final class WindowWorkspaceJournal: @unchecked Sendable {
         } catch { report(error.localizedDescription); return nil }
     }
 
-    /// The windows open when the application last quit: every open window
-    /// is written as it quits, so their recovery points are the latest
-    /// ones, within moments of each other. Closed windows' are older.
-    func lastSession(within interval: TimeInterval = 30) -> [(id: String, kind: ConversationWindowKind, device: String?)] {
-        guard let directory else { return [] }
-        flush()
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let dated = files.compactMap { url -> (url: URL, date: Date)? in
-            guard url.pathExtension == "json", UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
-                  let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return nil }
-            return (url, date)
-        }
-        guard let latest = dated.map(\.date).max() else { return [] }
-        return dated.filter { latest.timeIntervalSince($0.date) <= interval }.sorted { $0.date < $1.date }.compactMap { file in
-            guard let layout = try? SavedWindowLayout.decodeKnown(Data(contentsOf: file.url)) else { return nil }
-            let kind = layout.windowKind ?? .workspace
-            var device: String?
-            if kind == .single, case .remote(let peer)? = layout.windowDevice { device = peer }
-            return (file.url.deletingPathExtension().lastPathComponent, kind, device)
-        }
-    }
-
     private func block(_ id: String) {
         lock.withLock { _ = blockedIDs.insert(id) }
     }

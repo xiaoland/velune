@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "skills": {
+    "pre-flight": {
+      "source": "codiume/skills",
+      "commit": "4ce6a033806b61e53ffdf98439ef8bc7105bcc4e",
+      "sourceType": "github",
+      "skillPath": "skills/pre-flight/SKILL.md",
+      "computedHash": "7d324d21a532e8de21ed6d3584b90110441393729fb347d7f00c927cff1c47ab",
+      "installMode": "copy"
+    }
+  }
+}

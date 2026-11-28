@@ -64,7 +64,7 @@ jobs:
           for check in pi-background-work pi-subagent-metadata runtime-background-tasks; do
             node "scripts/check-$check.mjs"
           done
-          python3 -m unittest discover -s tests/acceptance -p 'test_*.py'
+          python3 -B -m unittest discover -s tests/acceptance -p 'test_*.py'
       - name: Set up Go for the Linux RelayKit link prerequisite
         if: steps.changes.outputs.rust == 'true'
         uses: actions/setup-go@v5

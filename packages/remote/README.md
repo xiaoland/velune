@@ -40,7 +40,7 @@ relay／lookup 地址拒绝用户名、密码、query 和 fragment；relay 凭�
 
 ## v3 配对与设备成员
 
-普通远控业务协议、ALPN 与邀请格式统一为 v3（`velune/remote/3`）；设备中转另用 `velune/device-mesh/1`。旧业务 wire 不兼容，但存储按下述规则迁移，不清空已有控制授权。`PairingOffer::decode` 是最多 1024 字节的离线结构化解析，只接受 Velune 配对用途、固定目的公钥与少量启动线索，不执行 URL 或命令。邀请不含执行 incarnation。`create_invitation` 同时开放一个窗口，最长十分钟；重新生成关闭旧窗口与未提交候选。邀请包含秘密，不实现 Debug，也不写日志。
+远控 ALPN 与邀请格式沿用 v3（`velune/remote/3`）；设备中转另用 `velune/device-mesh/1`。已授权连接先用只读 Hello 协商业务 envelope v4，遇到版本不兼容时用 v3 重试。v3 的业务回复使用已发布 Alpha 共享的字段和枚举值。存储按下述规则迁移，保留已有控制授权。`PairingOffer::decode` 是最多 1024 字节的离线结构化解析，只接受 Velune 配对用途、固定目的公钥与少量启动线索，不执行 URL 或命令。邀请不含执行 incarnation。`create_invitation` 同时开放一个窗口，最长十分钟；重新生成关闭旧窗口与未提交候选。邀请包含秘密，不实现 Debug，也不写日志。
 
 `begin_pairing` 经认证 TLS 连接证明邀请，双方独立计算八位核对码。label 固定为 `EXPORTER-Velune-Pairing-v3`，context 按协议版本、issuer/controller 公钥、invite ID、attempt ID、新挑战及授权用途编码；不使用 0-RTT 或对端提供的显示码。同窗口最多五次挑战，取消、断线或换公钥不返还预算；同邀请的重复导入复用原连接／attempt。核对码只绑定这次 TLS，原连接确认关闭后不能继续批准。
 

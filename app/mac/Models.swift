@@ -38,6 +38,9 @@ struct Conversation: Codable, Sendable, Identifiable, Equatable {
     var failed = false
     /// The list group showing it; nil for an open conversation the list does not show.
     var group: ConversationGroupKey? = nil
+    static func hasNumberedTitleSuffix(_ title: String) -> Bool {
+        title.range(of: #" \([0-9]+\)$"#, options: .regularExpression) != nil
+    }
     enum CodingKeys: String, CodingKey { case id, title, updatedAtUnixMs, createdAtUnixMs, cwd, creationProject, canRename, canDelete; case runtimeID = "runtimeId"; case parentConversationID = "parentConversationId" }
     /// This conversation's runtime fields with `listed`'s organization.
     func organized(like listed: Conversation) -> Conversation {

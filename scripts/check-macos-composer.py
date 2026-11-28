@@ -132,7 +132,7 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
@@ -189,6 +189,8 @@ def main():
             flags = ['--check-message-experience', '--experience-runtime-editor-only']
         if args.check == 'model-auto-compaction':
             flags = ['--check-message-experience', '--experience-model-auto-compaction-only']
+        if args.check == 'fork':
+            flags = ['--check-message-experience', '--experience-fork-only']
         if args.check == 'archived':
             flags = ['--check-archived-conversations']
             if args.dark:
