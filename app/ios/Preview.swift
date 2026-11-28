@@ -116,17 +116,35 @@ enum PreviewData {
         model.models = models
         #if DEBUG
         // A streamed reply must keep older messages and split work/reply exactly once.
+        let transcript = ConversationModel(client: RemoteClient(), peer: "synthetic", target: model.target)
+        transcript.merge(snapshot)
+        var complete = snapshot
+        complete.cursor.sequence = 3
+        transcript.merge(complete)
+
         var delta = snapshot
         delta.base = snapshot.cursor
+        delta.cursor.sequence = 2
         delta.messages = []
-        model.merge(delta)
-        assert(model.messages.count == 2)
+        transcript.merge(delta)
+        assert(transcript.snapshot?.cursor == complete.cursor && transcript.messages.count == 2)
+
+        delta.cursor.sequence = 4
         delta.messageIds = [assistant.id]
-        model.merge(delta)
-        assert(model.messages[user.id] == nil)
+        transcript.merge(delta)
+        assert(transcript.snapshot?.cursor == complete.cursor && transcript.messages.count == 2)
+
+        delta.base = complete.cursor
+        delta.messageIds.append("missing")
+        transcript.merge(delta)
+        assert(transcript.snapshot?.cursor == complete.cursor && transcript.messages.count == 2)
+
+        delta.messageIds = [assistant.id]
+        transcript.merge(delta)
+        assert(transcript.snapshot?.cursor == delta.cursor && transcript.messages.count == 1)
+        assert(transcript.messages[user.id] == nil && transcript.messages[assistant.id] == assistant)
         assert(transcriptBlocks(assistant, turn: turn, reply: false).count == 1)
         assert(transcriptBlocks(assistant, turn: turn, reply: false) + transcriptBlocks(assistant, turn: turn, reply: true) == assistant.blocks)
-        model.merge(snapshot)
         let draft = draft()
         let identity = draft.target.key
         draft.draft = "保留两行草稿\n第二行"
