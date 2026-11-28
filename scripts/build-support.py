@@ -188,7 +188,7 @@ def source_inputs(platform):
     paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", "LICENSE", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
              "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
     if platform in ("macos", "windows"):
-        paths += ["THIRD_PARTY_NOTICES.md", "scripts/install-runtime-support.sh"]
+        paths += ["THIRD_PARTY_NOTICES.md", "scripts/install-runtime-support.sh", "scripts/install-xurl.py"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
         paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
