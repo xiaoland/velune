@@ -3,6 +3,7 @@
 //! Hosts supply identity paths, trust storage, relay/discovery choices, and the single business
 //! handler. Dropping clients or stopping this network endpoint never shuts down that handler.
 mod client;
+mod compatibility;
 mod controller;
 mod endpoint;
 mod error;
