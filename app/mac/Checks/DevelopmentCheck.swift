@@ -33,7 +33,6 @@ enum DevelopmentCheck {
         "--experience-compaction-only",
         "--experience-sidebar-only",
         "--experience-runtime-recovery-only",
-        "--experience-workspace-only",
     ]
     private static let retiredComposerChecks: Set<String> = [
         "--check-composer-sharing",
@@ -71,6 +70,15 @@ enum DevelopmentCheck {
     ]
 
     static func runBeforeSwiftUI(admit: () -> Void) {
+        let retiredNativeChecks = [
+            "--experience-workspace-only": "navigation",
+            "--experience-visual-only": "appearance-zoom",
+            "--check-credits": "controls",
+        ]
+        for (flag, replacement) in retiredNativeChecks where arguments.contains(flag) {
+            FileHandle.standardError.write(Data("旧检查 \(flag) 已退役；请使用 scripts/check-macos-composer.py \(replacement)。\n".utf8))
+            exit(2)
+        }
         guard let check = requestedLaunchCheck(in: .beforeSwiftUI) else { return }
         admit()
         check.run()

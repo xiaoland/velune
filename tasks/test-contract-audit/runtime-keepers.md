@@ -10,7 +10,7 @@
 | A2 | acp/tests.rs：control_rejection_keeps_the_connection_and_turn_error_preserves_output；acknowledged_config_survives_disconnect_and_unconfirmed_interactions_expire。 |
 | A3 | acp/tests.rs：live_permission_form_and_cancel_reach_their_own_peer_in_order；same_wire_request_id_cannot_identify_both_a_permission_and_a_form；idle_form_remains_answerable_after_the_control_timeout。 |
 | R1 | creation_tests.rs：queued_and_returned_records_keep_credit_until_the_last_owner_drops；many_small_retained_records_hit_aggregate_credit_and_release_it_on_drop；rejected_or_malformed_records_return_credit_without_truncating_input。 |
-| R2 | creation_tests.rs：common_reader_preserves_a_large_record_without_a_creation_policy；retained_cold_data_outlives_actual_connection_and_removed_home。cold_history_tests 五项原真实分页 keeper 保留。 |
+| R2 | creation_tests.rs：common_reader_preserves_a_large_record_without_a_creation_policy。单条冷读生命周期随后由 cold_history_tests 的 cold_paginated_history_keeps_all_page_credit_after_rpc_and_home_cleanup 承接，真实分页经过关闭原连接、删除 HOME 与最后一页释放额度。 |
 | LINK | application 真实 Repository::store_conversation_links 与复杂身份 drop/reopen keeper；见 application owner 证据。typed CreationBudget/CreatedIdentity/association ACK 无当前消费者，均退役。 |
 | C1 | native/claude_protocol_tests.rs：claude_steer_updates_permission_without_answering_an_existing_tool_prompt；claude_steer_never_sends_text_when_permission_is_rejected_or_the_turn_ends；claude_input_uses_the_wire_uuid_for_its_live_row。 |
 | C2 | native/claude_protocol_tests.rs：claude_permission_replies_use_exact_native_id_and_cannot_be_sent_twice；claude_unknown_control_is_rejected_without_answering_existing_permission。 |
@@ -25,5 +25,5 @@
 | D3 | native/deepseek/tests.rs：deepseek_normal_model_selection_roundtrips_the_advertised_opaque_value；deepseek_normal_send_preserves_a_legal_prompt_larger_than_eight_mib；deepseek_connect_validates_protocol_resume_and_required_http_not_plugin_release；deepseek_blocking_catalog_keeps_private_persistence_lifecycle_and_removes_failure_artifacts。 |
 | P1 | client/snapshot_tests.rs 原两 keeper 改 production poll：同源 snapshot 只保留小 header，所有前后 events 顺序准确且仅消费一次；失败只撤自己的 header。 |
 | P2 | pi_session/port_tests.rs 原四 keeper 改 branch(EditPlacement::Fork)，NewSession 独立保留；无调用 fork_at(None)/typed Clone 退役。真实 Pi port 与 scope receipt/event 两类风险保留。 |
-| P3 | projection/tests.rs：17 类 cold/live 独立分类仍逐项；布局由 subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries（plain/mixed）及 transcript owner 承接；wait_outcomes_join_work_and_preserve_native_text 保留成功/失败/未知未来与固定正文。 |
+| P3 | projection/tests.rs：使用实际 exact/prefix 分支的代表值；布局由 closing_stays_visible_late_notifications_stay_after_and_mixed_identity_is_stable（含普通和混合回合以及第一轮前的孤立通知）及 transcript owner 承接。父会话切换、活动回合与确认态各有独立输入。 |
 | X1 | tests/codex_inter_agent_context.rs：delivery_metadata_preserves_function_and_custom_tool_order；plaintext_agent_body_keeps_attribution_as_assistant_context；newest_compaction_replacement_keeps_agent_context_and_suffix；metadata_does_not_allow_unknown_rollout_or_response_items；encrypted_agent_payload_requires_a_source_summary；opaque_and_unknown_agent_content_are_rejected_even_in_replacements。两文件都直接运行同一 Python helper，原“不同公开层”表述撤回。 |

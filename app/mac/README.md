@@ -167,7 +167,7 @@ Mermaid 11.12.0 与许可随 bundle 本地分发，使用固定版本和本地 W
 
 通用设置中的外观区控制整体缩放、独立 UI／消息／代码字号、紧凑程度与 composer 可用宽度比例。缩放命令与设置共同读写 `AppearancePreferences`，它原子保存本机 `mac-appearance.json` 并向原生排版发布线程安全的只读快照。字号和间距由同一份值计算。外观变化后，消息布局重新测量，composer 在原对象上更新排版，保留正文、选区和撤销记录。转录 cell 的持久子视图（活动行、附件名、披露标题、代码块标签与按钮、本轮配置摘要）从行布局获取 NSAttributedString／NSFont，和布局缓存一起失效重建。速度由模型目录变体表达，不增加独立的按轮维度。
 
-`--check-message-experience` 使用 `/tmp` 下的合成 HOME 检查提交反馈和模型／journal 的保存；`--experience-reopen` 在新进程读回 editor 与外观；`--experience-visual-only` 只生成定向原生 PNG，`--experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。`scripts/check-macos-composer.py appearance-zoom` 核对快捷键路由、缩放的保存和重载、排版快照与设置一致，以及宽窄窗口的渲染。入口禁止激活，不创建可见窗口或注入全局输入。
+`scripts/check-macos-composer.py experience` 使用独立的两次进程启动，验证编辑器组、标签顺序和选择、创建目录与外观的保存和恢复。`--check-message-experience --experience-typography-only` 检查原生编辑器更改字号的连续性，并核对复用 cell 上活动行／附件／代码块等持久标签的字体随外观恢复。`scripts/check-macos-composer.py appearance-zoom` 核对快捷键路由、缩放的保存和重载、排版快照与设置一致，以及宽窄窗口的渲染。入口禁止激活，不创建可见窗口或注入全局输入。
 
 系统通知使用通知专用的窗口路由：已打开的目标聚焦其原有Tab，否则在当前工作窗口新开Tab；保留此前Tab。原生通知回调才激活窗口，隐藏检查只验证模型路由。
 

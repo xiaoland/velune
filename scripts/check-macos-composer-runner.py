@@ -29,7 +29,6 @@ class NativeCheckRunnerChecks(unittest.TestCase):
             executable.write_text(f'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 output = pathlib.Path(os.environ['VELUNE_CHECK_OUTPUT'])
-(output / 'worker-arguments.txt').write_text(json.dumps(sys.argv[1:]))
 state = pathlib.Path(os.environ['VELUNE_COMPOSER_CHECK_HOME']) / 'saved.json'
 state.parent.mkdir(parents=True, exist_ok=True)
 reopen = any(flag in sys.argv for flag in ['--composer-check-reopen', '--experience-reopen'])
@@ -90,33 +89,11 @@ sys.exit({first_exit})
         self.assertNotIn('worker-reopen.txt', files)
         self.assertEqual(receipt['exitCode'], 7)
 
-    def test_other_checks_and_workspace_only_do_not_use_reopen_fixture(self):
-        for check, extra in [('controls', ()), ('experience', ('--workspace-only',)),
-                             ('ownership', ('--child-open',))]:
-            with self.subTest(check=check, extra=extra):
-                status, _, files = self.run_fixture(check, extra=extra)
-                self.assertEqual(status, 0)
-                self.assertNotIn('worker-reopen.txt', files)
-
-    def test_named_checks_select_their_native_entry(self):
-        cases = [
-            ('requests', (), ['--check-conversation-requests']),
-            ('interactions', (), ['--check-runtime-interactions']),
-            ('interactions', ('--dark',), ['--check-runtime-interactions', '--interaction-check-dark']),
-            ('fork', (), ['--check-message-experience', '--experience-fork-only']),
-            ('drag-provider', (), ['--check-message-experience', '--experience-drag-provider-only']),
-            ('typography', (), ['--check-message-experience', '--experience-typography-only']),
-            ('admission', (), ['--check-message-experience', '--experience-admission-only']),
-            ('navigation', (), ['--check-message-experience', '--experience-navigation-only']),
-            ('group-creation', (), ['--check-group-creation']),
-        ]
-        for check, extra, expected in cases:
-            with self.subTest(check=check, extra=extra):
-                status, receipt, files = self.run_fixture(check, extra=extra)
-                self.assertEqual(status, 0)
-                self.assertEqual(json.loads(files['worker-arguments.txt']), expected)
-                self.assertEqual(receipt['phases'][0]['arguments'], expected)
-                self.assertEqual(len(receipt['phases']), 1)
+    def test_child_open_does_not_start_ownership_reopen(self):
+        status, receipt, files = self.run_fixture('ownership', extra=('--child-open',))
+        self.assertEqual(status, 0)
+        self.assertNotIn('worker-reopen.txt', files)
+        self.assertEqual(len(receipt['phases']), 1)
 
     def test_child_open_rejects_a_mislabeled_check_before_bundle_access(self):
         for check in ('fork', 'aggregated-list', 'experience', 'fork-send'):

@@ -10,7 +10,7 @@ packages/agent-runtime/src/creation_tests.rs	queued_and_returned_records_keep_cr
 packages/agent-runtime/src/creation_tests.rs	many_small_retained_records_hit_aggregate_credit_and_release_it_on_drop	多条小记录合计触达上限，释放持有者后可继续。	本机完整工作区通过
 packages/agent-runtime/src/creation_tests.rs	rejected_or_malformed_records_return_credit_without_truncating_input	拒绝和解析失败后可继续读取，同时保持完整输入的边界。	本机完整工作区通过
 packages/agent-runtime/src/creation_tests.rs	common_reader_preserves_a_large_record_without_a_creation_policy	通用读取器可以交付完整长帧，无需启用退役的创建策略。	本机完整工作区通过
-packages/agent-runtime/src/creation_tests.rs	retained_cold_data_outlives_actual_connection_and_removed_home	原连接关闭且源 HOME 被移除后，已返回数据仍有效。	本机完整工作区通过
+packages/agent-runtime/src/creation_tests.rs	retained_cold_data_outlives_actual_connection_and_removed_home	原连接关闭且源 HOME 被移除后，已返回数据仍有效。	本机完整工作区通过。第三轮由真实分页冷读入口承担，删除单条版本。
 packages/agent-runtime/src/native/claude_protocol_tests.rs	claude_steer_updates_permission_without_answering_an_existing_tool_prompt	切换 steer 权限不会替用户回答已经打开的工具请求。	本机完整工作区通过
 packages/agent-runtime/src/native/claude_protocol_tests.rs	claude_steer_never_sends_text_when_permission_is_rejected_or_the_turn_ends	权限被拒或原轮次结束后，对端不能收到待发送的正文。	本机完整工作区通过
 packages/agent-runtime/src/native/claude_protocol_tests.rs	claude_permission_replies_use_exact_native_id_and_cannot_be_sent_twice	发送原生请求的准确 ID，同一请求禁止二次回答。	本机完整工作区通过
@@ -28,7 +28,7 @@ packages/agent-runtime/src/native/deepseek/tests.rs	deepseek_normal_resume_prese
 packages/agent-runtime/src/native/deepseek/tests.rs	deepseek_normal_model_selection_roundtrips_the_advertised_opaque_value	模型设置将对端公布的 opaque 值按原义回送。	本机完整工作区通过
 packages/agent-runtime/src/native/deepseek/tests.rs	deepseek_normal_send_preserves_a_legal_prompt_larger_than_eight_mib	正常管道能交付超过 8 MiB 的合法正文。	本机完整工作区通过
 packages/agent-runtime/src/native/deepseek/tests.rs	deepseek_connect_validates_protocol_resume_and_required_http_not_plugin_release	握手按协议、恢复及所需 HTTP 能力决定准入，包括无需 HTTP 的正常对照。	本机完整工作区通过
-packages/agent-runtime/src/projection/tests.rs	wait_outcomes_join_work_and_preserve_native_text	完成、失败和未知 wait 终态保留原文及在 work 通知中的顺序。	本机完整工作区通过
+packages/agent-runtime/src/projection/tests.rs	wait_outcomes_join_work_and_preserve_native_text	完成、失败和未知 wait 终态保留原文及在 work 通知中的顺序。	本机完整工作区通过。第三轮清除与现有投影终态、原文和顺序的重复。
 packages/agent-runtime/tests/native_context_deletion.rs	codex_plain_delivery_metadata_does_not_require_portable_summary	普通交付元数据与可移植的对话内容单独构成无需摘要的正例。	本机完整工作区通过
 packages/ai-provider/tests/http_policy.rs	model_requests_do_not_follow_redirects_or_retry_even_with_a_permissive_builder	回环服务器观察实际提交次数，即使传入的 builder 开启重定向和重试也只发送一次。	本机完整工作区通过
 packages/ai-provider/tests/http_policy.rs	responses_stream_requires_sse_headers_and_a_real_model_terminal	核对 SSE 类型、实际流终态、失败类型和是否已提交请求。	本机完整工作区通过
@@ -43,4 +43,4 @@ packages/gateway/src/scheduling.rs	probe_response_restores_admission_and_late_fa
 packages/gateway/tests/dispatch.rs	recorded_ark_tool_loop_preserves_the_call_and_complete_result_across_rounds	真实转发两轮，核对工具 ID、参数、完整工具返回及最终 RESULT=391。	本机完整工作区通过
 scripts/check-build-support.py	test_ios_receipt_tracks_loaded_debug_code_and_release_executable	固定 Debug 启动器，替换已加载的 Swift 动态库；Release 无该库时仍核对二进制。	脚本及真实 iOS 构建回执通过
 scripts/check-macos-composer-runner.py	test_child_open_rejects_a_mislabeled_check_before_bundle_access	拒绝不支持 child-open 的参数组合，不能以另一个原生入口冒充指定检查。	脚本通过
-scripts/check-macos-composer-runner.py	test_named_checks_select_their_native_entry	具名 wrapper 参数各自到达准确的原生 worker 入口。	脚本通过
+scripts/check-macos-composer-runner.py	test_named_checks_select_their_native_entry	具名 wrapper 参数各自到达准确的原生 worker 入口。	脚本通过。第三轮由实际具名原生入口和错配参数拒绝承担，删除 argv 回显测试。

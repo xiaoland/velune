@@ -643,16 +643,13 @@ final class ConversationStore: ObservableObject {
                            directory: isDraft ? nil : snapshot?.conversation.cwd,
                            usage: snapshot?.usage ?? ConversationUsage())
     }
-    var composerQuotaRequest: ComposerQuotaRequest { quotaRequest(next: nextTurn) }
     func quotaRequest(next: NextTurn?) -> ComposerQuotaRequest {
         ComposerQuotaRequest(runtimeID: next?.runtimeId ?? "", selection: next?.model,
             conversationID: isDraft ? nil : snapshot?.conversation.id,
             conversationRevision: snapshot?.revision, configurationRevision: device.configurationRevision,
             providerReportRevision: device.providerReportRevision)
     }
-    var composerAccountQuotas: [ComposerQuotaEntry] { quotaEntries(for: composerQuotaRequest) }
     func quotaEntries(for request: ComposerQuotaRequest) -> [ComposerQuotaEntry] { composerQuotaResults.first { $0.request == request }?.entries ?? [] }
-    var composerQuotaError: String? { quotaError(for: composerQuotaRequest) }
     func quotaError(for request: ComposerQuotaRequest) -> String? { composerQuotaResults.first { $0.request == request }?.failure }
     private func quotaTargetMatches(_ request: ComposerQuotaRequest) -> Bool {
         request.conversationID == (isDraft ? nil : snapshot?.conversation.id)

@@ -132,16 +132,13 @@ def prepare_claude_continuation(root, evidence, path, lifetime, editing):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'credits', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links', 'requests', 'interactions', 'drag-provider', 'typography', 'admission', 'navigation', 'group-creation'])
+    parser.add_argument('check', choices=['editor', 'runtime-editor', 'model-auto-compaction', 'fork', 'fork-send', 'claude-compact-edit', 'queued-editor', 'queue-withdrawal', 'archived', 'palette-ime', 'palette-search', 'pagination', 'continuation', 'targets', 'tabs', 'ownership', 'geometry', 'controls', 'background', 'experience', 'appearance-zoom', 'aggregated-list', 'recovery', 'compaction', 'sidebar', 'provider-analytics', 'background-notifications', 'notification-navigation', 'sidebar-toolbar', 'outgoing-submissions', 'late-send-echo', 'transcript', 'shell-motion', 'telemetry-shutdown', 'file-links', 'requests', 'interactions', 'drag-provider', 'typography', 'admission', 'navigation', 'group-creation'])
     parser.add_argument('--app', type=Path, default=app_bundle_path(ROOT, 'dev'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--dark', action='store_true')
-    parser.add_argument('--workspace-only', action='store_true', help='run the experience cold-open and workspace recovery checks')
     parser.add_argument('--child-activity', action='store_true', help='check only the child conversation activity row')
     parser.add_argument('--child-open', action='store_true', help='check targeted child history on the headless request harness')
     args = parser.parse_args()
-    if args.workspace_only and args.check != 'experience':
-        parser.error('--workspace-only requires experience')
     if args.child_activity and args.check != 'background-notifications':
         parser.error('--child-activity requires background-notifications')
     if args.child_open and args.check != 'ownership':
@@ -222,8 +219,6 @@ def main():
             flags = ['--check-composer-ownership']
         if args.check == 'controls':
             flags = ['--check-composer-controls']
-        if args.check == 'credits':
-            flags = ['--check-composer-controls', '--check-credits']
         if args.check == 'geometry':
             flags = ['--check-composer-controls', '--check-geometry']
         if args.check == 'background':
@@ -281,8 +276,6 @@ def main():
             flags.append('--check-child-activity')
             if args.dark:
                 flags.append('--child-activity-dark')
-        if args.workspace_only:
-            flags = ['--check-message-experience', '--experience-workspace-only']
         phases = [('initial', flags, 'native.log')]
         if flags == ['--check-composer-ownership']:
             phases.append(('reopen', ['--check-composer-ownership', '--composer-check-reopen'], 'reopen.log'))

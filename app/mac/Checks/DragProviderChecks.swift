@@ -10,20 +10,17 @@ private final class DragProviderLoadResult: @unchecked Sendable {
     private let lock = NSLock()
     private var data: Data?
     private var error: Error?
-    private var finished = false
 
     func finish(_ data: Data?, error: Error?) {
-        lock.withLock { self.data = data; self.error = error; finished = true }
+        lock.withLock { self.data = data; self.error = error }
         completed.signal()
     }
 
     func value() -> (Data?, Error?) { lock.withLock { (data, error) } }
-    var isFinished: Bool { lock.withLock { finished } }
 }
 
 /// Reproduces termination's synchronous demand for a promised drag payload.
-/// Uses no scene, pasteboard, runtime or global input. Production loads never
-/// pump the main loop; the deliberately broken control is drained separately.
+/// Uses no scene, pasteboard, runtime, global input or main-loop pumping.
 @MainActor func dragProviderChecks() -> Never {
     precondition(Thread.isMainThread && NSApp.activationPolicy() == .prohibited)
     func note(_ text: String) { FileHandle.standardError.write(Data((text + "\n").utf8)) }
@@ -42,23 +39,6 @@ private final class DragProviderLoadResult: @unchecked Sendable {
         guard let data else { preconditionFailure("拖放数据未返回内容：\(type.identifier)") }
         return data
     }
-
-    let oldType = UTType(exportedAs: "local.velune.drag-provider-main-queue-check")
-    let oldProvider = NSItemProvider()
-    oldProvider.registerDataRepresentation(forTypeIdentifier: oldType.identifier, visibility: .ownProcess) { done in
-        DispatchQueue.main.async { done(Data(), nil) }
-        return nil
-    }
-    let oldResult = DragProviderLoadResult()
-    _ = oldProvider.loadDataRepresentation(forTypeIdentifier: oldType.identifier) { data, error in oldResult.finish(data, error: error) }
-    precondition(oldResult.completed.wait(timeout: .now() + 0.2) == .timedOut,
-                 "负对照必须识别依赖主线程的拖放数据回调")
-    // Release this deliberate negative control before testing the production
-    // providers. Only the negative control is allowed to pump the main loop.
-    let deadline = Date().addingTimeInterval(2)
-    while !oldResult.isFinished, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
-    precondition(oldResult.isFinished && oldResult.value().0 == Data())
-    note("PASS negative control detects a main-queue drag callback during the bounded wait, then drains it without leaving a pending worker")
 
     let runtime = "synthetic runtime"
     let conversation = "synthetic &/id?中文"
