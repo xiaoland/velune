@@ -33,6 +33,7 @@ class NativeInputsTests(unittest.TestCase):
             "app/windows/packages.lock.json": {"windows"},
             "scripts/render-windows-icon.ps1": {"windows"},
             "scripts/install-runtime-support.sh": {"macos", "windows"},
+            "scripts/install-xurl.py": {"macos", "windows"},
             ".github/workflows/pr-native-consumers.yml": {"macos", "ios", "android", "windows"},
         }
         for path, expected in checks.items():

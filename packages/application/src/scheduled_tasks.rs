@@ -122,8 +122,10 @@ impl Store {
         for mut run in store.runs()? {
             match run.phase {
                 ScheduledRunPhase::Dispatching | ScheduledRunPhase::Running => {
-                    run.phase = ScheduledRunPhase::OutcomeUnknown;
-                    run.detail = Some("上次退出时运行尚未结算；请查看会话，未自动重发".into());
+                    Self::finalize_phase(
+                        &mut run,
+                        Some("上次退出时运行尚未结算；请查看会话，未自动重发"),
+                    );
                 }
                 ScheduledRunPhase::Waiting => {
                     run.phase = ScheduledRunPhase::Skipped;
@@ -296,17 +298,37 @@ impl Store {
             return Ok(());
         };
         run.turn_outcome = Some(settlement.outcome);
-        run.phase = if settlement.work_pending {
-            ScheduledRunPhase::Running
-        } else if settlement.outcome == TurnOutcome::Completed {
-            ScheduledRunPhase::Completed
-        } else {
-            ScheduledRunPhase::Failed
-        };
         if settlement.outcome == TurnOutcome::Cancelled {
             run.detail = Some("运行已由用户停止".into());
         }
+        if settlement.work_pending {
+            run.phase = ScheduledRunPhase::Running;
+        } else {
+            Self::finalize_phase(&mut run, None);
+        }
         self.put_run(&run)
+    }
+
+    fn finalize_phase(run: &mut ScheduledRun, unknown_detail: Option<&str>) {
+        run.phase = match run.turn_outcome {
+            Some(TurnOutcome::Completed) => ScheduledRunPhase::Completed,
+            Some(TurnOutcome::Failed | TurnOutcome::Cancelled) => ScheduledRunPhase::Failed,
+            None => {
+                if let Some(detail) = unknown_detail {
+                    run.detail = Some(detail.into());
+                }
+                ScheduledRunPhase::OutcomeUnknown
+            }
+        };
+    }
+
+    pub(crate) fn settle_inactive_run(
+        &mut self,
+        run: &mut ScheduledRun,
+        unknown_detail: Option<&str>,
+    ) -> Result<(), Error> {
+        Self::finalize_phase(run, unknown_detail);
+        self.put_run(run)
     }
 
     pub(crate) fn put_dispatch_result(&mut self, run: &ScheduledRun) -> Result<(), Error> {
