@@ -294,9 +294,10 @@ sealed partial class Conversation
         }
         Busy = true;
         Notify();
+        var requestedFrom = Snapshot;
         try
         {
-            Apply((await Call(operation, work)).Snapshot);
+            Apply((await Call(operation, work)).Snapshot, requestedFrom);
             return true;
         }
         catch (Exception failure)

@@ -58,6 +58,11 @@ jobs:
           assert package['force-tag-creation'] is True
           assert isinstance(manifest['.'], str) and manifest['.']
           PY
+      - name: Check release assets and xURL installation
+        run: |
+          set -euo pipefail
+          python3 -B scripts/check-release-assets.py
+          python3 -B scripts/check-install-xurl.py
       - name: Check shell syntax and whitespace
         run: |
           set -euo pipefail

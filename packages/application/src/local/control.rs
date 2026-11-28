@@ -32,8 +32,7 @@ impl CoreRuntime {
             .unwrap_or((&view.context_runtime_id, &view.conversation.id));
         let runtime = self
             .session
-            .execution_configuration
-            .as_ref()
+            .execution()
             .filter(|configuration| configuration.runtime.id == runtime_id)
             .map(|configuration| &configuration.runtime)
             .map_or_else(|| self.runtime_instance(runtime_id), Ok)?;

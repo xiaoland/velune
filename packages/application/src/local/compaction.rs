@@ -27,9 +27,9 @@ impl CoreRuntime {
             self.prepare_with_selection(native, selection.as_ref(), false)?;
         }
         let result = (|| {
-            if let Some((gateway_id, session)) = self.backend_session_identity() {
-                self.session_backends()
-                    .begin_user_turn(&gateway_id, &session)
+            if let Some(gateway) = self.session.gateway() {
+                gateway
+                    .begin_user_turn()
                     .map_err(|error| RuntimeError::context("上下文压缩准备", error))?;
             }
             if matches!(self.session.active_state, ActiveState::Pi(_))
@@ -48,7 +48,7 @@ impl CoreRuntime {
             }
             Ok::<_, RuntimeError>(())
         })();
-        if result.is_err() && self.session.gateway_runner.is_some() && !self.session.executing() {
+        if result.is_err() && self.session.gateway().is_some() && !self.session.executing() {
             self.finish_managed_turn()?;
         }
         result?;

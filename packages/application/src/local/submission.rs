@@ -572,10 +572,9 @@ mod tests {
         child.conversation.parent_conversation_id = Some(parent.conversation.id.clone());
         child.conversation.id = "runtime:child".into();
         child.actions.can_send = false;
-        core.parked.push(session::Session {
-            active_state: ActiveState::History(Box::new(parent.into())),
-            ..Default::default()
-        });
+        let mut parked_parent = session::Session::default();
+        parked_parent.set_history(parent);
+        core.parked.push(parked_parent);
         core.session.active_state = ActiveState::History(Box::new(child.into()));
         core.follow_source();
         let view = core.native_snapshot().unwrap();

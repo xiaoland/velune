@@ -41,16 +41,12 @@ impl CoreRuntime {
         }
     }
     pub(super) fn native_injection(
-        &self,
         runtime: &RuntimeInstance,
+        gateway: &execution::GatewayExecution,
         key: &str,
     ) -> Result<GatewayInjection, RuntimeError> {
-        let gateway = self
-            .gateways
-            .iter()
-            .find(|g| g.id == runtime.gateway_id)
-            .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
         let resolved = gateway
+            .config()
             .resolve_dispatch(key)
             .map_err(RuntimeError::invalid)?;
         let provider = resolved.provider();
@@ -63,16 +59,7 @@ impl CoreRuntime {
             Protocol::Messages => "anthropic-messages",
             Protocol::Gemini => return Err(RuntimeError::invalid("专用适配器不使用 Gemini 入口")),
         };
-        let runner = self
-            .session
-            .gateway_runner
-            .as_ref()
-            .ok_or_else(|| RuntimeError::invalid("runtime gateway"))?;
-        let endpoint = self
-            .session
-            .gateway_tunnel
-            .as_ref()
-            .map_or(runner.endpoint(), |tunnel| tunnel.endpoint());
+        let endpoint = gateway.endpoint();
         Ok(GatewayInjection {
             endpoint: if ingress == Protocol::Messages {
                 endpoint
@@ -82,7 +69,7 @@ impl CoreRuntime {
             } else {
                 endpoint.into()
             },
-            token: runner.token().into(),
+            token: gateway.runner().token().into(),
             model_alias: model.provider_model_id.clone(),
             protocol: protocol.into(),
             context_window: model.context_window,
@@ -181,25 +168,15 @@ impl CoreRuntime {
             .collect()
     }
     pub(super) fn active_instance(&self) -> Result<&RuntimeInstance, RuntimeError> {
-        if let Some(configuration) = &self.session.execution_configuration {
+        if let Some(configuration) = self.session.execution() {
             return Ok(&configuration.runtime);
         }
-        let id = match &self.session.active_state {
-            ActiveState::History(snapshot) => &snapshot.conversation.runtime_id,
-            ActiveState::Native(_)
-            | ActiveState::Acp(_)
-            | ActiveState::Pi(_)
-            | ActiveState::Pending(_) => self
-                .session
-                .execution_runtime_id
-                .as_ref()
-                .ok_or_else(|| RuntimeError::invalid("active runtime"))?,
-            ActiveState::Empty => return Err(RuntimeError::invalid("active runtime")),
-        };
-        self.runtime_instances
-            .iter()
-            .find(|r| &r.id == id)
-            .ok_or_else(|| RuntimeError::invalid("active runtime"))
+        match &self.session.active_state {
+            ActiveState::History(snapshot) => {
+                self.runtime_instance(&snapshot.conversation.runtime_id)
+            }
+            _ => Err(RuntimeError::invalid("active runtime")),
+        }
     }
     pub(super) fn history_config(
         &self,

@@ -2086,6 +2086,12 @@ final class ConversationStore: ObservableObject {
         scope.epoch == projectionEpoch && scope.conversationID == loadedConversationID
             && scope.source == snapshot?.conversation.runtimeID && scope.context == projectionRuntimeID && scope.cursor == snapshot?.cursor
     }
+    private func deliveryPosition(_ snapshot: ConversationSnapshot) -> TranscriptDeliveryPosition? {
+        snapshot.cursor.map {
+            TranscriptDeliveryPosition(contextRuntimeId: snapshot.contextRuntimeID,
+                conversationId: snapshot.conversation.id, cursor: $0)
+        }
+    }
     @discardableResult
     private func installProjection(_ incoming: ConversationSnapshot?, scope: ProjectionScope, preserveSelection: Bool = false) -> Bool {
         guard !composerTargetClosed, generation == scope.storeGeneration else { return false }
@@ -2097,12 +2103,13 @@ final class ConversationStore: ObservableObject {
         let sameIdentity = incoming.conversation.id == scope.conversationID && incoming.conversation.runtimeID == scope.source
         guard sameIdentity || (scope.destination == incoming.conversation.id && baseCurrent) else { return false }
         guard loadedConversationID == incoming.conversation.id || baseCurrent else { return false }
-        if sameIdentity, incoming.contextRuntimeID == snapshot?.contextRuntimeID,
-           let current = snapshot?.cursor, let next = incoming.cursor, current.generation == next.generation {
-            guard next.sequence >= current.sequence else { return false }
-            // Header-only changes may share a cursor. Without the captured base
-            // there is no delivery order for conflicting equal-cursor headers.
-            if next.sequence == current.sequence, !baseCurrent { requestProjectionResync(); return false }
+        if let position = deliveryPosition(incoming) {
+            switch classifyTranscriptDelivery(installed: snapshot.flatMap(deliveryPosition), incoming: position,
+                deltaBase: nil, requestIsCurrent: baseCurrent) {
+            case .replace: break
+            case .ignore: return false
+            case .applyDelta, .readFull: requestProjectionResync(); return false
+            }
         } else if !baseCurrent {
             requestProjectionResync(); return false
         }
@@ -2193,8 +2200,17 @@ final class ConversationStore: ObservableObject {
         case .absent: installProjection(nil, scope: scope, preserveSelection: true)
         case .complete(let value): installProjection(value, scope: scope, preserveSelection: true)
         case .changes(let base, var header, let order, let changed):
-            guard let current = snapshot, current.conversation.id == scope.conversationID,
-                  current.contextRuntimeID == scope.context, current.cursor == base else { needsResync = true; return }
+            guard let current = snapshot, let position = deliveryPosition(header) else { needsResync = true; return }
+            switch classifyTranscriptDelivery(installed: deliveryPosition(current), incoming: position,
+                deltaBase: base, requestIsCurrent: baseIsCurrent(scope)) {
+            case .applyDelta: break
+            case .ignore: return
+            case .replace, .readFull: needsResync = true; return
+            }
+            let ids = Set(order), changedIDs = Set(changed.map(\.id))
+            guard ids.count == order.count, changedIDs.count == changed.count, ids.isSuperset(of: changedIDs) else {
+                needsResync = true; return
+            }
             var known = Dictionary(current.messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for message in changed { known[message.id] = message }
             let messages = order.compactMap { known[$0] }

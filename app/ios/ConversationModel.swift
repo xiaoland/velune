@@ -37,8 +37,8 @@ final class ConversationModel: ObservableObject {
     let client: RemoteClient
     let peer: String
     let target: ConversationTarget
-    @Published var snapshot: DeliveredSnapshot?
-    @Published var messages: [String: DeliveredMessage] = [:]
+    @Published private(set) var snapshot: DeliveredSnapshot?
+    @Published private(set) var messages: [String: DeliveredMessage] = [:]
     @Published var models: [RuntimeModel] = []
     @Published var selection: ModelSelection? {
         didSet {
@@ -98,6 +98,8 @@ final class ConversationModel: ObservableObject {
     private var heldUnreadCursor: TranscriptCursor?
     private var markingRead = false
     private var payloads: [String: DeliveredMessage] = [:]
+    private var transcriptEpoch: UInt64 = 0
+    private var transcriptNeedsFullSnapshot = false
 
     init(client: RemoteClient, peer: String, target: ConversationTarget) {
         self.client = client; self.peer = peer; self.target = target
@@ -225,7 +227,8 @@ final class ConversationModel: ObservableObject {
     func open() async {
         do {
             if let id = target.conversation {
-                apply(try await client.readConversation(peer, runtimeID: target.runtime, conversationID: id))
+                let requestedAt = transcriptEpoch
+                apply(try await client.readConversation(peer, runtimeID: target.runtime, conversationID: id), requestedAt: requestedAt)
             }
             failure = nil
         } catch { report(error, source: "读取会话") }
@@ -240,28 +243,64 @@ final class ConversationModel: ObservableObject {
             if target.conversation != nil { await open() }
             return
         }
+        let requestedAt = transcriptEpoch
         do {
-            let update = try await client.application(peer, operation: .conversationRead) {
-                try $0.snapshotUpdate(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, since: current.cursor)
+            if transcriptNeedsFullSnapshot {
+                try await readFullTranscript(current, requestedAt: requestedAt)
+            } else {
+                let update = try await client.application(peer, operation: .conversationRead) {
+                    try $0.snapshotUpdate(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, since: current.cursor)
+                }
+                guard !Task.isCancelled else { return }
+                switch update {
+                case .changed(let next): installTranscript(next, requestedAt: requestedAt)
+                case .absent:
+                    if requestedAt == transcriptEpoch {
+                        try await readFullTranscript(current, requestedAt: requestedAt)
+                    }
+                case .unchanged: break
+                }
             }
-            switch update {
-            case .changed(let next): merge(next)
-            case .absent:
-                apply(try await client.readConversation(peer, runtimeID: current.conversation.runtimeId, conversationID: current.conversation.id))
-            case .unchanged: break
-            }
-            failure = nil
-        } catch { report(error, source: "更新会话") }
+            if !busy { failure = nil }
+        } catch {
+            if !Task.isCancelled, requestedAt == transcriptEpoch, !busy { report(error, source: "更新会话") }
+        }
     }
 
-    private func apply(_ result: SnapshotResult) { if let next = result.snapshot { merge(next) } }
+    private func readFullTranscript(_ current: DeliveredSnapshot, requestedAt: UInt64) async throws {
+        let result = try await client.readConversation(peer, runtimeID: current.conversation.runtimeId, conversationID: current.conversation.id)
+        if !Task.isCancelled { apply(result, requestedAt: requestedAt) }
+    }
 
-    func merge(_ next: DeliveredSnapshot) {
-        let fresh = Dictionary(uniqueKeysWithValues: next.messages.map { ($0.id, $0) })
+    private func apply(_ result: SnapshotResult, requestedAt: UInt64) {
+        if let next = result.snapshot { installTranscript(next, requestedAt: requestedAt) }
+    }
+
+    func merge(_ next: DeliveredSnapshot) { installTranscript(next, requestedAt: transcriptEpoch) }
+
+    private func installTranscript(_ next: DeliveredSnapshot, requestedAt: UInt64) {
+        let disposition = classifyTranscriptDelivery(installed: snapshot?.deliveryPosition,
+            incoming: next.deliveryPosition, deltaBase: next.base, requestIsCurrent: requestedAt == transcriptEpoch)
+        switch disposition {
+        case .ignore: return
+        case .readFull: transcriptNeedsFullSnapshot = true; return
+        case .applyDelta, .replace: break
+        }
+        let fresh = Dictionary(next.messages.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         let ids = Set(next.messageIds)
-        messages = next.base == nil ? fresh : messages.merging(fresh) { _, new in new }.filter { ids.contains($0.key) }
-        payloads = payloads.filter { id, loaded in fresh[id].map { $0.stamp == loaded.stamp } ?? ids.contains(id) }
+        let nextMessages = disposition == .replace ? fresh : messages.merging(fresh) { _, new in new }.filter { ids.contains($0.key) }
+        guard ids.count == next.messageIds.count, fresh.count == next.messages.count,
+              ids.isSuperset(of: fresh.keys), nextMessages.count == ids.count else {
+            transcriptNeedsFullSnapshot = true
+            return
+        }
+        payloads = snapshot?.sharesDeliveryGeneration(with: next) == true
+            ? payloads.filter { id, loaded in nextMessages[id]?.stamp == loaded.stamp }
+            : [:]
         let identityChanged = snapshot?.conversation.id != next.conversation.id
+        transcriptNeedsFullSnapshot = false
+        transcriptEpoch &+= 1
+        messages = nextMessages
         snapshot = next
         if identityChanged { onIdentityChange?(self) }
     }
@@ -283,21 +322,23 @@ final class ConversationModel: ObservableObject {
             defer { self.sending = nil }
             if self.snapshot == nil {
                 guard self.target.conversation == nil else { throw MobileError.missingConversation }
+                let requestedAt = self.transcriptEpoch
                 let created = try await self.client.application(self.peer, operation: .conversationWrite) {
                     try $0.createConversation(runtimeId: runtime, cwd: cwd, selection: selection)
                 }
                 guard let native = created.snapshot, let owner = self.composerOwner else { throw MobileError.missingConversation }
                 self.pendingCreation = .init(inputID: input.id, ownerID: owner, runtimeID: native.conversation.runtimeId, conversationID: native.conversation.id, choices: submittedTarget)
-                self.apply(created)
+                self.apply(created, requestedAt: requestedAt)
                 self.onComposerChange?(self)
                 try await self.completeCreation()
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
             let turn = ComposedTurn(text: text, effort: next?.effort, permissionMode: next?.permissionMode?.id, attachments: submittedContent.attachments.map { "composer:" + $0.id })
+            let requestedAt = self.transcriptEpoch
             self.apply(try await self.client.application(self.peer, operation: .send) {
                 try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
                     targetRuntimeId: runtime, selection: selection, turn: turn)
-            })
+            }, requestedAt: requestedAt)
             if self.sharedInput?.id == input.id, self.contentGeneration == submittedGeneration, self.composerContent == submittedContent {
                 self.applyingComposer = true
                 self.draft = ""; self.inputAttachments = []; self.composerChoiceEdited = false
@@ -311,14 +352,16 @@ final class ConversationModel: ObservableObject {
     func compact() { act("压缩上下文") {
         guard let current = self.snapshot, current.followUp.canCompact else { return }
         let selection = self.selection
+        let requestedAt = self.transcriptEpoch
         self.apply(try await self.client.application(self.peer, operation: .compact) {
             try $0.compactConversation(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, selection: selection)
-        })
+        }, requestedAt: requestedAt)
     } }
 
     func stop() { act("停止生成") {
         guard let current = self.snapshot else { return }
-        self.apply(try await self.client.application(self.peer, operation: .cancel) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) })
+        let requestedAt = self.transcriptEpoch
+        self.apply(try await self.client.application(self.peer, operation: .cancel) { try $0.cancel(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id) }, requestedAt: requestedAt)
     } }
 
     func setConversationHandoff(release: Bool) {
@@ -331,17 +374,19 @@ final class ConversationModel: ObservableObject {
         default: return
         }
         act(source) {
+            let requestedAt = self.transcriptEpoch
             self.apply(try await self.client.application(self.peer, operation: .conversationWrite) {
                 try $0.setConversationHandoff(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, release: release)
-            })
+            }, requestedAt: requestedAt)
         }
     }
 
     func reply(_ id: String, _ reply: RuntimeInteractionReply) { act("回复运行时请求") {
         guard let current = self.snapshot else { return }
+        let requestedAt = self.transcriptEpoch
         self.apply(try await self.client.application(self.peer, operation: .reply) {
             try $0.replyRuntimeInteraction(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, interactionId: id, reply: reply)
-        })
+        }, requestedAt: requestedAt)
     } }
 
     func loadPayload(_ id: String) async {
@@ -350,6 +395,7 @@ final class ConversationModel: ObservableObject {
             let loaded = try await client.application(peer, operation: .conversationRead) {
                 try $0.messagePayloads(runtimeId: current.contextRuntimeId, conversationId: current.conversation.id, messageIds: [id])
             }
+            guard !Task.isCancelled, snapshot?.sharesDeliveryGeneration(with: current) == true else { return }
             for message in loaded where messages[message.id]?.stamp == message.stamp { payloads[message.id] = message }
             objectWillChange.send()
         } catch { report(error, source: "读取完整内容") }
@@ -366,6 +412,17 @@ final class ConversationModel: ObservableObject {
     }
 }
 
+
+private extension DeliveredSnapshot {
+    var deliveryPosition: TranscriptDeliveryPosition {
+        .init(contextRuntimeId: contextRuntimeId, conversationId: conversation.id, cursor: cursor)
+    }
+
+    func sharesDeliveryGeneration(with other: Self) -> Bool {
+        contextRuntimeId == other.contextRuntimeId && conversation.id == other.conversation.id &&
+            cursor.generation == other.cursor.generation
+    }
+}
 
 extension ConversationModel {
     private var composerContent: ComposerInputContent { .init(text: draft, attachments: inputAttachments) }
@@ -469,8 +526,9 @@ extension ConversationModel {
         guard let creation = pendingCreation else { return }
         guard creation.ownerID == composerOwner else { throw MobileError.unavailable }
         if snapshot == nil {
+            let requestedAt = transcriptEpoch
             let result = try await client.readConversation(peer, runtimeID: creation.runtimeID, conversationID: creation.conversationID)
-            apply(result)
+            apply(result, requestedAt: requestedAt)
         }
         if let choices = creation.choices {
             let context = ComposerContextKey.conversation(ownerId: creation.ownerID, conversationId: creation.conversationID)
@@ -514,8 +572,9 @@ extension ConversationModel {
                 if isNew, let input = sharedInput,
                    let creation = state.creations.first(where: { creation in creation.inputId == input.id && creation.ownerId == owner && creation.revision > baseline && state.bindings.contains { $0.inputId == input.id && $0.context == .conversation(ownerId: owner, conversationId: creation.conversationId) } }) {
                     composerLoaded = false
+                    let requestedAt = transcriptEpoch
                     let created = try await client.readConversation(peer, runtimeID: creation.runtimeId, conversationID: creation.conversationId)
-                    apply(created)
+                    apply(created, requestedAt: requestedAt)
                     preparedComposerTarget = nil
                     return
                 }

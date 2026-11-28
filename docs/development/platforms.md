@@ -14,6 +14,8 @@ svc run build-macos
 svc run reinstall-macos
 ```
 
+Mac 与 Windows 的 xURL 安装入口共用 [xURL 安装脚本](../../scripts/install-xurl.py)。安装器从同一固定 Git 提交编译 CLI、复制许可证并写入版本记录。
+
 构建脚本先生成 UniFFI 模块，再用 SwiftPM 的 Xcode 后端构建本机架构产品，固定 macOS 15 部署底线。swift-markdown 0.9.0 的 manifest 需要 Swift 6.2 或以上工具链。应用与生成绑定目标各自启用 warnings-as-errors，依赖保持其声明的 Swift 语言模式；不构建或执行依赖的测试 targets。生成文件只放在 `target/` 下，未变化的文件保留mtime；开发使用Swift debug，发布显式release。
 
 RelayKit 接入还需要 Go 工具链，桥接模块版本及依赖由 `packages/ai-provider/relaykit-bridge/go.mod` 与 `go.sum` 固定，Go 最低版本以该模块声明为准。Go 转换库作为同进程依赖链接，不启动独立网关后台。bundle 的 `ThirdParty/RelayKit` 保留上游、Go runtime 和传递依赖许可证以及模块锁文件；构建 manifest 记录 Go 版本、两个模块文件的摘要、源码提交、UniFFI 版本、类型接口和配置 schema。

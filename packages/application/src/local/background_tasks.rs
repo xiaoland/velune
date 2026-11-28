@@ -108,10 +108,9 @@ mod tests {
                 "transcriptTurns":[],"transcriptItems":[],"transcriptOutline":[],"transcriptMessageIdentities":[],
                 "actions":{"canSend":true,"canCancel":false,"canSwitch":true}
             })).unwrap();
-            session::Session {
-                active_state: ActiveState::History(Box::new(snapshot.into())),
-                ..Default::default()
-            }
+            let mut session = session::Session::default();
+            session.set_history(snapshot);
+            session
         }
         app.runtime.session = history("focused");
         app.runtime.parked.push(history("parked"));

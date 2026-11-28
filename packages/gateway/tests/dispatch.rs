@@ -871,6 +871,30 @@ async fn request_parameters_merge_into_the_upstream_body() {
     assert_eq!(requests[0]["service_tier"], "priority");
 }
 
+#[test]
+fn model_parameters_cannot_shadow_route_owned_fields() {
+    for key in [
+        "model",
+        "stream",
+        "previous_response_id",
+        "conversation",
+        "cachedContent",
+        "cached_content",
+        "continuationToken",
+        "continuation_token",
+    ] {
+        let mut config = gateway_config(Api::Responses, "http://127.0.0.1:1");
+        config.providers[0].models[0]
+            .request_parameters
+            .insert(key.into(), "configured override".into());
+        assert_eq!(
+            config.validate(),
+            Err("model request parameters cannot set routing, streaming, or continuation fields"),
+            "{key} must be rejected before any routing begins",
+        );
+    }
+}
+
 #[tokio::test]
 async fn delivers_upstream_json_and_streams_unchanged() {
     for protocol in Api::ALL {

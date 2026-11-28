@@ -723,8 +723,7 @@ impl CoreRuntime {
             let invalidated = source_changed
                 || core
                     .session
-                    .execution_runtime_id
-                    .as_ref()
+                    .execution_runtime_id()
                     .is_some_and(|id| changed(id, true));
             if invalidated && core.preserves_connection_configuration() {
                 return Ok(());

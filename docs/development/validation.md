@@ -76,6 +76,8 @@ cargo test --locked --workspace
 
 平台代码的第一道检查是各平台构建本身（Swift、Kotlin、C# 均把警告视为错误）。`bash scripts/check-token-units.sh` 用同一组样例检查 Mac 与 Windows 的 token 数量格式化与解析。Mac 的额度呈现检查需要优化开发包，先运行 `svc run build-macos-release`，再运行 `bash scripts/check-account-quota.sh`。
 
+[PR 原生消费者检查](../../.github/workflows/pr-native-consumers.yml)比较 PR 合并候选与目标提交，并复用构建回执的源码输入范围。选中的平台从本次候选重新生成 Swift、Kotlin 或 C# 绑定，再编译实际应用。iOS 模拟器与 Android debug APK 使用纯控制端绑定。共享构建输入变化覆盖四端，平台专用输入只触发相关构建。纯文档变更运行路径判断与结果汇总。汇总检查名为 `native consumers`，发布包签名和运行时、界面验收仍走各自入口。
+
 Mac 的程序化检查只编入定义 `VELUNE_DEV_CHECKS` 的开发构建，由 `app/mac/Checks/` 中的分派表按生命周期阶段启动，日常构建不含这些入口。界面证据分为四种覆盖范围，记录时写明属于哪一种：离屏渲染只证明布局与绘制；本地控件调用证明模型与控件连接，不经过事件分发；系统键盘输入经过真实的事件与焦点链；AX 查询证明辅助功能树的结构与顺序。前一种不能代替后一种的结论。Apple 原生控件的系统明暗适配不另设完整验收矩阵，自绘 logo、固定色位图、阴影与边框则按所在背景核对可见性。
 
 资源同步验证使用隔离 HOME 和实际安装的 Harness，确认 Claude Code、Codex、Pi 能识别写入的内容，不调用模型或读取真实配置。定时任务接管使用合成任务，不启用或运行真实任务；真实联调另按数据授权边界执行。界面检查使用隔离的应用实例或 [Mac 预览模式](platforms.md#mac-构建)；Mac 自动化的进程、焦点和前台操作约束见[平台 Agent 指引](../../app/mac/AGENTS.md)。
