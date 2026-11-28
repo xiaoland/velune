@@ -966,7 +966,7 @@ enum ForkConversationOpening: String, CaseIterable, Identifiable {
     /// sheet is actually on screen. Split panes are independently visible;
     /// an unselected tab in either pane is not.
     static func isConversationStoreVisible(_ store: ConversationStore) -> Bool {
-        guard !NSApp.isHidden else { return false }
+        guard NSApp?.isHidden == false else { return false }
         return openWindows.contains { model in
             if model.detached.hasVisibleComposerWindow(for: store) { return true }
             guard let native = model.window, native.isVisible, native.isOnActiveSpace, !native.isMiniaturized else { return false }

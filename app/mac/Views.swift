@@ -778,10 +778,11 @@ struct ProviderEditor: View {
                                 .id(models[index].id)
                             Section {
                                 let link = ModelAutoCompactionLink(store: store, target: modelAutoCompactionTarget(models[index]))
-                                link.id(models[index].id)
+                                link
 #if VELUNE_DEV_CHECKS
                                     .onAppear { observeModelCompactionForCheck?(link.target) }
 #endif
+                                    .id(models[index].id)
                             }
                             Section { Button("保存为模型模板…") { let model = models[index].definition; templateDraft = ModelTemplate(id: "", name: model.displayName, suggestedProviderModelId: model.providerModelId, nickname: model.nickname, icon: model.icon, contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens, reasoningLevels: model.reasoningLevels) }.disabled(!models[index].valid) }
                         }

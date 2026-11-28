@@ -84,9 +84,13 @@ import ObjectiveC
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         safe()
     }
-    func wait(line: UInt = #line, _ ready: () -> Bool) {
+    func wait(polling presented: ConversationStore? = nil, line: UInt = #line, _ ready: () -> Bool) {
         let end = Date().addingTimeInterval(20)
-        while !ready(), Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)); safe() }
+        while !ready(), Date() < end {
+            presented?.checkAccess.pollProjection()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            safe()
+        }
         precondition(ready(), "离屏编辑器检查超时", line: line)
     }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
@@ -150,7 +154,7 @@ import ObjectiveC
     let workspace = ConversationWindowModel(application: device, kind: .workspace)
     let source = workspace.focused
     source.store.start(loadFirstConversation: false, opening: conversationID)
-    wait { source.store.loadedConversationID == conversationID && !source.store.isLoading && source.store.editability(of: messageID)?.inPlace == true && source.store.nextTurn != nil }
+    wait(polling: source.store) { source.store.loadedConversationID == conversationID && !source.store.isLoading && source.store.editability(of: messageID)?.inPlace == true && source.store.nextTurn != nil }
     let ordinary = workspace.composer(for: source)
     let draftFile = home.appendingPathComponent("ordinary-draft.txt")
     try! Data("ordinary draft attachment".utf8).write(to: draftFile)
@@ -182,7 +186,7 @@ import ObjectiveC
         let session = MessageEditingSession(source: source.store, request: .init(message: source.store.message(id: messageID)!, conversationID: conversationID,
             inPlace: eligibility.inPlace, isLast: source.store.isLastUserMessage(messageID), revision: eligibility.revision), presentation: presentation)
         session.start()
-        wait { session.store.loadedConversationID == conversationID && !session.store.isLoading && session.next != nil && session.store.editability(of: messageID) != nil }
+        wait(polling: session.store) { session.store.loadedConversationID == conversationID && !session.store.isLoading && session.next != nil && session.store.editability(of: messageID) != nil }
         return session
     }
     // A captured initial control check may offer fork-only while this private
@@ -195,7 +199,7 @@ import ObjectiveC
         precondition(result.placement == .fork)
         if explicitFork { result.placement = .fork }
         result.start()
-        wait { result.store.editability(of: messageID)?.inPlace == true && !result.store.isLoading }
+        wait(polling: result.store) { result.store.editability(of: messageID)?.inPlace == true && !result.store.isLoading }
         return result
     }
     let untouchedDefault = preparingSession(explicitFork: false)
@@ -213,7 +217,7 @@ import ObjectiveC
     latest.start()
     wait { latest.store.loadedConversationID == conversationID && !latest.store.isLoading }
     latest.loadTargetCatalog()
-    wait { latest.canSubmit }
+    wait(polling: latest.store) { latest.canSubmit }
     precondition(latest.placement == .inPlace && latest.needsPlacement && latest.target.submitTitle == "替换并发送" && !latest.historyChanged,
                  "最后一条消息必须明确默认原会话，并保留切换新会话的入口；placement=\(String(describing: latest.placement)), changed=\(latest.historyChanged)")
     let latestHost = capture(MessageEditorView(session: latest, window: workspace, source: source).applicationAppearance(),
@@ -249,7 +253,7 @@ import ObjectiveC
         branch.loadTargetCatalog()
         let chosen = ModelSelection.native(providerId: "openai", modelId: "synthetic-editor-model")
         branch.target.chooseModel(chosen)
-        wait { branch.canSubmit }
+        wait(polling: branch.store) { branch.canSubmit }
         branch.send(in: workspace)
         wait { FileManager.default.fileExists(atPath: marker.path) || branch.failure != nil }
         precondition(branch.failure == nil, branch.failure ?? "分叉编辑未到达合成执行端")
@@ -372,7 +376,7 @@ import ObjectiveC
         _ = try transport.sendTurn(sourceRuntimeID: runtimeID, conversationID: conversationID, targetRuntimeID: runtimeID, selection: nil,
             turn: ComposedTurn(text: "SECOND CONCURRENT MESSAGE", effort: nil, permissionMode: nil, attachments: []))
     } catch { fatalError("第二次合成写入失败：\(error.localizedDescription)") }
-    wait { edit.store.checkAccess.pollProjection(); return edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
+    wait(polling: edit.store) { edit.store.editability(of: messageID)?.revision != confirmedRevision && !edit.store.isGenerating }
     edit.send(in: workspace)
     precondition(edit.confirmationRevision != confirmedRevision && !edit.submitting && !closed,
                  "再次变化必须再次确认，不能无条件覆盖")
@@ -404,7 +408,7 @@ import ObjectiveC
         fresh.send(in: workspace)
     }
     wait { closed }
-    wait { source.store.checkAccess.pollProjection(); return source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
+    wait(polling: source.store) { source.store.transcript.rows.contains { $0.message.blocks.contains { if case .text(let text) = $0 { text == "OFFSCREEN EDITED MESSAGE" } else { false } } } == true && !source.store.isGenerating }
     precondition(source.store.loadedConversationID == conversationID)
     wait { source.store.nextTurn?.runtimeId == runtimeID }
     precondition((source.store.keptComposerChoices.choices[runtimeID] ?? TurnChoice()) == (fresh.choices.choices[runtimeID] ?? TurnChoice()),

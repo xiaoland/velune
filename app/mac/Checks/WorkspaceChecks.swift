@@ -45,15 +45,13 @@ import AppKit
         precondition(error == nil && restored !== original && reopened.id == id && reopened.kind == kind && reopened.device == device
                      && restored.identifier?.rawValue == "velune.window.\(id)" && !restored.isVisible)
         restored.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        // A hidden window need not mount its SwiftUI content on every host.
-        // Report that lifecycle boundary; whenever mounted its real onAppear
-        // must restore this window's journal, including its pane identity.
-        if reopened.model.acceptsWorkspacePersistence {
-            precondition(reopened.model.focusedPaneID == saved.focused && reopened.model.savedLayout.panes == saved.panes,
-                         "窗口内容启动后必须找回自身 journal 的 pane 和 tab")
+        let deadline = Date().addingTimeInterval(3)
+        while !reopened.model.acceptsWorkspacePersistence, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
-        print("Restored hidden \(kind.rawValue) content mounted: \(reopened.model.acceptsWorkspacePersistence)")
+        precondition(reopened.model.acceptsWorkspacePersistence && reopened.model.focusedPaneID == saved.focused
+                     && reopened.model.savedLayout.panes == saved.panes,
+                     "隐藏窗口内容必须经真实 onAppear 找回自身 journal 的 pane 和 tab")
         let (same, secondError) = restore(archive.encodedData)
         precondition(same === restored && secondError == nil && manager.controllers.count == 1)
         restored.close()

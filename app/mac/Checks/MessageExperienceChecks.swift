@@ -939,15 +939,21 @@ import VeluneBindings
     for row in [user, answer] {
         let label = timeLabel(row)!
         let buttons = row.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-        precondition(!buttons.isEmpty && label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
-        let entered = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
-        row.mouseEntered(with: entered)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
-        precondition(label.alphaValue == 1 && buttons.allSatisfy { $0.alphaValue == 1 })
-        let exited = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
-        row.mouseExited(with: exited)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
-        precondition(label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
+        let controls: [NSView] = [label] + buttons
+        precondition(!buttons.isEmpty && controls.allSatisfy { $0.alphaValue == 0 })
+        for shown in [true, false] {
+            let event = NSEvent.enterExitEvent(with: shown ? .mouseEntered : .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: host.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+            if shown { row.mouseEntered(with: event) } else { row.mouseExited(with: event) }
+            let expected: CGFloat = shown ? 1 : 0
+            let end = Date().addingTimeInterval(2)
+            while controls.contains(where: { $0.alphaValue != expected }), Date() < end {
+                host.displayIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(controls.allSatisfy { $0.alphaValue == expected },
+                "hover \(row.rowID ?? "nil") shown=\(shown) controls=\(controls.map { (String(describing: type(of: $0)), $0.alphaValue) })")
+        }
     }
     let creationTimes = descendants(scroll).compactMap { $0 as? TranscriptTextView }.filter { $0.accessibilityIdentifier() == "message-created-at" && !$0.isHidden }
     precondition(creationTimes.count == 2, "仅真实用户消息和最终回复拥有创建时间")

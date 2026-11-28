@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import ObjectiveC
+import Vision
 
 @MainActor private final class SidebarToolbarCheckWindow: NSWindow {
     override var canBecomeKey: Bool { false }
@@ -63,25 +64,20 @@ import ObjectiveC
     }
     func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.08)); safe() }
     func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-    func accessibilityText(_ root: Any, labels: Bool) -> Set<String> {
+    func identifiers(_ root: Any) -> Set<String> {
         var visited = Set<ObjectIdentifier>(), result = Set<String>()
         func visit(_ value: Any) {
-            if !labels, let view = value as? NSView, let id = view.identifier?.rawValue { result.insert(id) }
+            if let view = value as? NSView, let id = view.identifier?.rawValue { result.insert(id) }
             guard let ax = value as? NSAccessibilityProtocol else { return }
             let object = value as AnyObject
             guard visited.insert(ObjectIdentifier(object)).inserted else { return }
-            if labels {
-                for value in [ax.accessibilityLabel(), ax.accessibilityTitle(), ax.accessibilityValue() as? String].compactMap({ $0 }) {
-                    result.insert(value)
-                }
-            } else if let id = ax.accessibilityIdentifier(), !id.isEmpty { result.insert(id) }
+            if let id = ax.accessibilityIdentifier(), !id.isEmpty { result.insert(id) }
             for child in ax.accessibilityChildren() ?? [] { visit(child) }
             if let view = value as? NSView { for child in view.subviews { visit(child) } }
         }
         visit(root)
         return result
     }
-    func identifiers(_ root: Any) -> Set<String> { accessibilityText(root, labels: false) }
     let preferences = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var synthetic = preferences
     synthetic["toolbarButtonsHidden"] = [String]()
@@ -135,6 +131,7 @@ import ObjectiveC
                 require(abs(tabScroll.contentSize.height - tabScroll.frame.height) < 0.5,
                         "tab bar clip height must match scroll view height: \(name)")
             }
+            var checkHideList: (() -> Void)?
             let items = toolbar.items
             let separators = items.enumerated().compactMap { index, item -> (Int, NSTrackingSeparatorToolbarItem)? in
                 guard let separator = item as? NSTrackingSeparatorToolbarItem, separator.splitView === outer, separator.dividerIndex == 0 else { return nil }
@@ -172,9 +169,6 @@ import ObjectiveC
                     require(header.contains { $0 is NSPopUpButton } && header.contains { !($0 is NSPopUpButton) },
                             "missing native actions beside the search field: \(name)")
                     if mode == "shared" {
-                        let labels = accessibilityText(column, labels: true)
-                        require(["会话列表", "会话列表的位置", "隐藏会话列表"].allSatisfy(labels.contains),
-                                "shared list must expose its title, move menu and hide button: \(name), \(labels.sorted())")
                         let headerRow = buttons.filter { button in
                             let rect = button.convert(button.bounds, to: column)
                             let distanceAboveSearch = column.isFlipped ? searchRect.midY - rect.midY : rect.midY - searchRect.midY
@@ -182,6 +176,28 @@ import ObjectiveC
                         }
                         require(headerRow.filter { $0 is NSPopUpButton }.count == 1 && headerRow.filter { !($0 is NSPopUpButton) }.count == 1,
                                 "shared list needs its own two actions above search: \(name)")
+                        let popup = headerRow.compactMap { $0 as? NSPopUpButton }.first!
+                        let hide = headerRow.first { !($0 is NSPopUpButton) }!
+                        let menu = popup.menu!
+                        menu.delegate?.menuNeedsUpdate?(menu)
+                        menu.update()
+                        let titles = menu.items.flatMap { item in [item.title] + (item.submenu?.items.map(\.title) ?? []) }
+                        require(titles.contains("停靠在右侧") && titles.contains("独立窗口"), "shared tool needs its placement commands: \(name), \(titles)")
+                        if !dark && requestedSidebarWidth == 240 {
+                            // Offscreen SwiftUI does not vend the static title to AX.
+                            // Read the actual text once from the already captured window.
+                            let title = VNRecognizeTextRequest()
+                            title.recognitionLanguages = ["zh-Hans"]
+                            title.regionOfInterest = CGRect(x: 0, y: 0.85, width: sidebarRect.width / nativeFrame.bounds.width, height: 0.15)
+                            try! VNImageRequestHandler(cgImage: drawing.cgImage!).perform([title])
+                            require(title.results?.contains { $0.topCandidates(1).first?.string == "会话列表" } == true, "shared list title missing: \(name)")
+                            checkHideList = {
+                                let initial = model.tools
+                                hide.performClick(nil)
+                                require(!model.tools.isOpen(.list) && model.tools.isOpen(.outline), "hide must remove only the list from its shared dock")
+                                model.tools = initial
+                            }
+                        }
                         for button in headerRow {
                             let rect = button.convert(button.bounds, to: column)
                             require(!rect.isEmpty && column.bounds.contains(rect), "shared tool action outside column: \(name), \(rect)")
@@ -212,6 +228,7 @@ import ObjectiveC
                              "sidebarFrame": NSStringFromRect(sidebarRect),
                              "visible": window.isVisible, "key": window.isKeyWindow, "main": window.isMainWindow])
             try! JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent("sidebar-toolbar-check.json"))
+            checkHideList?()
             safe()
         }
         let tone = dark ? "dark" : "light"
