@@ -320,7 +320,12 @@ fn same_wire_request_id_cannot_identify_both_a_permission_and_a_form() {
         let (mut client, home) = synthetic_client(mode);
         client.create(&home, "synthetic-acp").unwrap();
         client.send("question", &[]).unwrap();
-        let error = poll_until(&mut client, |_| false).unwrap_err();
+        let result = poll_until(&mut client, |client| {
+            client.snapshot().unwrap().pending_interactions.len() > 1
+        });
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("{mode}: published two interactions for one wire ID"));
         assert!(
             error.to_string().contains("ACP Agent 请求身份重复"),
             "{mode}: {error}"
