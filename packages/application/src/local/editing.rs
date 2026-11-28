@@ -38,19 +38,22 @@ struct EditRevision {
     digest: String,
 }
 
-impl EditRevision {
-    fn parse(token: &str) -> Option<Self> {
-        let (retained, rest) = token.split_once(':')?;
-        let (activity, digest) = rest.split_once(':')?;
+impl std::str::FromStr for EditRevision {
+    type Err = RuntimeError;
+
+    fn from_str(token: &str) -> Result<Self, Self::Err> {
+        let invalid = || edit_history_changed("edit_baseline");
+        let (retained, rest) = token.split_once(':').ok_or_else(invalid)?;
+        let (activity, digest) = rest.split_once(':').ok_or_else(invalid)?;
         if digest.len() != 64
             || !digest
                 .bytes()
                 .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         {
-            return None;
+            return Err(invalid());
         }
-        Some(Self {
-            retained: retained.parse().ok()?,
+        Ok(Self {
+            retained: retained.parse().map_err(|_| invalid())?,
             activity: activity.into(),
             digest: digest.into(),
         })
@@ -721,8 +724,7 @@ impl CoreRuntime {
                 "编辑缺少会话版本，请重新打开消息编辑后再发送",
             ));
         };
-        let expected =
-            EditRevision::parse(expected).ok_or_else(|| edit_history_changed("edit_baseline"))?;
+        let expected = expected.parse()?;
         self.check_edit_baseline(current, &expected)?;
         Ok(expected)
     }
