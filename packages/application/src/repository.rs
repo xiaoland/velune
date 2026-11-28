@@ -804,7 +804,7 @@ mod persistence_version_tests {
         nested["conversationBrowserPreferences"]["future"] = "retain".into();
         cases.push((
             serde_json::to_vec_pretty(&nested).unwrap(),
-            "unknown field `future`".into(),
+            "普通配置含当前 schema 未知字段；原文件保留".into(),
         ));
         let mut unknown = valid;
         unknown["unknown"] = "preserve".into();

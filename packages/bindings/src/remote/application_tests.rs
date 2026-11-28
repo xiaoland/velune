@@ -227,14 +227,11 @@ fn preparation_revision_survives_network_replacement_but_not_owner_replacement()
     let proxy = fixture.connect();
     let remote = proxy.remote_backend().unwrap();
     let before = remote.context().unwrap();
-    let saved = fixture
-        .client
-        .owner
-        .service
-        .network_state()
-        .unwrap()
-        .saved
-        .unwrap();
+    let network_before = fixture.client.owner.service.network_state().unwrap();
+    let saved = network_before.saved.unwrap();
+    // Reapplying identical settings replaces the live generation but keeps its
+    // saved revision. Change one field so this fixture also proves the CAS write.
+    let request_timeout_ms = saved.request_timeout_ms + 1;
     let applied = fixture
         .client
         .owner
@@ -252,7 +249,7 @@ fn preparation_revision_survives_network_replacement_but_not_owner_replacement()
                         local_discovery: saved.local_discovery,
                         path_policy: saved.path_policy,
                         bind_addresses: saved.bind_addresses.clone(),
-                        request_timeout: std::time::Duration::from_millis(saved.request_timeout_ms),
+                        request_timeout: std::time::Duration::from_millis(request_timeout_ms),
                         relay_credentials: Vec::new(),
                     },
                     credentials: saved
@@ -272,7 +269,15 @@ fn preparation_revision_survives_network_replacement_but_not_owner_replacement()
         velune_remote::NetworkApplicationPhase::Applied
     ));
     assert_eq!(applied.applied_revision, Some(saved.revision + 1));
-    assert_eq!(applied.saved.unwrap().revision, saved.revision + 1);
+    assert!(
+        applied
+            .generation
+            .zip(network_before.generation)
+            .is_some_and(|(after, before)| after > before)
+    );
+    let applied_settings = applied.saved.unwrap();
+    assert_eq!(applied_settings.revision, saved.revision + 1);
+    assert_eq!(applied_settings.request_timeout_ms, request_timeout_ms);
     fixture
         .client
         .owner
