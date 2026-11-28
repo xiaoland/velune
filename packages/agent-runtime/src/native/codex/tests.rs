@@ -184,6 +184,21 @@ while True:
         assert_eq!(opened.conversation.id, "codex:thread");
         assert_eq!(opened.conversation.created_at_unix_ms, Some(12_000));
     }
+    // Status can expose a child in work() before its turn/started frame arrives.
+    fn wait_for_child_turns(&mut self) {
+        self.poll_until(|session| {
+            [("child-a", "turn-child-a"), ("child-b", "turn-child-b")]
+                .iter()
+                .all(|(child, turn)| {
+                    session
+                        .codex
+                        .threads
+                        .get(*child)
+                        .and_then(|entry| entry.turn.as_deref())
+                        == Some(*turn)
+                })
+        });
+    }
     fn wire(&self) -> Vec<Value> {
         std::fs::read_to_string(self.root.join("wire"))
             .unwrap()
@@ -302,8 +317,15 @@ impl Drop for CommandFixture {
 #[test]
 fn codex_integration_late_reply_fact_survives_consumed_failure_receipt() {
     use std::time::{Duration, Instant};
-    let mut fixture = CommandFixture::new("hold");
+    let mut fixture = CommandFixture::new("reject");
     fixture.start();
+    // Receipt polling is enabled by the first admitted command. Normal synchronous
+    // creation alone leaves the session in its synchronous polling mode.
+    let first = fixture.enqueue(CodexCommand::Send(CommandFixture::input("rejected")));
+    fixture.poll_until(|session| !session.codex.commands.pending());
+    let rejected = fixture.session.take_codex_receipt().unwrap();
+    assert_eq!(rejected.ticket, *first);
+    assert!(matches!(rejected.delivery, CodexDelivery::Rejected { .. }));
     let d = Instant::now() - Duration::from_millis(1);
     let (sender, write) = crate::transport::WriteReceipt::test_pending(d);
     let ticket = fixture.session.codex_install_operation(
@@ -346,7 +368,7 @@ fn codex_commands_child_interrupts_keep_approvals_live_and_preserve_partial_deli
     for mode in ["children-reject", "children-disconnect", "children-hold"] {
         let mut f = CommandFixture::new(mode);
         f.start();
-        f.poll_until(|s| s.work().unwrap().len() == 2);
+        f.wait_for_child_turns();
         let ticket = f
             .session
             .enqueue_codex_command(
@@ -433,7 +455,7 @@ fn codex_commands_child_interrupts_keep_approvals_live_and_preserve_partial_deli
 fn codex_commands_expired_send_blocks_longer_lived_child_interrupts() {
     let mut f = CommandFixture::new("children-deadline");
     f.start();
-    f.poll_until(|s| s.work().unwrap().len() == 2);
+    f.wait_for_child_turns();
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
     let send = f
         .session
@@ -481,7 +503,7 @@ fn codex_commands_valid_ack_before_malformed_record_blocks_child_dispatch_and_ke
     // request triggered while processing its successful send acknowledgement.
     f.session.codex.title.eligible = true;
     f.session.snapshot.as_mut().unwrap().conversation.title = ConversationTitle::Untitled;
-    f.poll_until(|s| s.work().unwrap().len() == 2);
+    f.wait_for_child_turns();
     let send = f.enqueue(CodexCommand::Send(CommandFixture::input("once")));
     let stop = f.enqueue(CodexCommand::StopBackground);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -534,7 +556,7 @@ fn codex_commands_stop_child_accepts_only_the_runtime_prefix_published_by_work()
     for context in ["native", "set", "restore"] {
         let mut f = CommandFixture::new("children-reject");
         f.start();
-        f.poll_until(|s| s.work().unwrap().len() == 2);
+        f.wait_for_child_turns();
         let prefix = if context == "native" {
             "codex"
         } else {

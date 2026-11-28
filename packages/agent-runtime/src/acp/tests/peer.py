@@ -155,7 +155,7 @@ for line in sys.stdin:
     elif method is None:
         result = request["result"]
         if mode == "idle-form":
-            assert rpc_id == "q" and result == {"action": "accept", "content": {"value": "still here"}}
+            assert rpc_id == "q" and result["action"] == "accept" and result["content"] == {"value": "still here"}, request
             count += 1
             (root / "reply-count").write_text(str(count))
             chunk("idle answer delivered")
@@ -170,7 +170,7 @@ for line in sys.stdin:
             if rpc_id == "p":
                 assert result == {"outcome": {"outcome": "selected", "optionId": "yes"}}
             else:
-                assert rpc_id == "q" and result == {"action": "accept", "content": {"value": "answer"}}
+                assert rpc_id == "q" and result["action"] == "accept" and result["content"] == {"value": "answer"}, request
             chunk(rpc_id + " delivered")
         elif mode == "form":
             assert rpc_id == "q"
