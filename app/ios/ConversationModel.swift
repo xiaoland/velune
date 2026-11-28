@@ -294,10 +294,14 @@ final class ConversationModel: ObservableObject {
             }
             guard let current = self.snapshot else { throw MobileError.missingConversation }
             let turn = ComposedTurn(text: text, effort: next?.effort, permissionMode: next?.permissionMode?.id, attachments: submittedContent.attachments.map { "composer:" + $0.id })
-            self.apply(try await self.client.application(self.peer, operation: .send) {
-                try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
-                    targetRuntimeId: runtime, selection: selection, turn: turn)
-            })
+            do {
+                self.apply(try await self.client.application(self.peer, operation: .send) {
+                    try $0.sendTurn(sourceRuntimeId: current.contextRuntimeId, conversationId: current.conversation.id,
+                        targetRuntimeId: runtime, selection: selection, turn: turn)
+                })
+            } catch BindingError.Diagnostic(_, _, "message_delivery_accepted", _, _) {
+                // The conversation poll will fetch the missing snapshot.
+            }
             if self.sharedInput?.id == input.id, self.contentGeneration == submittedGeneration, self.composerContent == submittedContent {
                 self.applyingComposer = true
                 self.draft = ""; self.inputAttachments = []; self.composerChoiceEdited = false

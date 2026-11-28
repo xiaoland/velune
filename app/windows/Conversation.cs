@@ -294,11 +294,10 @@ sealed partial class Conversation
         Accepted = false;
         usersBeforeSending = UserMessages();
         Notify();
-        DeliveredSnapshot? created = null;
         try
         {
             if (existing == null) {
-                created = (await Call(NativeOperation.ConversationWrite, application => application.CreateConversation(runtimeID, cwd, selection))).Snapshot
+                var created = (await Call(NativeOperation.ConversationWrite, application => application.CreateConversation(runtimeID, cwd, selection))).Snapshot
                     ?? throw new InvalidOperationException("设备没有返回新会话");
                 if (inputId == null || composerOwner == null) throw new InvalidOperationException("输入身份尚未恢复");
                 pendingCreation = new(inputId, composerOwner, created.Conversation.RuntimeId, created.Conversation.Id, targetChoices);
@@ -309,24 +308,31 @@ sealed partial class Conversation
                 existing = (created.ContextRuntimeId, created.Conversation.Id);
             }
             var (source, id) = existing.Value;
-            var sent = await Call(NativeOperation.Send, application => application.SendTurn(source, id, runtimeID, selection, turn));
-            if (created != null)
+            SnapshotResult? result = null;
+            try
             {
-                Merge(created);
-                // The choices made before the first message are the created conversation's.
-                CacheComposer(); if (oldCache != ComposerCachePath && File.Exists(oldCache)) File.Delete(oldCache);
+                result = await Call(NativeOperation.Send, application => application.SendTurn(source, id, runtimeID, selection, turn));
+            }
+            catch (BindingException.Diagnostic failure) when (failure.code == "message_delivery_accepted")
+            {
+                // The conversation poll will fetch the missing snapshot.
             }
             Accepted = true;
-            this.sent = true;
-            Apply(sent.Snapshot);
+            sent = true;
+            Apply(result?.Snapshot);
+            if (UserMessages() > usersBeforeSending) Sending = null;
             return true;
         }
         catch (Exception failure)
         {
+            if (Accepted)
+            {
+                Problems.Failing(ReadKey, "读取会话「" + Title + "」", failure, Device);
+                return true;
+            }
             Sending = null;
             // What was sent goes back to the composer, ahead of anything attached since.
             Attached.InsertRange(0, sentAttachments);
-            if (created != null && pendingCreation == null) Merge(created);
             ComposerChanged();
             Problems.Report("发送消息", failure, Device);
             return false;
