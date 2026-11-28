@@ -79,12 +79,12 @@ fn apply_promotion(
         conversation_id: conversation_id.clone(),
     };
     validate_context(&context)?;
+    if LocalConversation::of(&conversation_id).is_some() {
+        return Err(Error::invalid(
+            "composer promotion requires a native identity",
+        ));
+    }
     if let Some(choices) = &choices {
-        if LocalConversation::of(&conversation_id).is_some() {
-            return Err(Error::invalid(
-                "composer promotion requires a native identity",
-            ));
-        }
         validate_choices(choices)?;
     }
     if runtime_id.is_empty() {
@@ -132,9 +132,7 @@ fn apply_promotion(
         next.state.targets.push(ComposerTarget {
             context: context.clone(),
             revision: 1,
-            choices: seed
-                .filter(|seed| *seed != ComposerTargetChoices::default())
-                .unwrap_or_else(fallback),
+            choices: seed.unwrap_or_else(fallback),
         });
     }
     if let Some(binding) = next

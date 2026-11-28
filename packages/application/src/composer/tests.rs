@@ -93,6 +93,19 @@ fn blank_tab_contexts_keep_independent_content_and_choices_after_promotion() {
     assert_eq!(store.stored.state.revision, before);
 
     promotion.input_id = inputs[0].clone();
+    assert!(
+        store
+            .operate(ComposerInputOperation::PromoteWithTarget {
+                promotion: ComposerPromotion {
+                    conversation_id: contexts[1].conversation_id().to_owned(),
+                    choices: None,
+                    ..promotion.clone()
+                }
+            })
+            .is_err(),
+        "a draft cannot be the destination of a native handoff"
+    );
+    assert_eq!(store.stored.state.revision, before);
     let committed = store
         .operate(ComposerInputOperation::PromoteWithTarget {
             promotion: promotion.clone(),
@@ -112,9 +125,29 @@ fn blank_tab_contexts_keep_independent_content_and_choices_after_promotion() {
     promotion.choices = None;
     assert_eq!(
         store
-            .operate(ComposerInputOperation::PromoteWithTarget { promotion })
+            .operate(ComposerInputOperation::PromoteWithTarget {
+                promotion: promotion.clone(),
+            })
             .unwrap(),
         committed
+    );
+    let default_destination = ComposerContextKey::Conversation {
+        owner_id,
+        conversation_id: "native-with-default".into(),
+    };
+    store
+        .operate(ComposerInputOperation::PromoteWithTarget {
+            promotion: ComposerPromotion {
+                conversation_id: default_destination.conversation_id().to_owned(),
+                choices: Some(ComposerTargetChoices::default()),
+                ..promotion
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        store.target(&default_destination).unwrap().choices,
+        ComposerTargetChoices::default(),
+        "an explicit unedited seed continues to follow runtime defaults"
     );
     drop(store);
     let restored = ComposerInputs::open(&home).unwrap();
