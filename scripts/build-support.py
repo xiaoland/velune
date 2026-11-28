@@ -184,19 +184,34 @@ def bindings(args, verify=False):
         print(f"绑定已更新：{directory}")
 
 
-def source_snapshot(platform):
-    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
+def source_inputs(platform):
+    paths = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "version.txt", "LICENSE", ".cargo", "packages", "tools", "third-party", f"app/{platform}",
              "scripts/build-support.py", "scripts/build_lock.py", "scripts/android-licenses.py", "scripts/version.py"]
+    if platform in ("macos", "windows"):
+        paths += ["THIRD_PARTY_NOTICES.md", "scripts/install-runtime-support.sh"]
     if platform == "macos":
         paths = ["app/mac" if p == "app/macos" else p for p in paths]
         paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
-                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c"]
+                  "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c", "scripts/install-xurl.sh"]
     elif platform == "windows":
-        paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1"]
+        paths += ["assets", "app/mac/Licenses", "scripts/build-windows.ps1", "scripts/render-windows-icon.ps1",
+                  "scripts/dotnet-licenses.py", "scripts/install-xurl.ps1"]
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
     elif platform == "android":
         paths += ["scripts/build-android.sh", "scripts/build-android-native.sh"]
+    return paths
+
+
+def is_build_input(relative):
+    return (
+        relative.rsplit("/", 1)[-1] not in ("README.md", "AGENTS.md", "AGENTS.local.md")
+        and relative not in ("app/windows/PARITY.md", "app/windows/TDD.md")
+    )
+
+
+def source_snapshot(platform):
+    paths = source_inputs(platform)
     if is_git_checkout():
         output = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", *paths], cwd=ROOT)
         selected = [os.fsdecode(name) for name in sorted(set(output.split(b"\0")) - {b""})]
@@ -219,7 +234,7 @@ def source_snapshot(platform):
     snapshot = {}
     for key in sorted(set(selected)):
         path = ROOT / key
-        if path.name in ("README.md", "AGENTS.md", "AGENTS.local.md"):
+        if not is_build_input(key):
             continue
         if path.is_symlink():
             info = path.lstat()
