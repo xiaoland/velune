@@ -32,6 +32,7 @@ class NativeInputsTests(unittest.TestCase):
             "app/android/gradle/wrapper/gradle-wrapper.properties": {"android"},
             "app/windows/packages.lock.json": {"windows"},
             "global.json": {"windows"},
+            ".gitattributes": {"windows"},
             "scripts/render-windows-icon.ps1": {"windows"},
             "scripts/install-runtime-support.sh": {"macos", "windows"},
             "scripts/install-xurl.py": {"macos", "windows"},

@@ -194,7 +194,7 @@ def source_inputs(platform):
         paths += ["Package.swift", "Package.resolved", "assets", "scripts/build-macos.sh", "scripts/macos_identity.py", "scripts/render-app-icon.swift",
                   "scripts/install-hapi-tunwg.sh", "scripts/hapi-relay-supervisor.c", "scripts/install-xurl.sh"]
     elif platform == "windows":
-        paths += ["global.json", "assets", "app/mac/Licenses", "scripts/build-windows.ps1", "scripts/render-windows-icon.ps1",
+        paths += ["global.json", ".gitattributes", "assets", "app/mac/Licenses", "scripts/build-windows.ps1", "scripts/render-windows-icon.ps1",
                   "scripts/dotnet-licenses.py", "scripts/install-xurl.ps1"]
     elif platform == "ios":
         paths += ["app/mac/Licenses", "app/mac/ClientTelemetry.swift", "app/mac/TelemetryExporters.swift", "app/mac/TelemetrySettings.swift", "app/mac/RemoteNetworkSettings.swift", "scripts/build-ios.sh", "scripts/build-ios-native.sh"]
