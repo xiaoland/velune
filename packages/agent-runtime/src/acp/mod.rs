@@ -15,13 +15,8 @@ use std::{
 };
 mod auto_compaction;
 mod config;
-mod port;
 mod projection;
 pub use config::{ConfigChoice, ConfigOption, ConfigValue};
-pub use port::{
-    AcpAdmissionError, AcpCommand, AcpNativeError, AcpReceipt, AcpReceiptStage, AcpTicket,
-};
-
 /// Arguments and environment belong to the execution target. Environment values may be secrets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
@@ -60,15 +55,12 @@ pub struct AuthMethod {
     pub description: Option<String>,
 }
 
-#[derive(Clone)]
 struct Permission {
-    parent_deadline: Option<Instant>,
     rpc_id: Value,
     options: Vec<String>,
 }
 
 struct Elicitation {
-    parent_deadline: Option<Instant>,
     rpc_id: Value,
     params: Value,
 }
@@ -95,9 +87,6 @@ pub struct Client {
     failed: bool,
     establishing: bool,
     initial_updates: crate::transport::DeferredRecords,
-    connection_generation: u64,
-    port: Option<port::Port>,
-    cleaned_up: bool,
     stream: Option<projection::Stream>,
     mcp_servers: Vec<Value>,
     _mcp: crate::mcp::Prepared,
@@ -109,9 +98,6 @@ pub struct Client {
     _snapshot_data: Vec<crate::creation::Retained<()>>,
     _interaction_data: BTreeMap<String, crate::creation::Retained<()>>,
     _initial_update_data: std::collections::VecDeque<crate::creation::DataRetention>,
-    // Last field: creation resource/HOME ownership outlives all native fields,
-    // MCP cleanup and the RPC owner, plus actual reader/writer jobs via Arc.
-    _creation_cleanup: Option<std::sync::Arc<crate::creation::ReadAccount>>,
 }
 
 impl Client {
@@ -164,9 +150,6 @@ impl Client {
             failed: false,
             establishing: false,
             initial_updates: Default::default(),
-            connection_generation: port::generation()?,
-            port: None,
-            cleaned_up: false,
             stream: None,
             mcp_servers: Vec::new(),
             _mcp: mcp,
@@ -177,7 +160,6 @@ impl Client {
             _snapshot_data: Vec::new(),
             _interaction_data: BTreeMap::new(),
             _initial_update_data: std::collections::VecDeque::new(),
-            _creation_cleanup: None,
         };
         let response: crate::creation::Retained<wire::InitializeResponse> = client.request(
             "initialize",
@@ -619,7 +601,6 @@ impl Client {
     }
 
     pub fn cancel(&mut self) -> Result<()> {
-        self.ensure_sync()?;
         if !self.turn_running() {
             return Ok(());
         }
@@ -640,7 +621,6 @@ impl Client {
     }
 
     pub fn reply(&mut self, interaction_id: &str, reply: RuntimeInteractionReply) -> Result<()> {
-        self.ensure_sync()?;
         if let Some(elicitation) = self.elicitations.get(interaction_id) {
             let result = crate::elicitation::reply(&elicitation.params, reply)?;
             if let Err(error) = self.rpc.respond(&elicitation.rpc_id, &result) {
@@ -687,9 +667,6 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Result<()> {
-        if self.port.is_some() {
-            return self.poll_port();
-        }
         if self.failed {
             return Ok(());
         }
@@ -719,7 +696,7 @@ impl Client {
     /// Gracefully close an idle session when supported, then always release its process.
     /// A busy or failed connection is aborted; Drop never performs a protocol request.
     pub fn shutdown(&mut self) -> Result<()> {
-        let outcome = if self.port.is_none() && !self.failed && !self.turn_running() {
+        let outcome = if !self.failed && !self.turn_running() {
             self.restore_auto_compaction().and_then(|()| {
                 if let Some(id) = self
                     .native_id
@@ -743,9 +720,7 @@ impl Client {
         } else {
             self.rpc.shutdown();
         }
-        self.settle_port_shutdown();
         self.failed = true;
-        self.cleaned_up = true;
         self.prompt_id = None;
         self.permissions.clear();
         self.elicitations.clear();
@@ -889,14 +864,7 @@ impl Client {
         if let Some(method) = record["method"].as_str() {
             let params = &record["params"];
             if method == "session/update" {
-                if self.establishing {
-                    self.initial_updates.push(record).map_err(|error| {
-                        Error::with_code(
-                            format!("ACP initial update buffer full: {error}"),
-                            "transport",
-                        )
-                    })?;
-                } else if params["sessionId"].as_str() == self.native_id.as_deref()
+                if params["sessionId"].as_str() == self.native_id.as_deref()
                     && self.native_id.is_some()
                 {
                     self.update(&params["update"])?;
@@ -913,7 +881,8 @@ impl Client {
                         .is_some_and(|snapshot| snapshot.run_state == RunState::Stopping)
                     || params["sessionId"].as_str() != self.native_id.as_deref()
                 {
-                    self.respond_auto(id, &json!({"outcome":{"outcome":"cancelled"}}))?;
+                    self.rpc
+                        .respond(id, &json!({"outcome":{"outcome":"cancelled"}}))?;
                 } else {
                     self.permission(id, params)?;
                 }
@@ -936,22 +905,16 @@ impl Client {
                     )
                     .collect();
                 for id in expired {
-                    if self.port.is_some() {
-                        self.cancel_one_interaction(&id)?;
-                    } else {
-                        self.reply(&id, RuntimeInteractionReply::Cancel)?;
-                    }
+                    self.reply(&id, RuntimeInteractionReply::Cancel)?;
                 }
             } else if let Some(id) = record.get("id") {
-                self.reject_auto(id, "Unsupported client capability")?;
+                self.rpc.reject(id, "Unsupported client capability")?;
             }
             return Ok(());
         }
         if self.prompt_id.is_some() && record["id"].as_u64() == self.prompt_id {
             self.prompt_id = None;
-            if self.port.is_none() {
-                self.cancel_permissions()?;
-            }
+            self.cancel_permissions()?;
             if let Some(error) = record.get("error") {
                 self.notice(&rpc_error(error)?.to_string());
                 self.finish(RunState::Failed);
@@ -978,17 +941,11 @@ impl Client {
                 }
                 self.finish(RunState::Idle);
             }
-            if self.port.is_some() {
-                self.cancel_permissions()?;
-            }
         }
         Ok(())
     }
 
     fn cancel_permissions(&mut self) -> Result<()> {
-        if self.port.is_some() {
-            return self.port_cancel_interactions();
-        }
         for permission in std::mem::take(&mut self.permissions).into_values() {
             self.rpc.respond(
                 &permission.rpc_id,
@@ -1002,6 +959,16 @@ impl Client {
         if let Some(snapshot) = &mut self.snapshot {
             snapshot.pending_interactions.clear();
             snapshot.revision += 1;
+        }
+        Ok(())
+    }
+
+    fn interaction_capacity(&self) -> Result<()> {
+        if self.permissions.len() + self.elicitations.len() >= 32 {
+            return Err(Error::with_code(
+                "ACP interaction capacity full",
+                "transport",
+            ));
         }
         Ok(())
     }
@@ -1038,17 +1005,18 @@ impl Client {
         // Auth/configuration forms have no conversation surface yet. Explicitly decline
         // their unsupported scope rather than blocking the synchronous control request.
         if !valid_scope {
-            return self.reject_auto(rpc_id, "Unsupported or inactive elicitation scope");
+            return self
+                .rpc
+                .reject(rpc_id, "Unsupported or inactive elicitation scope");
         }
         let questions = match crate::elicitation::questions(params) {
             Ok(questions) => questions,
-            Err(error) => return self.reject_auto(rpc_id, &error.to_string()),
+            Err(error) => return self.rpc.reject(rpc_id, &error.to_string()),
         };
         let id = self.next_id("elicitation");
         self.elicitations.insert(
             id.clone(),
             Elicitation {
-                parent_deadline: self.interaction_parent_deadline(),
                 rpc_id: rpc_id.clone(),
                 params: params.clone(),
             },
@@ -1091,7 +1059,6 @@ impl Client {
         self.permissions.insert(
             id.clone(),
             Permission {
-                parent_deadline: self.interaction_parent_deadline(),
                 rpc_id: rpc_id.clone(),
                 options: options.iter().map(|option| option.id.clone()).collect(),
             },
@@ -1116,17 +1083,7 @@ impl Client {
         Ok(())
     }
 
-    fn ensure_sync(&self) -> Result<()> {
-        if self.port.is_some() {
-            return Err(Error::with_code(
-                "ACP command port owns this connection; use typed enqueue",
-                "needs_preparation",
-            ));
-        }
-        Ok(())
-    }
     fn ensure_idle(&self) -> Result<()> {
-        self.ensure_sync()?;
         if self.failed {
             return Err(Error::new("ACP 连接已关闭，请重新连接"));
         }
@@ -1174,9 +1131,7 @@ impl Client {
         self._initial_update_data.clear();
     }
     fn fail(&mut self) {
-        if self.port.is_none() {
-            self.rpc.shutdown();
-        }
+        self.rpc.shutdown();
         self.failed = true;
         self.prompt_id = None;
         self.finish(RunState::Failed);
@@ -1188,12 +1143,10 @@ impl Client {
                 .executions
                 .finish((state == RunState::Failed).then_some(TurnOutcome::Failed));
         }
-        if self.port.is_none() {
-            self.permissions.clear();
-            self.elicitations.clear();
-            if let Some(snapshot) = &mut self.snapshot {
-                snapshot.pending_interactions.clear();
-            }
+        self.permissions.clear();
+        self.elicitations.clear();
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.pending_interactions.clear();
         }
         self.complete_messages();
         self.stream = None;
