@@ -72,30 +72,12 @@ import SwiftUI
         if commandTarget === controller.model { commandTarget = nil }
     }
 
-    /// After the system has reopened what it keeps: with no workspace window,
-    /// one opens on the latest workspace. Once, the first time windows are
-    /// AppKit's: SwiftUI's restoration state names scenes that no longer
-    /// exist, so when the system keeps windows the previous session's are
-    /// reopened from the journal instead.
+    /// AppKit identifies windows to reopen. If it has not restored a
+    /// workspace, open one default workspace with the latest saved content.
     func finishLaunching() {
-        guard !launched, let context else { return }
+        guard !launched, context != nil else { return }
         launched = true
         guard !controllers.contains(where: { $0.kind == .workspace }) else { return }
-        let migrationKey = "velune.appKitWorkspaceWindows"
-        let defaults = UserDefaults.standard
-        if !defaults.bool(forKey: migrationKey) {
-            defaults.set(true, forKey: migrationKey)
-            if defaults.bool(forKey: "NSQuitAlwaysKeepsWindows"), !context.store.isPreview {
-                // Each off the one before, so they do not open on top of each other.
-                var shown: NSWindow?
-                for window in context.store.windowWorkspaceJournal.lastSession() {
-                    guard let controller = make(window.kind, id: window.id, device: window.device, seed: nil, restoring: true) else { continue }
-                    controller.present(cascadingFrom: shown)
-                    shown = controller.window
-                }
-                if controllers.contains(where: { $0.kind == .workspace }) { return }
-            }
-        }
         open(.workspace)
     }
 

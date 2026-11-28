@@ -102,6 +102,7 @@ impl CredentialResolver for ProviderResolver {
                 AuthenticationMaterial::ClaudeCli {
                     credential_id,
                     configured,
+                    identity,
                     ..
                 } => {
                     if !configured
@@ -122,6 +123,9 @@ impl CredentialResolver for ProviderResolver {
                                 .to_string_lossy()
                                 .into_owned(),
                             ),
+                            cache_scope: identity
+                                .as_ref()
+                                .map(|id| format!("{}/{id}", resource.authentication.generation)),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),
@@ -130,6 +134,7 @@ impl CredentialResolver for ProviderResolver {
                 AuthenticationMaterial::ClaudeCliLinked {
                     config_dir,
                     configured,
+                    identity,
                     ..
                 } => {
                     if !configured
@@ -143,6 +148,9 @@ impl CredentialResolver for ProviderResolver {
                     return Ok(ResolvedCredential {
                         material: velune_gateway::CredentialMaterial::LocalSession {
                             config_dir: config_dir.clone(),
+                            cache_scope: identity
+                                .as_ref()
+                                .map(|id| format!("{}/{id}", resource.authentication.generation)),
                         },
                         recovery: velune_gateway::CredentialRecovery::None,
                         request_capabilities: Default::default(),

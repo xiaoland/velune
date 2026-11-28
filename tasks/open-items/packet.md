@@ -18,7 +18,6 @@
 
 ## 未授权的候选
 
-- Claude 冷启动连续性有两条路线，尚未选定；缓存改进方案待评审，透传证据不能推断真实缓存命中或五小时配额收益。（原 `claude-entrypoint`）
 - live RPC 的通信边界：`native/rpc.rs` 同步写 stdin，响应期限在写完后才开始，对端不读 stdin 可阻塞 application owner；等待响应时无关通知进入无界 `queued`；观察 worker 由各执行位置共享，没有按机器隔舱。修正须把请求写入、响应等待与通知消费分开，不能截断或丢弃审批、后台工作与身份确认。SSH master 复用与进程表缓存待耗时证据支持后再做，复用键须含执行位置与 HOME。（原 `adapter-performance-issues`）
 
 - Claude Code 子 Agent 不在会话列表时，标题回退为工具名“Agent”。（原 `project-folders`）
@@ -36,6 +35,7 @@
 
 ## 未验证的能力
 
+- **Claude 订阅桥接**：`2569ce539` 已实现冷启动恢复。用真实 Claude Code 2.1.327 和模拟上游核对了普通续聊与 MCP 工具回合的请求前缀。真实订阅的缓存命中率和五小时额度收益待验证。见 [AI Provider](../../packages/ai-provider/README.md)。（原 `claude-entrypoint`）
 - **Mac 冷启动与空闲性能**：`6ad546193` 合入 Codex 活动会话索引证明持久化，合成回归验证了跨启动复用及外部变更后的修复。`82d5c8bb2` 合入空闲轮询的热点修正，已核对快照、模型命名和编辑准入。真实数据规模下的重启耗时与空闲 CPU 降幅仍待用集成构建量测。
 - **macOS 网络缓冲区耗尽**：2026-11-04 两次重启前内核大量 `mbuf_class_under_pressure`，ENOBUFS 根因未确认，不能归因于 Velune 或 sing-box（嫌疑见 sing-box #4607）。复发时保留系统扩展 PID、mbuf 计数与统一日志，用 `scripts/diagnose-network-macos.py` 采样。（原 `workspace-delivery-and-network`、`architecture-review`）
 - **dogfood 性能问题**：原报告的 Checking、来源不匹配与 503 是否已修复，须在采用修复的构建中以相同操作再次观察，按操作编号对齐发送、原生历史读取与慢命令耗时。（原 `adapter-performance-issues`）

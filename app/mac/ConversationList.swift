@@ -588,7 +588,9 @@ struct ConversationListView: View {
                     Circle().fill(.tint).frame(width: 7, height: 7).opacity(unread ? 1 : 0)
                 }
             }.frame(width: 12).accessibilityHidden(true)
-            Text(conversation.title).uiFont(.body.weight(unread ? .semibold : .regular)).lineLimit(1).help(conversation.title)
+            Text(conversation.title).uiFont(.body.weight(unread ? .semibold : .regular)).lineLimit(1)
+                .truncationMode(Conversation.hasNumberedTitleSuffix(conversation.title) ? .middle : .tail)
+                .help(conversation.title)
             if let request = device.conversationManagement.first(where: { $0.conversations.contains(conversation.id) }) {
                 Spacer(minLength: 0)
                 Image(systemName: request.running ? "arrow.triangle.2.circlepath" : "clock")

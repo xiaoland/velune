@@ -14,7 +14,7 @@ python3 tests/acceptance/run.py codex_conversation_lifecycle --codex /absolute/p
 
 同一入口也注册为 `svc run acceptance`。缺少外部程序的用例记为跳过而非通过。默认绑定目录为 `target/acceptance/bindings`；`--bindings` 可指向另一次构建生成的目录，用于比较两个版本。`--resources` 指定某次构建自带的运行时资源，缺省时使用源码中的 helper 脚本与 `target/runtime-support` 的依赖。
 
-每次运行在 `target/verification/acceptance/<run>/` 写入 `manifest.json`，记录源码 HEAD 与是否有未提交改动、绑定库摘要、外部程序路径与版本，以及逐个用例的状态、已证明的检查项、耗时和错误。每个用例另有完整日志与结果文件。任务包引用这份清单，不复制日志。
+每次运行在 `target/verification/acceptance/<run>/` 写入 `manifest.json`，记录源码 HEAD 与是否有未提交改动、绑定库摘要、外部程序路径与版本，以及逐个用例的状态、已证明的检查项、耗时和错误。用例通过要求子进程以状态码 0 退出，并记录至少一项检查，且所有记录的检查均成功。每个用例另有完整日志与结果文件。任务包引用这份清单，不复制日志。
 
 ## 编写用例
 

@@ -378,7 +378,7 @@ enum MessageEditPresentation: String, CaseIterable, Identifiable {
                           forked: { [weak self, weak window] result in
                               guard let self, !self.closed, let window,
                                     ConversationWindowModel.openWindows.contains(where: { $0 === window }) else { return }
-                              window.openInNewTab(adopting: result, device: self.store.device)
+                              window.openFork(adopting: result, device: self.store.device)
                           }, accepted: { [weak self] in self?.cancel() },
                           failed: { [weak self] detail, code in
                               guard let self, !self.closed else { return }

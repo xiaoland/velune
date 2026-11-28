@@ -17,6 +17,7 @@ pub(crate) struct RemoteClient {
     pub(crate) store: Arc<DeviceStore>,
     pub(crate) registration: u64,
     pub(crate) descriptor: EndpointDescriptor,
+    pub(crate) wire_version: u16,
     pub(crate) session: ClientSession,
     pub(crate) route: Option<Arc<crate::mesh::RoutedConnection>>,
     pub(crate) authorized: bool,
@@ -76,9 +77,13 @@ impl RemoteClient {
         id: RequestId,
         view: ClientViewId,
         execution: ExecutionContext,
-        command: Command,
+        mut command: Command,
     ) -> Result<RequestStatus> {
         id.validate(&self.descriptor.incarnation)?;
+        if let Err(failure) = crate::compatibility::prepare_command(self.wire_version, &mut command)
+        {
+            return Ok(RequestStatus::Completed(Err(failure)));
+        }
         match self
             .rpc(Request::Submit {
                 id,
@@ -200,7 +205,7 @@ impl RemoteClient {
                 let result = tokio::select! {
                     biased;
                     _ = network.cancelled() => Err(RemoteError::Closed),
-                    result = tokio::time::timeout(self.timeout, route.rpc(&network, request)) => {
+                    result = tokio::time::timeout(self.timeout, route.rpc(&network, self.wire_version, request)) => {
                         result.map_err(|_| RemoteError::Timeout)?
                     }
                 };
@@ -216,9 +221,13 @@ impl RemoteClient {
                 _=network.cancelled()=>Err(RemoteError::Closed),
                 result=tokio::time::timeout(self.timeout,async {
                     let (mut send,mut recv)=connection.open_bi().await.map_err(|_|RemoteError::Unavailable)?;
-                    write_frame(&mut send,Envelope {version:PROTOCOL_VERSION,body:request}).await?;
+                    write_frame(&mut send,Envelope {version:self.wire_version,body:request}).await?;
                     let reply:Envelope<Reply>=read_frame(&mut recv,response_limit).await?;
-                    if reply.version!=PROTOCOL_VERSION {return Err(RemoteError::IncompatibleVersion);}
+                    if reply.version!=self.wire_version {
+                        // An older endpoint answers the read-only Hello probe
+                        // in its own envelope with an explicit version error.
+                        return Err(RemoteError::IncompatibleVersion);
+                    }
                     match reply.body {Reply::Error(error)=>Err(error),reply=>Ok(reply)}
                 })=>result.map_err(|_|RemoteError::Timeout)?,
             }

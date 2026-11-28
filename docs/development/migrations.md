@@ -49,7 +49,7 @@ python3 scripts/migrations/codex-166.py --home <VELUNE_HOME> --binary <Codex-0.1
 
 ## Mac 窗口恢复身份
 
-AppKit 系统恢复记录窗口 UUID、种类和会话独立窗口的执行设备。Velune 用窗口 UUID 从 `mac-window-workspaces/` 读取 `SavedWindowLayout`。首次从旧 SwiftUI 外壳升级时，若系统设置为退出后保留窗口，Velune 从上次退出时一并保存的恢复点重开窗口。
+AppKit 系统恢复记录窗口 UUID、种类和会话独立窗口的执行设备。Velune 用窗口 UUID 从 `mac-window-workspaces/` 读取 `SavedWindowLayout`。首次从旧 SwiftUI 外壳升级时，旧快照时间只表示内容写入时间。系统未恢复工作区时，启动打开一个默认工作区，按同设备、同种类的最近记录恢复内容。
 
 缺少执行设备身份的旧快照只允许凭同一窗口 UUID 匹配。默认工作区回退只选设备和种类都匹配的记录。需要人工恢复来源不明的快照时，先退出应用并完整备份源及目标文件，再核对会话来源、窗口类型、分组、Tab UUID、顺序、焦点和草稿身份。
 

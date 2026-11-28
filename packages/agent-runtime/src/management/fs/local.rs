@@ -426,7 +426,6 @@ pub(super) fn delete(root: &Path, path: &str, expected: &ExpectedRevision) -> Re
 
 #[cfg(unix)]
 mod platform {
-    use cap_fs_ext::OpenOptionsMaybeDirExt;
     use cap_std::fs::{
         Dir, DirBuilder, DirBuilderExt, Metadata, MetadataExt, OpenOptions, OpenOptionsExt,
     };
@@ -518,7 +517,7 @@ mod platform {
     pub fn prepare_dir_sync(dir: &Dir) -> io::Result<impl FnOnce() -> io::Result<()>> {
         // The cap-std anchor may be O_PATH. Open the same directory for sync
         // before publishing changes, without resolving its pathname again.
-        let handle = dir.open_with(".", OpenOptions::new().read(true).maybe_dir(true))?;
+        let handle = dir.open(".")?;
         Ok(move || handle.sync_all())
     }
 }

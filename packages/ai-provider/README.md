@@ -37,6 +37,10 @@ CLI 子进程清空继承环境后，仅保留系统用户身份所需的 `HOME`
 
 执行子进程显式设置 `CLAUDE_CODE_ENTRYPOINT=velune`，继续使用 print / stream-json；入口变量的验证范围与限制见 [运行时说明](../agent-runtime/README.md)。真实订阅的五小时配额收益尚未验证。
 
+应用为具有外层会话标识的订阅桥接提供稳定的私有工作目录。账号已识别时，桥接使用 Claude Code 自己写入的内部 JSONL，在成功回复落盘并交付后才提交恢复点。恢复点按外层会话、提供商、账号与认证代际隔离，只接续匹配请求配置和完整已完成历史、且尾部恰好追加一条用户消息的请求。恢复只向 CLI 发送增量，内部历史保留原生消息、工具结果和上下文形状。重写历史、切换执行配置、超时或取消未完成的轮次时，桥接重新从调用方历史建立上下文。工具回调仍由当前进程持有。
+
+内部记录位于应用私有目录 `claude-bridge-cache`，恢复点一小时内可用，创建新桥接会话时定期清除过期和未提交的记录。无法确认终态或文件超过 64 MiB 时留空恢复点。CLI 拒绝私有文件恢复时，在提交调用方消息前改用原有的无持久化启动。缓存命中取决于上游缓存是否仍有效。
+
 Pool 的 continuation 查询与实际工具等待状态同源，返回无约束、原 binding 归属或已失效。失效会终止对应进程并保留必要的会话失效事实；消费方负责将该约束与自己的模型资格、认证世代共同校验。`cancel_session` 也取消已返回 tool_use 后等待结果的交互；应用在明确的新用户轮调用 `begin_user_turn`，只有已终止交互可以解除失效，仍运行或 pending 时拒绝。已失效工具 ID 独立保留，`validate_result_ids` 只接收当前请求尾部结果，防止新轮错误接收迟到结果。关闭单个 HTTP Runner 不应 shutdown 共享 pool，应用生命周期结束时才显式 shutdown。
 
 Claude Code 的同一用户轮可被 caller tools 分成多个 HTTP 响应；`Run` 内的用量账本跨这些响应保留，只有发送新的用户输入才清空。按照 [官方 SDK 用量约定](https://code.claude.com/docs/en/agent-sdk/cost-tracking)，assistant／message_start 的输入与缓存计数按原生 message ID 去重，其 output_tokens 是占位值；输出只采信关联该 ID 且已结束的 message_delta 流计数或最终 result。每个工具段报告当前可信累计减去已交付数量，最终 result.usage 是该用户轮主循环累计，也扣除已交付部分；同一 assistant 的多个工具不会重复计入统计。只映射 input_tokens、output_tokens、cache_read_input_tokens、cache_creation_input_tokens，其他 CLI 用量维度不推测转换。缺失、无效、溢出、累计下降或当前轮发生 conversation_reset 时，相应不可确定的字段省略并保留固定字段名诊断；不补零、不生成负数。未知 output 的工具段保持未知，最终结果可报告此前尚未分配的可信输出。

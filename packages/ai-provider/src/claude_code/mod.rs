@@ -1,11 +1,12 @@
 //! Claude Code subprocess execution. Caller tools are served over a private loopback MCP server.
+mod cache;
 pub(crate) mod stream;
 mod usage;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -35,6 +36,8 @@ pub struct ClaudeCodeConfig {
     pub session: Option<String>,
     /// Provider identity plus authentication binding epoch; never a credential.
     pub binding: String,
+    /// Persisted provider and account binding. Session-less callers leave this unset.
+    pub cache_scope: Option<String>,
 }
 struct Slot {
     run: AsyncMutex<Option<Run>>,
@@ -90,6 +93,7 @@ pub enum Continuation {
     Invalidated,
 }
 pub struct ClaudeCodePool {
+    cache: Option<Arc<cache::Cache>>,
     sessions: Mutex<HashMap<(String, String), Arc<Slot>>>,
     executor: Executor,
     closed: AtomicBool,
@@ -138,7 +142,14 @@ impl Drop for Executor {
 }
 impl Default for ClaudeCodePool {
     fn default() -> Self {
+        Self::with_cache(None)
+    }
+}
+
+impl ClaudeCodePool {
+    fn with_cache(cache: Option<Arc<cache::Cache>>) -> Self {
         Self {
+            cache,
             sessions: Mutex::new(HashMap::new()),
             executor: Executor::new("velune-claude-code"),
             closed: AtomicBool::new(false),
@@ -155,6 +166,12 @@ impl<T> Drop for AbortOnDrop<T> {
 impl ClaudeCodePool {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn with_cache_directory(directory: PathBuf) -> Self {
+        Self::with_cache(Some(Arc::new(cache::Cache::new(directory))))
+    }
+    pub fn fork(&self) -> Self {
+        Self::with_cache(self.cache.clone())
     }
     /// Explicit user-turn boundary. Pending or still-running work must be cancelled first.
     pub fn begin_user_turn(&self, session: &str) -> Result<(), InvalidContract> {
@@ -380,12 +397,35 @@ struct Run {
     bridge: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<()>,
     directory: PathBuf,
+    transcript: Option<cache::Transcript>,
+    checkpointable: bool,
     signature: Value,
     history: Vec<Value>,
     pending: HashMap<String, oneshot::Sender<Value>>,
     touched: Instant,
     usage: usage::TurnUsage,
 }
+impl Run {
+    async fn initialize(&mut self) -> bool {
+        let request = b"{\"type\":\"control_request\",\"request_id\":\"velune-resume\",\"request\":{\"subtype\":\"initialize\"}}\n";
+        if self.input.write_all(request).await.is_err() || self.input.flush().await.is_err() {
+            return false;
+        }
+        loop {
+            match self.events.recv().await {
+                Some(Event::Cli(event))
+                    if event["type"] == "control_response"
+                        && event["response"]["request_id"] == "velune-resume" =>
+                {
+                    return event["response"]["subtype"] == "success";
+                }
+                Some(Event::Cli(_)) => {}
+                _ => return false,
+            }
+        }
+    }
+}
+
 impl Drop for Run {
     fn drop(&mut self) {
         let _ = self.child.lock().unwrap().start_kill();
@@ -415,7 +455,55 @@ fn token() -> Result<String, ()> {
     getrandom::fill(&mut bytes).map_err(|_| ())?;
     Ok(bytes.iter().map(|v| format!("{v:02x}")).collect())
 }
-async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, NativeErrorKind> {
+async fn launch(
+    config: &ClaudeCodeConfig,
+    body: &Value,
+    history: &[Value],
+    cache: Option<&Arc<cache::Cache>>,
+) -> Result<Run, NativeErrorKind> {
+    let cwd = config
+        .session
+        .as_ref()
+        .and(cache)
+        .and_then(|cache| cache.work_dir().ok());
+    if let (Some(cache), Some(cwd), Some(session), Some(scope)) =
+        (cache, &cwd, &config.session, &config.cache_scope)
+        && let Ok(Some(transcript)) = cache.prepare(
+            &(
+                session,
+                scope,
+                config.executable.as_os_str().as_encoded_bytes(),
+                config
+                    .config_dir
+                    .as_deref()
+                    .map(|path| path.as_os_str().as_encoded_bytes()),
+            ),
+            &signature(body),
+            history,
+            cwd,
+        )
+    {
+        let prefix = transcript.prefix;
+        // Probe the private resume before sending any caller input. If this
+        // binary cannot load it, the existing stateless launch is still safe.
+        if let Ok(mut run) = spawn_run(config, body, Some(cwd), Some(transcript)).await
+            && tokio::time::timeout(Duration::from_secs(5), run.initialize())
+                .await
+                .unwrap_or(false)
+        {
+            run.history.extend_from_slice(&history[..prefix]);
+            return Ok(run);
+        }
+    }
+    spawn_run(config, body, cwd.as_deref(), None).await
+}
+
+async fn spawn_run(
+    config: &ClaudeCodeConfig,
+    body: &Value,
+    cwd: Option<&Path>,
+    transcript: Option<cache::Transcript>,
+) -> Result<Run, NativeErrorKind> {
     let directory_nonce = token().map_err(|_| NativeErrorKind::Transport)?;
     let token = token().map_err(|_| NativeErrorKind::Transport)?;
     // The directory is visible in argv; its nonce must not reveal the MCP capability.
@@ -428,7 +516,7 @@ async fn launch(config: &ClaudeCodeConfig, body: &Value) -> Result<Run, NativeEr
     #[cfg(not(unix))]
     let created = std::fs::DirBuilder::new().create(&directory);
     created.map_err(|_| NativeErrorKind::Transport)?;
-    let result = launch_in(config, body, directory.clone(), token).await;
+    let result = launch_in(config, body, directory.clone(), token, cwd, transcript).await;
     if result.is_err() {
         let _ = std::fs::remove_dir_all(directory);
     }
@@ -439,6 +527,8 @@ async fn launch_in(
     body: &Value,
     directory: PathBuf,
     token: String,
+    cwd: Option<&Path>,
+    transcript: Option<cache::Transcript>,
 ) -> Result<Run, NativeErrorKind> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -488,7 +578,6 @@ async fn launch_in(
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--no-session-persistence",
             "--strict-mcp-config",
             "--tools",
             "",
@@ -512,11 +601,16 @@ async fn launch_in(
         )
         .arg("--mcp-config")
         .arg(config_path)
-        .current_dir(&directory)
+        .current_dir(cwd.unwrap_or(&directory))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    if let Some(transcript) = &transcript {
+        command.arg("--resume").arg(&transcript.file);
+    } else {
+        command.arg("--no-session-persistence");
+    }
     command.env_clear();
     // macOS resolves the user's keychain through the real login identity and home.
     for key in ["PATH", "HOME", "USER", "LOGNAME"] {
@@ -604,6 +698,8 @@ async fn launch_in(
         bridge,
         reader,
         directory,
+        transcript,
+        checkpointable: true,
         signature: signature(body),
         history: Vec::new(),
         pending: HashMap::new(),
@@ -678,7 +774,7 @@ fn tool_results(messages: &[Value]) -> Result<HashMap<String, Value>, NativeErro
     }
     Ok(results)
 }
-fn prompt(messages: &[Value], _initial: bool) -> Value {
+fn prompt(messages: &[Value]) -> Value {
     if messages.len() == 1 && messages[0]["role"] == "user" {
         return messages[0]["content"].clone();
     }
@@ -780,14 +876,30 @@ impl NativeProvider for ClaudeCode {
                 Ok(guard) => guard,
                 Err(_) => return fail(NativeErrorKind::InvalidInput, false),
             };
-            let mut initial = guard.is_none();
-            if initial && !latest_results.is_empty() {
-                return fail(NativeErrorKind::InvalidInput, false);
-            }
-            let mut run = if let Some(run) = guard.take() {
+            let previous = guard.take();
+            let previous = match previous {
+                Some(run)
+                    if run.signature != signature(&body) || !history.starts_with(&run.history) =>
+                {
+                    if !run.pending.is_empty() {
+                        slot.stop();
+                        return fail(NativeErrorKind::InvalidInput, true);
+                    }
+                    None
+                }
+                run => run,
+            };
+            let mut run = if let Some(run) = previous {
                 run
             } else {
-                match launch(&config, &body).await {
+                if !latest_results.is_empty() {
+                    return fail(NativeErrorKind::InvalidInput, false);
+                }
+                let launch = launch(&config, &body, &history, pool.cache.as_ref());
+                match tokio::select! {
+                    _ = stop.changed() => return fail(NativeErrorKind::Cancelled, false),
+                    launched = launch => launched,
+                } {
                     Ok(value) => value,
                     Err(kind) => return fail(kind, false),
                 }
@@ -804,32 +916,8 @@ impl NativeProvider for ClaudeCode {
             if *stop.borrow() {
                 return fail(NativeErrorKind::Cancelled, true);
             }
-            if !initial && (run.signature != signature(&body) || !history.starts_with(&run.history))
-            {
-                if !run.pending.is_empty() {
-                    return fail(NativeErrorKind::InvalidInput, true);
-                }
-                drop(run);
-                run = match launch(&config, &body).await {
-                    Ok(value) => value,
-                    Err(kind) => return fail(kind, false),
-                };
-                *slot.control.lock().unwrap() = Some(RunControl {
-                    child: Arc::downgrade(&run.child),
-                    bridge: run.bridge.abort_handle(),
-                    reader: run.reader.abort_handle(),
-                });
-                initial = true;
-                if *stop.borrow() {
-                    slot.stop();
-                    return fail(NativeErrorKind::Cancelled, true);
-                }
-            }
-            let since = if initial {
-                &history[..]
-            } else {
-                &history[run.history.len()..]
-            };
+            let initial = run.history.is_empty();
+            let since = &history[run.history.len()..];
             let results = match tool_results(if initial { &[][..] } else { since }) {
                 Ok(value) => value,
                 Err(kind) => return fail(kind, true),
@@ -858,8 +946,14 @@ impl NativeProvider for ClaudeCode {
                 if !results.is_empty() || since.is_empty() {
                     return fail(NativeErrorKind::InvalidInput, true);
                 }
+                if let Some(transcript) = &mut run.transcript
+                    && transcript.begin().is_err()
+                {
+                    return fail(NativeErrorKind::Transport, false);
+                }
                 run.usage = usage::TurnUsage::default();
-                let input = json!({"type":"user","message":{"role":"user","content":prompt(since,initial)}});
+                let input =
+                    json!({"type":"user","message":{"role":"user","content":prompt(since)}});
                 let bytes = match serde_json::to_vec(&input) {
                     Ok(value) => value,
                     Err(_) => return fail(NativeErrorKind::InvalidInput, true),
@@ -875,6 +969,7 @@ impl NativeProvider for ClaudeCode {
                 }
             }
             let mut content = Vec::new();
+            let mut assistant = None;
             let mut segment = stream::Segment::new(request.stream, body["model"].clone());
             let mut partial = false;
             let mut indexes = HashMap::<u64, usize>::new();
@@ -1003,6 +1098,7 @@ impl NativeProvider for ClaudeCode {
                             }
                             if value["parent_tool_use_id"].is_null() {
                                 run.usage.message(&value["message"], false);
+                                assistant = value["uuid"].as_str().map(str::to_owned);
                             }
                             if !partial && let Some(blocks) = value["message"]["content"].as_array()
                             {
@@ -1024,7 +1120,10 @@ impl NativeProvider for ClaudeCode {
                             }
                             partial = false;
                         }
-                        Some("conversation_reset") => run.usage.reset_observed(),
+                        Some("conversation_reset") => {
+                            run.usage.reset_observed();
+                            run.checkpointable = false;
+                        }
                         Some("result") => {
                             if value["subtype"].as_str() != Some("success")
                                 || value["is_error"].as_bool() == Some(true)
@@ -1046,11 +1145,25 @@ impl NativeProvider for ClaudeCode {
             run.history
                 .push(json!({"role":"assistant","content":outcome["content"]}));
             run.touched = Instant::now();
+            let checkpoint = match (&run.transcript, assistant) {
+                (Some(transcript), Some(assistant))
+                    if run.checkpointable && run.pending.is_empty() =>
+                {
+                    transcript.checkpoint(&run.history, &assistant).await
+                }
+                _ => None,
+            };
+            if *stop.borrow() {
+                return fail(NativeErrorKind::Cancelled, true);
+            }
             let completion = deliver(outcome, request.stream, &mut segment, &mut sink).await;
             if *stop.borrow() {
                 return fail(NativeErrorKind::Cancelled, true);
             }
             if completion.is_ok() {
+                if let (Some(transcript), Some(checkpoint)) = (&mut run.transcript, checkpoint) {
+                    transcript.seal(checkpoint);
+                }
                 slot.status.store(
                     if run.pending.is_empty() { 0 } else { 1 },
                     Ordering::Release,

@@ -17,3 +17,8 @@ iroh = { path = "third-party/iroh" }
 # CARGO_PROFILE_DEV_DEBUG=2 invocation, not another permanent profile.
 [profile.dev]
 debug = 1
+
+# Mesh acceptance exercises real Ed25519 verification at every hop under the
+# normal request deadline. Keep the curve arithmetic at production speed.
+[profile.test.package.curve25519-dalek]
+opt-level = 3

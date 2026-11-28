@@ -1301,7 +1301,7 @@ impl PiSession {
             }
         };
 
-        self.wait_for_edit_ticket(ticket)?;
+        self.wait_for_mutation_ticket(ticket)?;
         // A validated frame is immediately followed by its header-only event,
         // which invalidates the projection's cheap freshness bit. The typed
         // owner retains the install completion edge for this exact reason.
@@ -1328,17 +1328,17 @@ impl PiSession {
             PiOperation::Rewind(entry_id.into()),
             PendingAction::Rewind(entry_id.into()),
         )?;
-        self.wait_for_edit_ticket(ticket)
+        self.wait_for_mutation_ticket(ticket)
     }
 
-    fn wait_for_edit_ticket(&mut self, ticket: PiTicket) -> Result<()> {
+    fn wait_for_mutation_ticket(&mut self, ticket: PiTicket) -> Result<()> {
         {
             let running = self.running()?;
             if running.edit_wait.is_some() {
-                return Err(Error::Sdk("Pi 消息编辑操作正在等待完成".into()));
+                return Err(Error::Sdk("Pi 会话修改正在等待完成".into()));
             }
             if !running.client.pi_owns_ticket(ticket) {
-                return Err(Error::Sdk("Pi 消息编辑操作已失效".into()));
+                return Err(Error::Sdk("Pi 会话修改已失效".into()));
             }
             running.edit_wait = Some(EditWait {
                 ticket,
@@ -1357,7 +1357,7 @@ impl PiSession {
             }
             if Instant::now() >= deadline {
                 self.clear_edit_wait(ticket);
-                return Err(Error::Timeout("Pi 消息编辑操作等待超时".into()));
+                return Err(Error::Timeout("Pi 会话修改等待超时".into()));
             }
             self.poll();
             if let Some(result) = self.take_edit_wait_result(ticket)? {
@@ -1690,11 +1690,21 @@ impl PiSession {
             .map(drop)
     }
     pub fn set_name(&mut self, name: &str) -> Result<()> {
+        self.enqueue_name(name).map(drop)
+    }
+
+    /// Explicit renaming completes only after the native owner confirms the
+    /// title. A fork's first snapshot and immediately following send use it.
+    pub fn set_name_confirmed(&mut self, name: &str) -> Result<()> {
+        let ticket = self.enqueue_name(name)?;
+        self.wait_for_mutation_ticket(ticket)
+    }
+
+    fn enqueue_name(&mut self, name: &str) -> Result<PiTicket> {
         self.enqueue(
             PiOperation::SetName(name.into()),
             PendingAction::Rename(name.into()),
         )
-        .map(drop)
     }
     pub fn set_model(&mut self, provider: Option<&str>, model_id: &str) -> Result<()> {
         self.enqueue(

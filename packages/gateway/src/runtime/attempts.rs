@@ -469,7 +469,11 @@ impl Attempt<'_> {
                 credential,
             )?),
             ExecutionBackend::ClaudeCli { binary } => {
-                let CredentialMaterial::LocalSession { config_dir } = credential.material else {
+                let CredentialMaterial::LocalSession {
+                    config_dir,
+                    cache_scope,
+                } = credential.material
+                else {
                     return Err(InvalidContract(
                         "Claude CLI requires a local session source",
                     ));
@@ -481,6 +485,10 @@ impl Attempt<'_> {
                         config_dir: config_dir.map(Into::into),
                         session: self.state.backend_session(),
                         binding: self.state.backend_bindings[&self.target.provider_id].clone(),
+                        cache_scope: cache_scope.map(|scope| {
+                            serde_json::to_string(&(&self.target.provider_id, scope))
+                                .expect("Claude bridge cache scope")
+                        }),
                     },
                 )?)
             }

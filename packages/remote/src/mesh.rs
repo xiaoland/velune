@@ -5,7 +5,7 @@ use crate::{
     MAX_FRAME_BYTES, PROTOCOL_VERSION, RemoteClient, RemoteError, Result,
     endpoint::NetworkGeneration,
     paths::ConnectionSlot,
-    protocol::{Envelope, Reply, Request},
+    protocol::{APPLICATION_WIRE_VERSION, Envelope, Reply, Request},
     service::ServiceState,
     store::parse_peer,
     trust::TrustBundle,
@@ -193,6 +193,7 @@ impl RoutedConnection {
     pub(crate) async fn rpc(
         &self,
         network: &Arc<NetworkGeneration>,
+        wire_version: u16,
         request: Request,
     ) -> Result<Reply> {
         let mut cancelled = self.cancelled.subscribe();
@@ -217,7 +218,7 @@ impl RoutedConnection {
                     changed
                 };
                 if changed { network.service.store.touch(); }
-                routed_rpc(network, &self.target, opened.io, request).await
+                routed_rpc(network, &self.target, opened.io, wire_version, request).await
             }) => result.unwrap_or(Err(RemoteError::Timeout)),
         };
         if result.is_err() {
@@ -444,11 +445,24 @@ pub(crate) async fn connect(
         _ = network.cancelled() => Err(RemoteError::Closed),
         result = tokio::time::timeout(network.timeout, async {
             let _permit = network.mesh.outgoing.try_acquire().map_err(|_| RemoteError::Capacity)?;
-            let opened = open_route(&network, target, &[origin]).await?;
+            let visited = [origin];
+            let opened = open_route(&network, target, &visited).await?;
             let first = opened.first.clone();
             let path = opened.path.clone();
             // Hello uses the same opened tunnel. A relay never supplies C's descriptor.
-            let descriptor = match routed_rpc(&network, target, opened.io, Request::Hello).await? {
+            let (hello, wire_version) = match routed_rpc(
+                &network, target, opened.io, APPLICATION_WIRE_VERSION, Request::Hello,
+            ).await {
+                Err(RemoteError::IncompatibleVersion) => {
+                    // Each attempt has its own authenticated tunnel. Only
+                    // Hello can be repeated to select a legacy envelope.
+                    let legacy = open_via(&network, first.clone(), target, &visited).await?;
+                    let reply = routed_rpc(&network, target, legacy.io, PROTOCOL_VERSION, Request::Hello).await?;
+                    (reply, PROTOCOL_VERSION)
+                }
+                result => (result?, APPLICATION_WIRE_VERSION),
+            };
+            let descriptor = match hello {
                 Reply::Hello(descriptor) => { descriptor.validate(target)?; descriptor },
                 _ => return Err(RemoteError::Protocol),
             };
@@ -462,7 +476,7 @@ pub(crate) async fn connect(
             blocking(move || service.store.update_locator(&peer, learned.name.clone(), locator(&learned))).await?;
             Ok(RemoteClient {
                 connection: first.slot.clone(), network: Arc::downgrade(&network),
-                store: network.service.store.clone(), registration: 0, descriptor,
+                store: network.service.store.clone(), registration: 0, descriptor, wire_version,
                 session, authorized: true, timeout: network.timeout, route: Some(route),
             })
         }) => result.map_err(|_| RemoteError::Timeout)?,
@@ -792,7 +806,9 @@ async fn serve_stream(
 async fn serve_target(network: &Arc<NetworkGeneration>, io: &mut TunnelIo) -> Result<()> {
     let (mut tls, origin) = crate::tunnel_tls::accept(&network.service.identity.key, io).await?;
     let request: Envelope<RoutedRequest> = read_prefixed(&mut tls, MAX_FRAME_BYTES).await?;
-    let reply = if request.version != PROTOCOL_VERSION {
+    let version = request.version;
+    let supported = network.supports_wire_version(version);
+    let reply = if !supported {
         Reply::Error(RemoteError::IncompatibleVersion)
     } else if let Err(error) = allowed_request(&request.body.request) {
         Reply::Error(error)
@@ -824,8 +840,8 @@ async fn serve_target(network: &Arc<NetworkGeneration>, io: &mut TunnelIo) -> Re
     write_prefixed(
         &mut tls,
         Envelope {
-            version: PROTOCOL_VERSION,
-            body: reply,
+            version: if supported { version } else { PROTOCOL_VERSION },
+            body: crate::compatibility::reply_for_wire(version, reply),
         },
         MAX_FRAME_BYTES,
     )
@@ -843,6 +859,7 @@ async fn routed_rpc(
     network: &Arc<NetworkGeneration>,
     target: &str,
     io: TunnelIo,
+    wire_version: u16,
     request: Request,
 ) -> Result<Reply> {
     allowed_request(&request)?;
@@ -853,14 +870,14 @@ async fn routed_rpc(
     write_prefixed(
         &mut tls,
         Envelope {
-            version: PROTOCOL_VERSION,
+            version: wire_version,
             body: RoutedRequest { trust, request },
         },
         MAX_FRAME_BYTES,
     )
     .await?;
     let reply: Envelope<Reply> = read_prefixed(&mut tls, MAX_FRAME_BYTES).await?;
-    if reply.version != PROTOCOL_VERSION {
+    if reply.version != wire_version {
         return Err(RemoteError::IncompatibleVersion);
     }
     // The complete authenticated reply determines the RPC result. The target

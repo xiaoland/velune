@@ -99,9 +99,9 @@ schema 3→4 的 beta 转换由应用 owner 自动备份并迁移；更早格式
 
 具体相机、平台网络、UDP 与 mDNS 接线及其验证边界见[平台接入](remote-platforms.md)。
 
-## 遥测分享与 wire v3
+## 远控版本协商与遥测分享
 
-远控 wire 与 ALPN 为 v3。Submit/Query 的 W3C carrier 是有界的独立字段，不参与 Command fingerprint、RequestId 或授权。受信的关联只在鉴权后建立；原请求查询继续使用同一 RequestId。
+配对、设备描述和 ALPN 沿用 v3。已授权连接先用只读 Hello 协商业务 envelope v4，收到版本不兼容后可用 v3 重试 Hello。v3 连接用已发布 Alpha 共享的命令和回复结构，可继续连接、浏览和处理已有会话；新版专属的提供商设置和写操作要求两端更新。Submit 与 Query 按当前连接的 envelope 版本投影回复，账本保留完整结果。业务请求继续使用同一 RequestId，协商不重发写入。Submit/Query 的 W3C carrier 是有界的独立字段，不参与 Command fingerprint、RequestId 或授权。受信的关联只在鉴权后建立。
 
 `TelemetryProfileRead` 有独立的邀请用途、TLS 核对上下文及 grant。端点在控制或分享需要入站时接纳连接，具体 RPC 各自检查权限。配置读取直接访问本机 telemetry owner，不进入业务账本、结果缓存或持久重试；响应上限 32 KiB。新增分享配对的 pending attempt 与既有已确认联系人分开保存，失败不能破坏原控制关系。
 

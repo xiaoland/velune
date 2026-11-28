@@ -2,7 +2,7 @@
 
 [返回远控契约](remote-access.md) · [产品行为](../prd/remote-access.md)
 
-下述扫码流程以 `Control` 为例。`TelemetryProfileRead` 复用配对状态机，但邀请用途、核对上下文与 grant 独立；它只允许读取遥测配置，见[分享契约](remote-access.md#遥测分享与-wire-v3)。
+下述扫码流程以 `Control` 为例。`TelemetryProfileRead` 复用配对状态机。它有独立的邀请用途、核对上下文和 grant，只允许读取遥测配置。见[分享契约](remote-access.md#远控版本协商与遥测分享)。
 
 ## 扫码与明确授权
 

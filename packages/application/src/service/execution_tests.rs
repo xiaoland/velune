@@ -212,6 +212,10 @@ for line in sys.stdin:
         with path.open('w') as history:
             for row in [user, assistant]:
                 history.write(json.dumps(row) + '\n')
+        # Ordinary stream-json sends are accepted by this lifecycle event;
+        # assistant/result records alone deliberately cannot acknowledge them.
+        print(json.dumps({'type': 'command_lifecycle', 'state': 'started',
+                          'command_uuid': record['uuid'], 'session_id': session}), flush=True)
         print(json.dumps(assistant), flush=True)
         print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
                           'session_id': session}), flush=True)

@@ -326,10 +326,11 @@ impl CoreRuntime {
                                 HttpClient::new(reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))).map_err(|_| NativeErrorKind::Transport)?, credential,
                             ).map_err(|_| NativeErrorKind::InvalidInput)?),
                             crate::config::ExecutionBackend::ClaudeCli { binary } => {
-                                let CredentialMaterial::LocalSession { config_dir } = credential.material else { return Err(NativeErrorKind::Authentication) };
+                                let CredentialMaterial::LocalSession { config_dir, .. } = credential.material else { return Err(NativeErrorKind::Authentication) };
                                 Box::new(ClaudeCode::new(backends.claude_code, ClaudeCodeConfig {
                                     executable: binary.into(), config_dir: config_dir.map(Into::into), session: None,
                                     binding: format!("automatic-title:{}", provider.id),
+                                    cache_scope: None,
                                 }).map_err(|_| NativeErrorKind::InvalidInput)?)
                             }
                             crate::config::ExecutionBackend::AntigravityCli { .. } => {

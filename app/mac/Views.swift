@@ -405,6 +405,7 @@ private struct GeneralSettingsView: View {
 private struct ConversationSettingsView: View {
     @ObservedObject var store: DeviceStore
     @AppStorage(MessageEditPresentation.preferenceKey) private var messageEditPresentation = MessageEditPresentation.sheet.rawValue
+    @AppStorage(ForkConversationOpening.preferenceKey) private var forkOpening = ForkConversationOpening.newTab.rawValue
     @State private var outlineForm = OutlineForm.popover
     private static let statusLineItems: [(item: StatusLineItem, title: String)] = [
         (.contextUsage, "上下文用量"), (.sessionTokens, "本会话累计 token"), (.workingDirectory, "工作目录与 Git 分支"),
@@ -417,6 +418,11 @@ private struct ConversationSettingsView: View {
                     ForEach(MessageEditPresentation.allCases) { Text($0.title).tag($0.rawValue) }
                 }
                 Text("对新打开的消息编辑器生效。").uiFont(.caption).foregroundStyle(.secondary)
+            }
+            Section("分叉会话") {
+                Picker("打开方式", selection: $forkOpening) {
+                    ForEach(ForkConversationOpening.allCases) { Text($0.title).tag($0.rawValue) }
+                }
             }
             Section("大纲") {
                 Picker("大纲", selection: Binding(get: { outlineForm }, set: { outlineForm = $0; ConversationWindowModel.setOutlineForm($0, application: store) })) {
