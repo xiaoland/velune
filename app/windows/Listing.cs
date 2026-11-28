@@ -52,6 +52,7 @@ sealed class Listing
 
     public static Listing From(ConfigurationSnapshot list, ActiveConversation[] active)
     {
+        var projects = list.WorkingDirectoryProjects;
         return new Listing
         {
             Conversations = [.. list.Conversations.Where(listed => listed.Archived == list.ShowsArchived && listed.Conversation.ParentConversationId == null)],
@@ -59,7 +60,7 @@ sealed class Listing
             ShowsArchived = list.ShowsArchived,
             Groups = list.ConversationGroups,
             Preferences = list.ConversationBrowserPreferences,
-            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, list.WorkingDirectoryProjects)
+            Configuration = new Configuration([.. list.RuntimeInstances.Where(runtime => runtime.Enabled)], list.RuntimeTypes, projects)
             {
                 Outline = list.OutlinePresentation,
                 LinkedOpening = list.LinkedConversationOpening,

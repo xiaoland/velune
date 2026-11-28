@@ -519,6 +519,21 @@ impl VeluneApplication {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "local-runtime"))]
+#[uniffi::export]
+impl VeluneApplication {
+    /// Subscribe to the local execution owner. Remote handles use snapshot reads.
+    pub fn native_user_message_events(&self) -> Option<Arc<VeluneNativeUserMessageEvents>> {
+        match self.lock().ok()?.as_ref()? {
+            Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
+                events: service.native_user_message_events()?,
+            })),
+            #[cfg(feature = "remote")]
+            Backend::Remote(_) => None,
+        }
+    }
+}
+
 #[uniffi::export]
 impl VeluneApplication {
     /// Derive a presentation view from the existing owner or remote connection.
@@ -1340,18 +1355,6 @@ impl VeluneApplication {
             }
         )
     }
-    /// Subscribe to the local execution owner. Remote handles use snapshot reads.
-    #[cfg(all(target_os = "macos", feature = "local-runtime"))]
-    pub fn native_user_message_events(&self) -> Option<Arc<VeluneNativeUserMessageEvents>> {
-        match self.lock().ok()?.as_ref()? {
-            Backend::Local(service) => Some(Arc::new(VeluneNativeUserMessageEvents {
-                events: service.native_user_message_events()?,
-            })),
-            #[cfg(feature = "remote")]
-            Backend::Remote(_) => None,
-        }
-    }
-
     /// Poll a view relative to the cursor of its latest delivery.
     pub fn snapshot_update(
         &self,

@@ -96,6 +96,7 @@ internal fun ConversationComposer(
         !state.uploadingAttachment && !state.switchingRuntime && hasInput
     val next = state.nextTurn
     val choice = state.explicitTurnChoice
+    val selection = state.selection
     val models = next?.models.orEmpty()
     val efforts = next?.efforts.orEmpty()
     val permissionModes = next?.permissionModes.orEmpty()
@@ -107,7 +108,7 @@ internal fun ConversationComposer(
     val defaultModelLabel = if (hasCurrent) {
         next?.modelName?.let { "沿用当前（$it）" } ?: "沿用当前"
     } else "运行时默认"
-    val shownModel = models.firstOrNull { it.selection == choice?.model }?.name ?: next?.modelName ?: "默认模型"
+    val shownModel = models.firstOrNull { it.selection == selection }?.name ?: next?.modelName ?: "默认模型"
     val activePermission = permissionModes.firstOrNull { it.id == choice?.permissionMode } ?: next?.currentPermissionMode
     val activeEffort = choice?.effort ?: next?.currentEffort
     val selectedRuntime = runtimeLabels[state.selectedRuntimeId]?.name
@@ -219,9 +220,9 @@ internal fun ConversationComposer(
     if (choosingModel) ModalBottomSheet(sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), onDismissRequest = { choosingModel = false }) {
         Text("下一轮的模型", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         LazyColumn(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-            item { ModelOption(defaultModelLabel, choice?.model == null) { choosingModel = false; actions.select(null) } }
+            item { ModelOption(defaultModelLabel, selection == null) { choosingModel = false; actions.select(null) } }
             items(models, key = { it.name + "/" + it.selection.hashCode() }) { option ->
-                ModelOption(option.name, option.selection == choice?.model) { choosingModel = false; actions.select(option.selection) }
+                ModelOption(option.name, option.selection == selection) { choosingModel = false; actions.select(option.selection) }
             }
         }
     }

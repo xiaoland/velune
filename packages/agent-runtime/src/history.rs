@@ -604,8 +604,6 @@ pub fn export_context_before(
         .map(|context| Retained::from_parts(context, DataRetention::default()))
 }
 
-/// Effective context with selected native user prompts omitted. Later
-/// replies and tool records remain native context; no model turn is started.
 pub fn export_context_without_many(
     config: &HistoryConfig,
     native_id: &str,

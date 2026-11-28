@@ -113,22 +113,6 @@ impl CoreRuntime {
         Ok(self.composer_choices.clone())
     }
 
-    pub(crate) fn runtime_start_choice(
-        &self,
-        runtime_id: String,
-    ) -> Result<crate::config::TurnChoice, RuntimeError> {
-        let runtime = self.runtime_instance(&runtime_id)?.clone();
-        velune_application_api::runtime_start_choice(
-            runtime,
-            self.composer_choices
-                .runtimes
-                .iter()
-                .find(|choices| choices.runtime_id == runtime_id)
-                .cloned(),
-        )
-        .map_err(Into::into)
-    }
-
     pub(crate) fn set_runtime_composer_choices(
         &mut self,
         choices: RuntimeComposerChoices,

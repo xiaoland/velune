@@ -118,6 +118,7 @@ data class ConversationState(
     val isCompacting: Boolean = false,
 ) {
     val running: Boolean get() = runState == RunState.RUNNING || runState == RunState.STOPPING
+    val selection: ModelSelection? get() = explicitTurnChoice?.model
     val usesCurrentRuntime: Boolean get() = selectedRuntimeId == contextRuntimeId
     val activeBackgroundTaskCount: Int get() = backgroundTasks?.takeIf { it.live }?.tasks.orEmpty().count {
         it.status == BackgroundTaskStatus.RUNNING || it.status == BackgroundTaskStatus.STOPPING
@@ -846,7 +847,7 @@ class ConversationModel(
     fun compact() = act {
         val current = snapshot ?: return@act
         if (!current.followUp.canCompact) return@act
-        val selection = state.value.explicitTurnChoice?.model
+        val selection = state.value.selection
         apply(io(NativeOperation.COMPACT) { it.compactConversation(current.contextRuntimeId, current.conversation.id, selection) })
     }
 
