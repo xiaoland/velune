@@ -508,7 +508,7 @@ public sealed partial class ConversationView
             Clipboard.SetContent(data);
         }, text.Length > 0));
         var editable = Model.Editable(message.Id);
-        menu.Items.Add(Item("编辑…", () => EditMessage(message), editable?.Revision != null && !Model.Busy && !Model.Running));
+        menu.Items.Add(Item("编辑…", () => EditMessage(message.Id), editable?.Revision != null && !Model.Busy && !Model.Running));
     }
 
     static string MessageText(DeliveredMessage message) =>
@@ -519,16 +519,18 @@ public sealed partial class ConversationView
     // EditMessage edits a sent user message. The last one continues in
     // place; an earlier one continues in a new conversation from it, or in
     // place, which drops it and everything after it.
-    async void EditMessage(DeliveredMessage message)
+    async void EditMessage(string messageId)
     {
         if (showingHistoricalEditor || window.IsClosed || Model.Snapshot?.Conversation is not { } source ||
-            Model.Editable(message.Id) is not { Revision: { } revision } editable)
+            Model.Editable(messageId) is not { Revision: { } revision } editable ||
+            Model.Messages.FirstOrDefault(shown => shown.Id == messageId) is not { } message)
         {
             return;
         }
-        var reference = new BindingMessageReference(source.RuntimeId, source.Id, message.Id);
-        var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == message.Id;
-        var box = new TextBox { Text = MessageText(message), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
+        var reference = new BindingMessageReference(source.RuntimeId, source.Id, messageId);
+        var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == messageId;
+        var original = Model.Payloads.TryGetValue(messageId, out var loaded) && loaded.Stamp == message.Stamp ? loaded : message;
+        var box = new TextBox { Text = MessageText(original), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
         var about = last && editable.InPlace
             ? "编辑后作为新的一轮在原处继续，取代这条消息。"
             : editable.InPlace
@@ -621,8 +623,8 @@ public sealed partial class ConversationView
             var detail = Core.Describe(failure);
             ShowFailure(needsFreshEditor ? detail + "\n请先检查会话结果，确认后重新打开编辑器。" : detail);
         }
-        dialog.PrimaryButtonClick += (_, args) => { args.Cancel = true; _ = Submit(primary); };
-        dialog.SecondaryButtonClick += (_, args) =>
+        dialog.PrimaryButtonClick += (sender, args) => { args.Cancel = true; _ = Submit(primary); };
+        dialog.SecondaryButtonClick += (sender, args) =>
         {
             args.Cancel = true;
             if (secondary is { } placement) _ = Submit(placement);
