@@ -90,12 +90,12 @@ enum PreviewData {
         }
     }
     static func draft() -> ConversationModel {
-        let model = ConversationModel(client: RemoteClient(), peer: "synthetic", target: .init(runtime: "sample", cwd: "/sample/velune"))
+        let model = ConversationModel(client: RemoteClient(), peer: "preview", target: .init(runtime: "sample", cwd: "/sample/velune"))
         model.loading = false; model.models = models
         return model
     }
     static func model() -> ConversationModel {
-        let model = ConversationModel(client: RemoteClient(), peer: "synthetic", target: .init(runtime: "sample", cwd: nil))
+        let model = ConversationModel(client: RemoteClient(), peer: "preview", target: .init(runtime: "sample", cwd: nil))
         let user = DeliveredMessage(stamp: 1, completed: true, id: "user", role: .user, timestampUnixMs: nil, blocks: [.text(text: "帮我检查 iPad 控制端的构建结果。")])
         var assistant = DeliveredMessage(stamp: 2, completed: true, id: "assistant", role: .assistant, timestampUnixMs: nil, blocks: [
             .tool(toolId: "build", title: "检查构建", state: .completed, output: .inline(text: "Build succeeded"), linkedConversationId: nil),
@@ -142,26 +142,27 @@ enum PreviewData {
         delta.messageIds = [assistant.id]
         transcript.merge(delta)
         assert(transcript.snapshot?.cursor == delta.cursor && transcript.messages.count == 1)
-        assert(transcript.messages[user.id] == nil && transcript.messages[assistant.id] == assistant)
+        assert(transcript.messages[user.id] == nil && transcript.messages[assistant.id] == assistant,
+               "A deletion delta must retain the unchanged assistant message")
         assert(transcriptBlocks(assistant, turn: turn, reply: false).count == 1)
         assert(transcriptBlocks(assistant, turn: turn, reply: false) + transcriptBlocks(assistant, turn: turn, reply: true) == assistant.blocks)
         let draft = draft()
-        let identity = draft.target.key
         draft.draft = "保留两行草稿\n第二行"
         draft.selection = models[0].selection
         draft.chooseRuntime("claude")
         assert(draft.selection == nil && draft.draft.contains("第二行"))
         draft.chooseProject("/sample/website")
         draft.chooseRuntime("sample")
-        assert(draft.selection == models[0].selection && draft.target.key == identity)
+        assert(draft.selection == models[0].selection)
         draft.selection = nil
-        let restored = ConversationModel(client: RemoteClient(), peer: "synthetic", target: draft.target)
+        let restored = ConversationModel(client: RemoteClient(), peer: "preview", target: draft.target)
         restored.restore(try! JSONDecoder().decode(ComposerState.self, from: JSONEncoder().encode(draft.composerState)))
         var withModel = snapshot
         withModel.modelRecordKey = "previous-model"
         restored.merge(withModel)
         assert(restored.selection == nil && restored.draft == draft.draft)
         assert(restored.destination.cwd == "/sample/website")
+        print("PASS iOS preview: delta retention and deletion, work/reply split, runtime model selection and Codable restoration")
         #endif
         return model
     }

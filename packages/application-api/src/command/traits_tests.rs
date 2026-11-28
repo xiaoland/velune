@@ -103,3 +103,35 @@ fn history_description(kind: &str, address: ConversationAddress<'_>) -> String {
     } = address;
     format!("history:{kind}({runtime_id},{conversation_id})")
 }
+
+#[test]
+fn background_task_manual_observation_preserves_the_legacy_wire_shape() {
+    for (parameters, expected_manual) in [
+        (
+            serde_json::json!({"runtime_id":"runtime","conversation_id":"conversation"}),
+            false,
+        ),
+        (
+            serde_json::json!({"runtime_id":"runtime","conversation_id":"conversation","manual":false}),
+            false,
+        ),
+        (
+            serde_json::json!({"runtime_id":"runtime","conversation_id":"conversation","manual":true}),
+            true,
+        ),
+    ] {
+        let command: Command = serde_json::from_value(serde_json::json!({
+            "command":"readBackgroundTasks","parameters":parameters
+        }))
+        .unwrap();
+        let Command::ReadBackgroundTasks { manual, .. } = &command else {
+            panic!("wrong command")
+        };
+        assert_eq!(*manual, expected_manual);
+        let wire = serde_json::to_value(command).unwrap();
+        assert_eq!(
+            wire["parameters"].get("manual"),
+            expected_manual.then_some(&serde_json::Value::Bool(true))
+        );
+    }
+}

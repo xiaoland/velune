@@ -21,7 +21,7 @@ use crate::{
 };
 use ingress::Ingress;
 use reqwest::Client;
-use routes::{Route, build_routes};
+use routes::build_routes;
 use std::{
     collections::BTreeMap,
     net::TcpListener,
@@ -179,8 +179,6 @@ impl ExecutionBackends {
 
 pub struct Runner {
     telemetry: Arc<RwLock<TelemetryContext>>,
-    config: GatewayConfig,
-    routes: Arc<RwLock<BTreeMap<String, Route>>>,
     endpoint: String,
     token: String,
     stopping: Arc<AtomicBool>,
@@ -200,19 +198,6 @@ impl Runner {
             parent,
             parent_revision: revision,
         };
-    }
-    /// Replace only runtime aliases. In-flight calls retain their captured target.
-    /// Target configurations, credentials and the ingress token stay unchanged.
-    pub fn replace_aliases(
-        &self,
-        aliases: BTreeMap<String, String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let next = build_routes(&self.config, &aliases)?;
-        *self
-            .routes
-            .write()
-            .map_err(|_| GatewayError("gateway alias lock"))? = next;
-        Ok(())
     }
     pub fn start(
         config: GatewayConfig,
@@ -264,7 +249,7 @@ impl Runner {
             )));
         }
         config.validate().map_err(GatewayError)?;
-        let routes = Arc::new(RwLock::new(build_routes(&config, &aliases)?));
+        let routes = build_routes(&config, &aliases)?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -297,7 +282,7 @@ impl Runner {
         let telemetry = Arc::new(RwLock::new(TelemetryContext::default()));
         let state = Arc::new(Ingress {
             telemetry: telemetry.clone(),
-            routes: routes.clone(),
+            routes,
             token: token.clone(),
             resolver: credential_resolver,
             client,
@@ -335,8 +320,6 @@ impl Runner {
         })?;
         Ok(Self {
             telemetry,
-            config,
-            routes,
             endpoint: format!("http://127.0.0.1:{}/v1", address.port()),
             token,
             stopping,

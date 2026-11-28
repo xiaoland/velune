@@ -40,10 +40,6 @@ impl RuntimeKind {
             Self::Acp => "acp-v1",
         }
     }
-
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.id() == id)
-    }
 }
 
 impl std::fmt::Display for RuntimeKind {
@@ -58,14 +54,9 @@ mod tests {
     use serde::Deserialize;
 
     #[test]
-    fn retired_codex_adapter_has_no_runtime_alias() {
-        assert!(RuntimeKind::from_id("codex-0.159").is_none());
+    fn unsupported_adapter_identifier_is_rejected_by_wire_decode() {
         let retired =
             serde::de::value::StrDeserializer::<serde::de::value::Error>::new("codex-0.159");
         assert!(RuntimeKind::deserialize(retired).is_err());
-        assert_eq!(
-            RuntimeKind::from_id("codex-0.166"),
-            Some(RuntimeKind::Codex166)
-        );
     }
 }

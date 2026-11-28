@@ -33,9 +33,9 @@ enum DevelopmentCheck {
         "--experience-compaction-only",
         "--experience-sidebar-only",
         "--experience-runtime-recovery-only",
-        "--experience-workspace-only",
     ]
     private static let retiredComposerChecks: Set<String> = [
+        "--check-composer-sharing",
         "--check-composer-state",
         "--check-composer-recovery-write",
         "--check-composer-recovery-read",
@@ -43,6 +43,7 @@ enum DevelopmentCheck {
 
     // First match wins within each lifecycle phase.
     private static let launchChecks: [LaunchCheck] = [
+        .init("--check-group-creation", .beforeSwiftUI, run: groupCreationCheck),
         .init("--check-conversation-requests", .beforeSwiftUI, run: conversationRequestChecks),
         .init("--check-notification-navigation", .beforeSwiftUI, run: notificationNavigationChecks),
         .init("--check-outgoing-submissions", .beforeSwiftUI, run: outgoingSubmissionChecks),
@@ -69,6 +70,15 @@ enum DevelopmentCheck {
     ]
 
     static func runBeforeSwiftUI(admit: () -> Void) {
+        let retiredNativeChecks = [
+            "--experience-workspace-only": "navigation",
+            "--experience-visual-only": "appearance-zoom",
+            "--check-credits": "controls",
+        ]
+        for (flag, replacement) in retiredNativeChecks where arguments.contains(flag) {
+            FileHandle.standardError.write(Data("旧检查 \(flag) 已退役；请使用 scripts/check-macos-composer.py \(replacement)。\n".utf8))
+            exit(2)
+        }
         guard let check = requestedLaunchCheck(in: .beforeSwiftUI) else { return }
         admit()
         check.run()
@@ -98,11 +108,7 @@ enum DevelopmentCheck {
         exit(0)
     }
 
-    /// Check fixtures can have no NSWindow while exercising data-driven polling.
-    static var allowsSyntheticPolling: Bool {
-        MacExecutionContext.admitted.isDevelopment && arguments.contains { $0.hasPrefix("--check-") }
-    }
-
+    /// Manual preview scenarios run in the requested window and leave it available for inspection.
     static func runAfterWindowStart(_ window: ConversationWindowModel) {
         if arguments.contains("--check-split-panes"), !window.isSplit {
             window.split(.horizontal)
@@ -118,7 +124,6 @@ enum DevelopmentCheck {
         if arguments.contains("--check-edit-message") { window.focused.checkEditMessage() }
         if arguments.contains("--check-list-actions") { window.checkListActions() }
         if arguments.contains("--check-side-chat") { window.checkSideChat() }
-        if arguments.contains("--check-group-creation") { window.checkGroupCreation() }
         if arguments.contains("--check-dock-areas") {
             window.tools.move(.outline, to: .docked(.left))
             window.tools.move(.list, to: .docked(.right))
@@ -129,7 +134,6 @@ enum DevelopmentCheck {
             window.tools.bottomHeight = Double(ComposerTextView.minimumHeight + 54)
             UserDefaults.standard.set(true, forKey: "NSQuitAlwaysKeepsWindows")
         }
-        if arguments.contains("--check-composer-sharing") { window.checkComposerSharing() }
     }
 }
 #endif

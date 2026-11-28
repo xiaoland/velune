@@ -30,13 +30,8 @@ pub(super) struct State {
     pub(super) default_model_auto_compactions: Vec<ModelAutoCompaction>,
 }
 
-/// Rust-only commands for an initialized Codex connection. `Start` creates a
-/// thread using the cwd/config captured by `prepare_codex_commands`; `Resume`
-/// starts an empty-input turn, not a history load or a connection bootstrap.
+/// Commands for an open Codex conversation. Resume starts an empty-input turn.
 pub enum CodexCommand {
-    Start {
-        runtime_id: String,
-    },
     Send(crate::TurnInput),
     Resume {
         effort: Option<String>,
@@ -136,7 +131,6 @@ pub(super) struct Commands {
     pub(super) enabled: bool,
     generation: u64,
     next: u64,
-    start_cwd: Option<Option<PathBuf>>,
     pending: BTreeMap<u64, CommandOperation>,
     receipts: std::collections::VecDeque<CodexOperationReceipt>,
     retention: BTreeMap<u64, DataRetention>,
@@ -161,10 +155,6 @@ struct CommandRetention {
     late_write: DataRetention,
 }
 enum CommandOperationKind {
-    Start {
-        cwd: Option<PathBuf>,
-        runtime_id: String,
-    },
     Send {
         title: String,
         started: Option<String>,
@@ -283,7 +273,6 @@ impl Commands {
             });
         }
         self.early = Default::default();
-        self.start_cwd = None;
     }
     pub(super) fn next_generation(&mut self) -> Result<()> {
         self.invalidate("Codex connection replaced; mutation was not replayed");
@@ -297,49 +286,6 @@ impl Commands {
 }
 
 impl NativeSession {
-    /// Explicitly synchronous initialization/restart boundary. Never call this
-    /// from an application's state-owner loop. Existing create/open also prepare
-    /// a loaded thread; this method additionally prepares async `Start`.
-    pub fn prepare_codex_commands(&mut self, cwd: Option<&Path>) -> Result<()> {
-        if self.config.kind != NativeKind::Codex166 {
-            return Err(Error::new("Not a Codex session"));
-        }
-        self.ensure_idle()?;
-        self.validate_cwd(cwd)?;
-        if self.native_id.is_some() {
-            if self.process_ended {
-                self.restart_required = true;
-            }
-            if self.restart_needed() && (self.has_background_work() || self.has_pending_requests())
-            {
-                return Err(Error::with_code(
-                    "Codex still owns native work",
-                    "outstanding_work",
-                ));
-            }
-            self.prepare_turn(None, None)?;
-        } else {
-            if self.failed || self.process_ended {
-                return Err(Error::with_code(
-                    "Reconnect Codex before preparation",
-                    "needs_preparation",
-                ));
-            }
-            if self.restart_required && (self.config.gateway.is_some() || self.gateway_turn) {
-                return Err(Error::with_code(
-                    "Reconnect Codex with the selected execution configuration before preparing a new thread",
-                    "needs_preparation",
-                ));
-            }
-            self.codex_capture_provider(cwd)?;
-            // Native model/provider selection is carried by thread/start's
-            // options; it does not require replacing an unbound native child.
-            self.restart_required = false;
-            self.codex.commands.start_cwd = Some(cwd.map(Path::to_path_buf));
-        }
-        Ok(())
-    }
-
     fn codex_dispatch_deadline(&self, requested: std::time::Instant) -> std::time::Instant {
         self.codex
             .commands
@@ -372,12 +318,7 @@ impl NativeSession {
         if self.failed
             || self.process_ended
             || (self.restart_needed()
-                && matches!(
-                    command,
-                    CodexCommand::Start { .. }
-                        | CodexCommand::Send(_)
-                        | CodexCommand::Resume { .. }
-                ))
+                && matches!(command, CodexCommand::Send(_) | CodexCommand::Resume { .. }))
         {
             return Err(CodexAdmissionError::NeedsPreparation);
         }
@@ -427,27 +368,6 @@ impl NativeSession {
             command: command_retention,
         };
         let (method, params, kind) = match command {
-            CodexCommand::Start { runtime_id } => {
-                self.ensure_idle()?;
-                if self.native_id.is_some() {
-                    return Err(Error::new("Codex already has a thread").into());
-                }
-                let cwd = self
-                    .codex
-                    .commands
-                    .start_cwd
-                    .clone()
-                    .ok_or(CodexAdmissionError::NeedsPreparation)?;
-                let mut params = self.codex_options(cwd.as_deref());
-                if self.side {
-                    params["ephemeral"] = json!(true);
-                }
-                (
-                    "thread/start",
-                    params,
-                    CommandOperationKind::Start { cwd, runtime_id },
-                )
-            }
             CodexCommand::Send(input) => self.codex_admit_turn(&input, false)?,
             CodexCommand::Resume {
                 effort,
@@ -1069,13 +989,6 @@ impl NativeSession {
                     ));
                 }
                 match &mut op.kind {
-                    CommandOperationKind::Start { cwd, runtime_id } => {
-                        let thread = result["thread"]["id"].as_str().ok_or_else(|| {
-                            Error::with_code("Codex start missing thread identity", "transport")
-                        })?;
-                        self.codex_install_created(result, cwd.as_deref(), runtime_id)?;
-                        Ok((Some(thread.into()), None))
-                    }
                     CommandOperationKind::Send {
                         started,
                         ended,

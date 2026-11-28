@@ -351,20 +351,8 @@ fn run_prepared(prepared: PreparedCommand, input: Option<Vec<u8>>) -> Result<Vec
 pub fn install_resources(target: &ExecutionTarget, local: &Path, remote: &Path) -> Result<()> {
     absolute(local)?;
     absolute(remote)?;
-    let names = [
-        "pi_sdk.mjs",
-        "pi_sessions.mjs",
-        "pi_rpc.mjs",
-        "pi_virtual_model.mjs",
-        "pi_transcript.mjs",
-        "pi_background_work.mjs",
-        "pi_subagents.mjs",
-        "pi_auth.mjs",
-        "pi_provider_import.mjs",
-        "huihua_sessions.mjs",
-    ];
     let mut files = Vec::new();
-    for name in names {
+    for name in include_str!("../resource-scripts.txt").lines() {
         collect_resource(&local.join(name), &remote.join(name), &mut files)?;
     }
     let dependencies = local.join("node_modules");

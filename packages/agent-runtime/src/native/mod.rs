@@ -17,13 +17,8 @@ mod claude;
 mod claude_background;
 mod claude_composed;
 pub use claude_composed::ClaudeComposedAcceptance;
-mod claude_port;
-pub use claude_port::{
-    ClaudeAdmissionError, ClaudeCommand, ClaudeDelivery, ClaudeOperationReceipt,
-    ClaudeOperationTicket,
-};
 #[cfg(all(test, unix))]
-mod claude_port_tests;
+mod claude_protocol_tests;
 pub use claude::{
     CLAUDE_EFFORT_LEVELS, claude_login_directory, claude_user_config_directory,
     rename_claude_session_at,
@@ -54,10 +49,6 @@ pub use codex_history::{
     HandoffSummaryRecovery, codex_context_provider, materialize_owned_codex_import,
 };
 mod deepseek;
-mod deepseek_port;
-pub use deepseek_port::{
-    DshAdmissionError, DshCommand, DshNativeError, DshReceipt, DshReceiptStage, DshTicket,
-};
 pub(crate) mod rpc;
 #[derive(thiserror::Error, Debug)]
 #[error("{detail}")]
@@ -234,7 +225,6 @@ pub struct NativeSession {
     gateway_turn: bool,
     /// A DeepSeek process may require Velune's model metadata to resume.
     dsh_history_overlay: bool,
-    dsh_port: Option<deepseek_port::Port>,
     /// A side chat: a temporary copy of a conversation that is never saved.
     side: bool,
     /// What only a Codex app-server session tracks.
@@ -284,11 +274,7 @@ impl NativeSession {
                         .and_then(|model| model.provider_id.as_deref())
                         != Some("velune")
             }
-            NativeKind::DeepSeek => {
-                owns_reported_control()
-                    && !self.dsh_history_overlay
-                    && !self.dsh_has_pending_operations()
-            }
+            NativeKind::DeepSeek => owns_reported_control() && !self.dsh_history_overlay,
             NativeKind::ClaudeCode => true,
         }
     }
@@ -379,7 +365,6 @@ impl NativeSession {
             process_ended: false,
             gateway_turn: tunnel.is_some(),
             dsh_history_overlay,
-            dsh_port: None,
             side: false,
             codex: Default::default(),
             claude: Default::default(),
@@ -1062,8 +1047,6 @@ impl NativeSession {
             && !self.side
             && !self.restart_required
             && !self.claude.requires_action
-            && !self.claude.commands.barrier
-            && !self.claude.commands.cleanup_required
             && self.native_id.is_some()
             && self.claude.bound_session_id == self.native_id
             && effort.is_none_or(|effort| self.claude.launched_effort.as_deref() == Some(effort))
@@ -1103,7 +1086,7 @@ impl NativeSession {
         self.claude.bound_session_id = None;
         self.codex.commands.next_generation()?;
         if self.config.kind == NativeKind::ClaudeCode {
-            self.claude.commands.next_generation()?;
+            self.claude.result_is_terminal = false;
             self.claude.release_when_idle = false;
             self.claude.foreground = None;
             self.claude.tasks.clear();
@@ -1130,7 +1113,7 @@ impl NativeSession {
             effort,
             permission_mode,
         )?;
-        if self.codex.commands.enabled || self.claude.commands.enabled {
+        if self.codex.commands.enabled {
             self.rpc.defer_cleanup();
         }
         // The active endpoint may be a remote loopback tunnel, only valid for this child.
@@ -1179,8 +1162,7 @@ impl NativeSession {
     /// This persistent, in-memory lifecycle fact remains true when later polls
     /// return early with Ok; it does not probe OS process liveness or perform IO.
     pub fn requires_failure_cleanup(&self) -> bool {
-        (self.failed || self.dsh_port.as_ref().is_some_and(|port| port.blocked()))
-            && !self.process_ended
+        self.failed && !self.process_ended
     }
 
     /// Advances received native events without waiting for a response. The
@@ -1188,12 +1170,6 @@ impl NativeSession {
     /// a background worker and checks it with `try_recv` here. Do not add
     /// synchronous RPC or file reads to this path.
     pub fn poll(&mut self) -> Result<()> {
-        if self.dsh_port.is_some() {
-            return self.dsh_poll_port();
-        }
-        if self.claude.commands.enabled {
-            return self.claude_poll_port();
-        }
         if self.failed || self.process_ended {
             if self.failed && !self.process_ended {
                 let _ = self.codex_harvest_commands();
@@ -1242,9 +1218,6 @@ impl NativeSession {
     }
 
     fn fail_connection(&mut self) {
-        self.claude
-            .commands
-            .invalidate("Claude connection failed; not replayed");
         // A flushed one-way reply remains provably written even if the read
         // side fails in the same poll batch.
         let _ = self.codex_harvest_commands();
@@ -1266,8 +1239,7 @@ impl NativeSession {
                 })
                 .map(|message| message.id.clone())
         });
-        if !self.codex.commands.enabled && !self.claude.commands.enabled && self.dsh_port.is_none()
-        {
+        if !self.codex.commands.enabled {
             self.rpc.shutdown();
             self.tunnel = None;
             self.process_ended = true;
@@ -1302,8 +1274,6 @@ impl NativeSession {
 
     /// Native title commands are independent of turn execution and approvals.
     pub fn rename(&mut self, title: &str) -> Result<()> {
-        self.dsh_require_sync_facade()?;
-        self.ensure_claude_sync_mutation()?;
         if matches!(self.config.kind, NativeKind::Codex166) {
             self.codex_cancel_title();
         }
@@ -1374,11 +1344,7 @@ impl NativeSession {
     /// Best-effort metadata still uses the process and its model connection,
     /// but does not make the visible conversation busy or disable input.
     pub fn has_pending_metadata(&self) -> bool {
-        self.codex.title.pending()
-            || self.rpc.has_pending_writes()
-            || self.codex.commands.pending()
-            || self.claude.commands.pending()
-            || self.dsh_has_pending_operations()
+        self.codex.title.pending() || self.rpc.has_pending_writes() || self.codex.commands.pending()
     }
 
     /// Native sub-agents and tasks, excluding client metadata requests.
@@ -1534,11 +1500,6 @@ impl NativeSession {
     /// Ends a gateway turn's process once the turn and its work have ended.
     /// Codex retains each context's provider and uses a new context to switch.
     pub fn release_override(&mut self) -> Result<()> {
-        self.dsh_require_sync_facade()?;
-        let _ = self.claude_harvest_writes();
-        self.claude
-            .commands
-            .invalidate("Claude explicit cleanup; not replayed");
         let _ = self.codex_harvest_commands();
         self.codex
             .commands
@@ -1546,17 +1507,12 @@ impl NativeSession {
         self.rpc.shutdown();
         self.tunnel = None;
         self.process_ended = true;
-        self.claude.commands.cleanup_complete();
         self.codex_clear_failed_writes();
         self.codex.threads.clear();
         self.gateway_turn = false;
         Ok(())
     }
     pub fn shutdown(&mut self) -> Result<()> {
-        let _ = self.claude_harvest_writes();
-        self.claude
-            .commands
-            .invalidate("Claude explicit cleanup; not replayed");
         let _ = self.codex_harvest_commands();
         self.codex
             .commands
@@ -1565,16 +1521,13 @@ impl NativeSession {
             self.codex_end_recovery(Some(TurnOutcome::Cancelled), false);
         }
         // A side question's child is let end on its own, as at a stop.
-        if self.side && self.config.kind == NativeKind::ClaudeCode && !self.claude.commands.enabled
-        {
+        if self.side && self.config.kind == NativeKind::ClaudeCode {
             self.rpc.retire();
         } else {
             self.rpc.shutdown();
         }
         self.tunnel = None;
         self.process_ended = true;
-        self.claude.commands.cleanup_complete();
-        self.dsh_port_shutdown();
         self.codex_clear_failed_writes();
         self.codex.threads.clear();
         self.clear_requests();
@@ -1588,8 +1541,6 @@ impl NativeSession {
         Ok(())
     }
     fn ensure_no_pending_commands(&self) -> Result<()> {
-        self.dsh_require_sync_facade()?;
-        self.ensure_claude_sync_mutation()?;
         if self.codex.commands.pending() {
             return Err(Error::with_code(
                 "Codex command still pending",
@@ -1733,9 +1684,7 @@ impl NativeSession {
     fn finish_turn(&mut self, state: RunState) -> Result<()> {
         // Parsing/projecting this record may have consumed the remaining budget.
         // A terminal must not erase that budget before the owner observes it.
-        if self.claude.commands.enabled {
-            self.claude_settle_barrier()?;
-        }
+
         if self.codex.commands.enabled {
             self.codex_harvest_commands()?;
             self.rpc.check_failure()?;
@@ -1762,13 +1711,9 @@ impl NativeSession {
             .iter()
             .filter(|(_, pending)| {
                 pending.background
-                    || (self.config.kind == NativeKind::DeepSeek
-                        && self.dsh_port.is_some()
-                        && !self.failed)
                     || (self.config.kind == NativeKind::Codex166
                         && self.codex.commands.enabled
                         && !self.failed)
-                    || (self.claude.commands.enabled && !self.failed)
             })
             .map(|(id, _)| id.clone())
             .collect::<std::collections::BTreeSet<_>>();
@@ -1821,13 +1766,8 @@ impl NativeSession {
             && !self.claude_has_ongoing_background()
             && !self.has_pending_requests()
             && !self.rpc.has_pending_writes()
-            && !self.claude.commands.pending()
             && !self.claude.requires_action
         {
-            if self.claude.commands.enabled {
-                self.claude.commands.cleanup_required = true;
-                return;
-            }
             self.rpc.finish();
             self.tunnel = None;
             self.process_ended = true;

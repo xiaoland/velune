@@ -152,24 +152,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn chatgpt_subscription_omits_unsupported_metadata_without_dropping_input() {
-        let mut request = json!({"model":"synthetic", "stream":true,
-            "metadata":{"user_id":"synthetic-user"},
-            "input":[{"role":"user","content":"keep this input"}]});
-        let input = request["input"].clone();
-        codex_request(&mut request).unwrap();
-        assert!(request.get("metadata").is_none());
-        assert_eq!(request["input"], input);
-        assert_eq!(request["store"], false);
-    }
-
-    #[test]
     fn codex_request_summarizes_omissions_once_and_preserves_inline_history() {
         let mut input =
             vec![json!({"role":"system","content":"synthetic instructions","id":null}); 256];
+        input.push(json!({"role":"user","content":"keep this input"}));
         input.push(json!({"type":"function_call_output","call_id":"keep-call","output":"synthetic result"}));
         let mut body = json!({
-            "instructions":"caller instructions", "input":input,
+            "model":"synthetic", "instructions":"caller instructions", "input":input,
             "temperature":0.5, "user":"synthetic user", "service_tier":"synthetic tier",
             "metadata":{"user_id":"synthetic-user"},
             "synthetic extension":{"id":"keep-nested-id"}
@@ -178,11 +167,12 @@ mod tests {
         adapt_codex_request(&mut body, |fields, count| omissions.push((fields, count))).unwrap();
         let mut expected_input =
             vec![json!({"role":"developer","content":"synthetic instructions"}); 256];
-        expected_input.push(input.pop().unwrap());
+        expected_input.push(json!({"role":"user","content":"keep this input"}));
+        expected_input.push(json!({"type":"function_call_output","call_id":"keep-call","output":"synthetic result"}));
         assert_eq!(
             body,
             json!({
-                "instructions":"caller instructions","input":expected_input,
+                "model":"synthetic", "instructions":"caller instructions","input":expected_input,
                 "synthetic extension":{"id":"keep-nested-id"},"stream":true,"store":false
             })
         );

@@ -55,13 +55,11 @@ def build(out: Path) -> None:
     subprocess.run(["cargo", "build", "--locked", "-p", "velune-bindings"], cwd=REPO, check=True)
     library = next(path for name in ("libvelune_bindings.dylib", "libvelune_bindings.so")
                    if (path := REPO / "target/host-rust/debug" / name).exists())
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    subprocess.run(["cargo", "run", "--locked", "--target-dir", "target/build-tools", "-p", "velune-build-tools",
-                    "--bin", "velune-bindgen", "--", "generate", "--library", str(library), "--no-format",
-                    "--language", "python", "--out-dir", str(out)], cwd=REPO, check=True)
+    out.mkdir(parents=True, exist_ok=True)
     shutil.copy2(library, out / library.name)
+    subprocess.run([sys.executable, "scripts/build-support.py", "bindgen", "--library", str(library),
+                    "--language", "python", "--out-dir", str(out), "--artifact", str(out / library.name)],
+                   cwd=REPO, check=True)
 
 
 def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
@@ -97,6 +95,7 @@ def worker(name: str, config: dict, result_path: Path, root: Path) -> int:
 
 
 def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
+    """A result is evidence only when its reporting process also exited cleanly."""
     try:
         result = json.loads(path.read_text())
         if (not isinstance(result, dict) or result.get("case") != name
@@ -110,7 +109,8 @@ def worker_result(name: str, path: Path, returncode: int, log: Path) -> dict:
     except FileNotFoundError:
         result = {"case": name, "status": "failed", "error": f"worker produced no result; see {log.name}"}
     except (OSError, ValueError) as error:
-        result = {"case": name, "status": "failed", "error": f"invalid worker result: {error}; see {log.name}"}
+        result = {"case": name, "status": "failed", "error": f"worker produced an invalid result: {error}; see {log.name}"}
+    result["worker_returncode"] = returncode
     if returncode != 0:
         result["status"] = "failed"
         detail = f"worker exited with {returncode}; see {log.name}"
@@ -141,7 +141,7 @@ def main() -> int:
     if args.build:
         build(args.bindings)
     sys.path.insert(0, str(HERE))
-    from velune_acceptance import bindings
+    from velune_acceptance import bindings, provenance
 
     tools = {tool: str(getattr(args, tool).expanduser().resolve(strict=True))
              for tool in TOOLS if getattr(args, tool) is not None}
@@ -159,6 +159,8 @@ def main() -> int:
         "run": run_id,
         "source": {"head": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain")), "label": args.label},
         "bindings_sha256": bindings.digest(bindings.library(Path(config["bindings"]))),
+        "inputs": provenance.capture(Path(config["bindings"]),
+                                     Path(config["resources"]) if config["resources"] else None, HERE),
         "tools": {tool: {"path": path, "version": tool_version(Path(path), tool_search_path)}
                   for tool, path in tools.items()},
         "cases": [],

@@ -58,6 +58,11 @@ import VeluneBindings
         }
         let device = DeviceStore(transport: transport)
         device.start()
+        // This check continues an existing configured runtime. Opening its
+        // history can invalidate a concurrent first list read.
+        guard until({ device.enabledRuntimeInstances.contains { $0.id == runtimeID } }) else {
+            fail("已配置的 Claude 运行时未出现在设备列表")
+        }
         let workspace = ConversationWindowModel(application: device, kind: .workspace)
         let source = workspace.focused
         source.store.start(loadFirstConversation: false, opening: sourceID)
@@ -89,7 +94,7 @@ import VeluneBindings
             guard edit.editor.submission == replacement else { fail("原生编辑器没有提交修改后的正文") }
             guard until({ edit.canSubmit }) else { fail(edit.noticeText ?? "编辑器禁止提交") }
             edit.send(in: workspace)
-            guard until({ edit.failure != nil || (source.editing == nil && textVisible("edited reply received")) }),
+            guard until({ source.store.checkAccess.pollProjection(); return edit.failure != nil || (source.editing == nil && textVisible("edited reply received")) }),
                   edit.failure == nil else { fail(edit.failure ?? "编辑提交后未收到 Claude 回复") }
             guard source.store.loadedConversationID == sourceID, workspace.focused.id == source.id else {
                 fail("原地提交切换了标签或会话 ID")
@@ -144,7 +149,7 @@ import VeluneBindings
         }
         let sourceBefore = source.store.loadedConversationID
         workspace.composerContext(for: tab).send()
-        guard until({ !store.inputSubmissionAllowed || store.transcript.rows.contains { row in
+        guard until({ store.checkAccess.pollProjection(); return !store.inputSubmissionAllowed || store.transcript.rows.contains { row in
             row.message.blocks.contains(.text(text: "fork reply received"))
         } }), store.inputSubmissionAllowed else { fail("首次发送后未收到回复 \(store.inputAccess) \(store.device.problems.first?.detail ?? "")") }
         guard store.loadedConversationID == targetID, source.store.loadedConversationID == sourceBefore,
@@ -160,10 +165,11 @@ import VeluneBindings
 /// turn's settings. No runtime or daily state directory is opened.
 @MainActor private func forkExperienceChecks(home: URL) {
     ConversationStore.checkConcurrentForkDispatch(home: home)
+    checkWorkspaceWindowRestoration(home: home)
     let local = DeviceStore(preview: true)
     let source = DeviceStore(preview: true, peerID: "synthetic-fork-peer")
     let window = ConversationWindowModel(application: local, kind: .workspace)
-    let title = "Synthetic conversation whose descriptive title is too wide for a tab (1)"
+    let title = "Synthetic conversation whose descriptive title is too wide for a tab (123)"
     let summary = ConversationSummary(id: "synthetic-fork", title: .native(title), updatedAtUnixMs: nil,
         createdAtUnixMs: nil, runtimeId: "sample-instance", cwd: nil, canRename: true, canDelete: true,
         parentConversationId: nil, nativeReadState: nil)
@@ -178,16 +184,36 @@ import VeluneBindings
         transcriptMessageIdentities: identities, messageIdentityConfirmations: [], pendingInteractions: [],
         actions: .init(inputAccess: .editable, canSend: true, canCancel: false, canSwitch: true),
         followUp: .init(), subAgents: [], collaborators: []))
-    let originalTab = window.focused.id
-    window.openFork(adopting: result, device: source, opening: .newTab)
+    let defaults = UserDefaults.standard
+    let originalPreferences = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+    defer { defaults.setVolatileDomain(originalPreferences, forName: UserDefaults.argumentDomain) }
+    func openingPreference(_ value: String?) {
+        var preferences = originalPreferences
+        preferences["forkConversationOpening"] = value
+        defaults.setVolatileDomain(preferences, forName: UserDefaults.argumentDomain)
+    }
+    // Each tab receives its own snapshot, so the actual native label exercises
+    // both truncation modes without changing the title after the assertion.
+    for (preference, shownTitle, truncation): (String?, String, NSLineBreakMode) in [
+        (nil, "Long ordinary conversation", .byTruncatingTail),
+        ("unknown-placement", "Long conversation (2b)", .byTruncatingTail),
+        ("newTab", title, .byTruncatingMiddle),
+    ] {
+        openingPreference(preference)
+        precondition(defaults.string(forKey: "forkConversationOpening") == preference)
+        var snapshot = result.snapshot!
+        if preference != "newTab" { snapshot.conversation.id = "fork-" + (preference ?? "default") }
+        snapshot.conversation.title = .native(shownTitle)
+        let before = window.tabCount, originalTab = window.focused.id
+        window.openFork(adopting: SnapshotResult(snapshot: snapshot), device: source)
+        precondition(window.tabCount == before + 1 && window.focused.id != originalTab && window.layout.paneIDs.count == 1
+                     && window.allTabs.contains { $0.id == originalTab })
+        let item = TabItemView(tab: window.focused, bar: nil, model: window)
+        item.refresh()
+        let label = item.subviews.compactMap { $0 as? NSTextField }.first
+        precondition(label?.lineBreakMode == truncation && label?.stringValue == shownTitle && item.toolTip == shownTitle)
+    }
     let store = window.focused.store
-    precondition(window.tabCount == 2 && window.allTabs.contains { $0.id == originalTab })
-    precondition(window.focused.title == title)
-    let tabItem = TabItemView(tab: window.focused, bar: nil, model: window)
-    tabItem.refresh()
-    let tabLabel = tabItem.subviews.compactMap { $0 as? NSTextField }.first
-    precondition(tabLabel?.lineBreakMode == .byTruncatingMiddle && tabItem.toolTip == title,
-                 "长标题应留出尾部编号，提示仍显示完整标题")
     precondition(store.device === source && store.device !== local, "fork 必须留在发起设备")
     precondition(store.loadedConversationID == "synthetic-fork" && !store.isLoading)
     precondition(store.nextTurn != nil, "接收快照后立即提供执行配置，不等待列表扫描")
@@ -199,7 +225,8 @@ import VeluneBindings
 
     let split = ConversationWindowModel(application: local, kind: .workspace)
     let originalPane = split.focusedPaneID
-    split.openFork(adopting: result, device: source, opening: .rightSplit)
+    openingPreference("rightSplit")
+    split.openFork(adopting: result, device: source)
     precondition(split.layout.paneIDs == [originalPane, split.focusedPaneID] && split.tabCount == 2)
     precondition(split.focused.store.device === source && split.focused.title == title)
     split.focused.store.close()
@@ -213,7 +240,8 @@ import VeluneBindings
         model.start(restoring: nil, seed: seed)
         openedWindow = model
     }
-    sourceWindow.openFork(adopting: result, device: source, opening: .newWindow)
+    openingPreference("newWindow")
+    sourceWindow.openFork(adopting: result, device: source)
     precondition(sourceWindow.tabCount == 1 && sourceWindow.focused.id == sourceTab)
     precondition(openedWindow?.focused.store.device === source && openedWindow?.focused.title == title)
     precondition(openedWindow?.focused.store.nextTurn != nil)
@@ -234,6 +262,13 @@ import VeluneBindings
     try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent("fork-loading.png"))
     store.close()
     FileHandle.standardError.write(Data("PASS fork: tab, right split and new window preserve the source and adopt the named snapshot on its execution device; composer is ready immediately\n".utf8))
+}
+
+private struct ExpectedWorkspace: Codable {
+    let paneOrder: [UUID]
+    let tabs: [[UUID]]
+    let selections: [UUID]
+    let creationDirectories: [UUID: String]
 }
 
 /// Synthetic, hidden checks: no scenes, hotkeys, orderFront, activation or input injection.
@@ -301,11 +336,6 @@ import VeluneBindings
     }
     if CommandLine.arguments.contains("--experience-fork-only") { forkExperienceChecks(home: home); exit(0) }
     if CommandLine.arguments.contains("--experience-drag-provider-only") { dragProviderChecks() }
-    if CommandLine.arguments.contains("--experience-workspace-only") {
-        ConversationStore.checkColdOpeningRetryLifecycle(home: home)
-        workspaceRecoveryChecks(home: home)
-        exit(0)
-    }
     if CommandLine.arguments.contains("--experience-native-row-order-only") { TranscriptTableController.checkMaterializedRowOrder(); exit(0) }
     if CommandLine.arguments.contains("--experience-appearance-zoom-only") { appearanceZoomChecks(home: home) }
     AppearancePreferences.shared.load(home: home) { fatalError($0) }
@@ -316,6 +346,7 @@ import VeluneBindings
     func stamp(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
     if CommandLine.arguments.contains("--experience-navigation-only") {
         ConversationStore.checkOpeningCatalogAdmission()
+        ConversationStore.checkColdOpeningRetryLifecycle(home: home)
         navigationTranscriptChecks(home: home)
     }
     if CommandLine.arguments.contains("--experience-typography-only") {
@@ -381,19 +412,26 @@ import VeluneBindings
         note("PASS transcript chrome typography: activity, attachment, code label and control fonts follow appearance changes on reused cells")
         exit(0)
     }
-    if !CommandLine.arguments.contains("--experience-visual-only") {
-    ConversationStore.checkColdOpeningRetryLifecycle(home: home)
     let transport = Transport(stateDirectory: home.appendingPathComponent("application"), resourcesDirectory: Bundle.main.resourceURL!)
     try! transport.prepareForLaunch()
     MacNativePersistenceGate.open()
     let device = DeviceStore(transport: transport)
     let savedFile = home.appendingPathComponent("expected-window.json")
     if CommandLine.arguments.contains("--experience-reopen") {
-        let expected = try! JSONDecoder().decode(SavedWindowLayout.self, from: Data(contentsOf: savedFile))
+        let expected = try! JSONDecoder().decode(ExpectedWorkspace.self, from: Data(contentsOf: savedFile))
         let restored = ConversationWindowModel(application: device, kind: .workspace)
         restored.start(restoring: nil, seed: nil, persistenceID: UUID().uuidString)
-        precondition(restored.savedLayout.layout == expected.layout && restored.savedLayout.panes == expected.panes)
-        precondition(restored.savedLayout.creationTargets == expected.creationTargets)
+        let layout = restored.savedLayout
+        precondition(layout.layout.split(at: [])?.axis == .horizontal && layout.layout.paneIDs == expected.paneOrder)
+        precondition(expected.paneOrder.compactMap { layout.panes[$0]?.tabs } == expected.tabs)
+        precondition(expected.paneOrder.compactMap { layout.panes[$0]?.selected } == expected.selections)
+        precondition(restored.focusedPaneID == expected.paneOrder.last)
+        precondition(layout.creationTargets?.compactMapValues(\.cwd) == expected.creationDirectories)
+        for (tab, directory) in expected.creationDirectories {
+            restored.selectTab(tab)
+            precondition(restored.focused.id == tab && restored.focused.store.loadedConversationWorkingDirectory == directory,
+                         "重开后选择标签应恢复该标签独立的创建目录：\(directory)")
+        }
         precondition(AppearancePreferences.shared.values.ui == .large && AppearancePreferences.shared.values.code == .extraLarge)
         note("PASS new process: editor groups, ordered tabs, selections, lazy creation targets and appearance restored")
         exit(0)
@@ -414,15 +452,25 @@ import VeluneBindings
     let window = ConversationWindowModel(application: device, kind: .workspace)
     let identity = UUID().uuidString
     window.start(restoring: nil, seed: nil, persistenceID: identity)
-    wait { window.focused.store.isUnsentConversation }
-    window.focused.store.setUnsentWorkingDirectory("/tmp/alpha")
-    window.openInNewTab(); window.focused.store.setUnsentWorkingDirectory("/tmp/beta")
-    window.split(.horizontal); window.focused.store.setUnsentWorkingDirectory("/tmp/gamma")
-    window.openInNewTab(); window.focused.store.setUnsentWorkingDirectory("/tmp/delta")
+    func setDirectory(_ name: String) -> UUID {
+        wait { window.focused.store.isUnsentConversation }
+        window.focused.store.setUnsentWorkingDirectory("/tmp/" + name)
+        return window.focused.id
+    }
+    let left = window.focusedPaneID
+    let alpha = setDirectory("alpha")
+    window.openInNewTab()
+    let beta = setDirectory("beta")
+    window.split(.horizontal)
+    let right = window.focusedPaneID
+    let gamma = setDirectory("gamma")
+    window.openInNewTab()
+    let delta = setDirectory("delta")
     window.tools.move(.composer, to: .docked(.bottom)); window.tools.collapse(.bottom)
     wait { device.windowWorkspaceJournal.restore(id: identity, recoverLatest: false)?.panes.count == 2 }
-    let expected = device.windowWorkspaceJournal.restore(id: identity, recoverLatest: false)!
-    precondition(expected.panes.values.reduce(0, { $0 + $1.tabs.count }) == 4)
+    let saved = device.windowWorkspaceJournal.restore(id: identity, recoverLatest: false)!
+    let expected = ExpectedWorkspace(paneOrder: [left, right], tabs: [[alpha, beta], [gamma, delta]], selections: [beta, delta],
+                                    creationDirectories: [alpha: "/tmp/alpha", beta: "/tmp/beta", gamma: "/tmp/gamma", delta: "/tmp/delta"])
     try! JSONEncoder().encode(expected).write(to: savedFile, options: .atomic)
     let single = ConversationWindowModel(application: device, kind: .single)
     single.start(restoring: nil, seed: nil, persistenceID: UUID().uuidString)
@@ -495,20 +543,11 @@ import VeluneBindings
                  "抑制恢复中写入后仍须完整保留草稿")
     note("PASS restoration write transaction: nonempty legacy draft publication cannot replace the original tab; immediate second mount retains panes and draft")
     let fallback = device.windowWorkspaceJournal.restore(id: UUID().uuidString, recoverLatest: true)!
-    precondition(fallback.layout == expected.layout && fallback.panes == expected.panes)
+    precondition(fallback.layout == saved.layout && fallback.panes == saved.panes)
     note("PASS actual window lifecycle: structural edits persist without a text edit; two groups/four tabs; independent composer default; latest single window cannot replace workspace recovery")
-    }
-
-    let preview = DeviceStore(preview: true)
-    let previewWindow = ConversationWindowModel(application: preview, kind: .workspace)
-    previewWindow.tools.move(.composer, to: .docked(.bottom))
-    let model = previewWindow.composer(for: previewWindow.focused)
-    model.restore("请继续核对这份方案，并保留我正在编辑的内容。", attachments: [])
-    renderExperienceSamples(home: home, window: previewWindow, model: model, now: stamp(Date()))
     AppearancePreferences.shared.values.ui = .large
     AppearancePreferences.shared.values.code = .extraLarge
     precondition(!NSApp.isActive)
-    note("PASS hidden native rendering: message actions, client notification, wide/narrow composer and appearance form; process never activated")
     exit(0)
 }
 
@@ -753,82 +792,6 @@ import VeluneBindings
     exit(0)
 }
 
-@MainActor private func renderExperienceSamples(home: URL, window: ConversationWindowModel, model: ComposerModel, now: Int64) {
-    func capture(_ view: NSView, name: String, size: NSSize, appearance: NSAppearance.Name = .aqua) {
-        view.frame = NSRect(origin: .zero, size: size)
-        let host = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        host.appearance = NSAppearance(named: appearance)
-        host.contentView = view
-        view.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("无法绘制合成界面") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        try! bitmap.representation(using: .png, properties: [:])!.write(to: home.appendingPathComponent(name + ".png"))
-        precondition(!host.isVisible && !host.isKeyWindow)
-        host.contentView = nil
-    }
-    capture(NSHostingView(rootView: WindowRestorationPendingView()), name: "window-restoration-pending-light", size: NSSize(width: 520, height: 300))
-    capture(NSHostingView(rootView: WindowRestorationPendingView().environment(\.colorScheme, .dark)), name: "window-restoration-pending-dark", size: NSSize(width: 520, height: 300), appearance: .darkAqua)
-    let rows = MessageSampleCanvas(frame: NSRect(x: 0, y: 0, width: 1000, height: 780))
-    rows.wantsLayer = true; rows.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    let delegate = TranscriptTableController()
-    let messages: [DeliveredMessage] = [
-        .init(id: "user", role: .user, timestampUnixMs: now, blocks: [.text(text: "这份修改需要保留现有行为，并验证关键路径。")]),
-        .init(id: "assistant", role: .assistant, timestampUnixMs: now, blocks: [.text(text: "已保留输入与执行选择。下一步只检查本轮改变的路径。\n\n```swift\nlet input = workspace.currentInput\n```")]),
-        .init(id: "notification", role: .client, timestampUnixMs: now, blocks: [.text(text: "后台任务完成：工作区检查已通过。")]),
-    ]
-    var y: CGFloat = 0
-    func add(_ content: TranscriptRowContent, rendered: RenderedMessage?, id: String) {
-        let layout = TranscriptRowLayout.make(content, rendered: rendered, width: 1000, measurer: TextMeasurer())
-        let cell = TranscriptCellView()
-        cell.frame = NSRect(x: 0, y: y, width: 1000, height: layout.height)
-        cell.apply(layout, rowID: id, outlineToggle: nil, edit: nil, fork: nil, toggleHelp: nil, textDelegate: delegate, openArtifact: { _ in }, toggle: { _ in })
-        for button in cell.subviews.compactMap({ $0 as? NSButton }) { button.alphaValue = 1 }
-        for label in cell.subviews where label.accessibilityIdentifier() == "message-created-at" { label.alphaValue = 1 }
-        rows.addSubview(cell); y += layout.height
-    }
-    for message in messages {
-        if message.role == .assistant {
-            add(.work(label: "工作过程", expanded: false, settings: nil), rendered: nil, id: "work")
-            add(.workActions(text: "核对运行时目录与提交状态。"), rendered: nil, id: "work-actions")
-        }
-        add(.message(message, revision: 0, expanded: [], copies: true, edits: message.role == .user, forks: message.role == .assistant), rendered: RenderedMessage(message), id: message.id)
-    }
-    let editedMessage = DeliveredMessage(id: "user", role: .user, timestampUnixMs: now, blocks: [
-        .text(text: "请把刚才的方案再简化一些。\n\n保留现有的消息编辑入口，让我能直接修改正文，再决定是在原会话继续，还是另开一个会话。运行参数不需要一直展开。\n\n另外，发送失败时请保留我正在编辑的内容。"),
-    ])
-    for (name, height, appearance, revision) in [
-        ("message-editor", 450.0, NSAppearance.Name.aqua, String?.none),
-        ("message-editor-dark", 450.0, NSAppearance.Name.darkAqua, String?.none),
-        ("message-editor-dark-conflict", 520.0, NSAppearance.Name.darkAqua, Optional("synthetic-old-history")),
-    ] {
-        let request = MessageEditRequest(message: editedMessage, conversationID: nil, inPlace: true, isLast: false, revision: revision)
-        let session = MessageEditingSession(source: window.focused.store, request: request, presentation: .sheet)
-        capture(NSHostingView(rootView: MessageEditorView(session: session, window: window, source: window.focused)
-            .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
-            name: name, size: NSSize(width: 620, height: height), appearance: appearance)
-    }
-    let attached = DeliveredMessage(id: "attachment-editor", role: .user, blocks:
-        [.text(text: String(repeating: "编辑长正文保留换行与执行配置。\n", count: 40))] +
-        (0..<12).map { .file(path: "/tmp/" + String(repeating: "very-long-attachment-name-", count: 5) + "\($0).md") })
-    let attachedSession = MessageEditingSession(source: window.focused.store,
-        request: MessageEditRequest(message: attached, conversationID: nil, inPlace: true, isLast: false, revision: nil), presentation: .sheet)
-    capture(NSHostingView(rootView: MessageEditorView(session: attachedSession, window: window, source: window.focused)
-        .applicationAppearance().background(Color(nsColor: .windowBackgroundColor))),
-        name: "message-editor-long-attachments", size: NSSize(width: 620, height: 520))
-    capture(rows, name: "message-actions", size: NSSize(width: 1000, height: max(y, 500)))
-    for width: CGFloat in [1100, 560] {
-        let composer = ComposerView(store: window.focused.store, model: model, layout: window, send: {}, steer: {}, submission: { window.focused.submission(using: model) }, resume: {}, fillsHeight: true, recipient: "架构评审会话")
-        capture(NSHostingView(rootView: composer.applicationAppearance().background(Color(nsColor: .windowBackgroundColor))), name: "composer-\(Int(width))", size: NSSize(width: width, height: 230))
-    }
-    capture(NSHostingView(rootView: Form { AppearanceSettingsSection() }.formStyle(.grouped).applicationAppearance()), name: "appearance", size: NSSize(width: 690, height: 480))
-}
-
-@MainActor private final class MessageSampleCanvas: NSView {
-    override var isFlipped: Bool { true }
-}
-
 /// Targeted navigation and transcript checks, using only synthetic state and
 /// an unordered native window. Events below go directly to one cell, never
 /// through the application event queue or the system pointer.
@@ -916,15 +879,21 @@ import VeluneBindings
     for row in [user, answer] {
         let label = timeLabel(row)!
         let buttons = row.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-        precondition(!buttons.isEmpty && label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
-        let entered = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
-        row.mouseEntered(with: entered)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
-        precondition(label.alphaValue == 1 && buttons.allSatisfy { $0.alphaValue == 1 })
-        let exited = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
-        row.mouseExited(with: exited)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
-        precondition(label.alphaValue == 0 && buttons.allSatisfy { $0.alphaValue == 0 })
+        let controls: [NSView] = [label] + buttons
+        precondition(!buttons.isEmpty && controls.allSatisfy { $0.alphaValue == 0 })
+        for shown in [true, false] {
+            let event = NSEvent.enterExitEvent(with: shown ? .mouseEntered : .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: host.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+            if shown { row.mouseEntered(with: event) } else { row.mouseExited(with: event) }
+            let expected: CGFloat = shown ? 1 : 0
+            let end = Date().addingTimeInterval(2)
+            while controls.contains(where: { $0.alphaValue != expected }), Date() < end {
+                host.displayIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(controls.allSatisfy { $0.alphaValue == expected },
+                "hover \(row.rowID ?? "nil") shown=\(shown) controls=\(controls.map { (String(describing: type(of: $0)), $0.alphaValue) })")
+        }
     }
     let creationTimes = descendants(scroll).compactMap { $0 as? TranscriptTextView }.filter { $0.accessibilityIdentifier() == "message-created-at" && !$0.isHidden }
     precondition(creationTimes.count == 2, "仅真实用户消息和最终回复拥有创建时间")

@@ -838,9 +838,6 @@ impl Operation {
             velune.request.id = self.request_id.as_deref())
         });
     }
-    pub fn execution_has_started(&self) -> bool {
-        self.started_event
-    }
     pub fn execution_finished(&mut self, outcome: Outcome) {
         self.finish(outcome, true);
     }

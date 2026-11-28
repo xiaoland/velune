@@ -229,7 +229,8 @@ struct ConversationListView: View {
                             .itemProvider { [window] in
                                 cancelPendingOpen()
                                 let id = conversation.id
-                                DispatchQueue.main.async { ListDragWatch.shared.begin(id, from: window) }
+                                let row = ListDragWatch.Row(conversationID: id, device: section.device.store, window: window)
+                                DispatchQueue.main.async { ListDragWatch.shared.begin(row) }
                                 return ConversationLink.itemProvider(runtimeID: conversation.runtimeID, conversationID: id)
                             }
                             .groupDrop(groupDropDelegate(section, .row(conversation.id)), line: groupLines(section, .row(conversation.id)))

@@ -105,6 +105,19 @@ def sync(source, destination, prune=False, includes=()):
                     path.rmdir()
 
 
+def stage_runtime_scripts(destination, prune=False):
+    package = ROOT / "packages/agent-runtime"
+    names = (package / "resource-scripts.txt").read_text().splitlines()
+    destination = Path(destination)
+    for name in names:
+        copy(package / "resources" / name, destination / name)
+    if prune:
+        staged_names = {os.path.normcase(name) for name in names}
+        for old in destination.glob("*.mjs"):
+            if os.path.normcase(old.name) not in staged_names and (old.is_file() or old.is_symlink()):
+                old.unlink()
+
+
 def ensure_bindgen():
     subprocess.run(["cargo", "build", "--locked", "--target-dir", "target/build-tools", "-p", "velune-build-tools", "--bin", "velune-bindgen", "-j", os.environ.get("CARGO_BUILD_JOBS", "2")], cwd=ROOT, check=True)
     return ROOT / "target/build-tools/debug" / ("velune-bindgen.exe" if os.name == "nt" else "velune-bindgen")
@@ -349,8 +362,10 @@ def artifact_identity(platform, profile, command, purpose="development"):
         paths = [f"target/host-rust/{native_profile}/velune_bindings.dll",
                  f"{app}/Velune.exe", f"{app}/Velune.dll"]
     else:
+        # Xcode Debug's launcher can be unchanged while the Swift library changes.
+        bundle = f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app"
         paths = [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
-                 f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"]
+                 f"{bundle}/Velune", f"{bundle}/Velune.debug.dylib"]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
 
 
@@ -461,6 +476,9 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     p = actions.add_parser("copy"); p.add_argument("source"); p.add_argument("destination")
     p = actions.add_parser("sync"); p.add_argument("source"); p.add_argument("destination"); p.add_argument("--prune", action="store_true"); p.add_argument("--include", action="append", default=[])
+    p = actions.add_parser("stage-runtime-scripts")
+    p.add_argument("destination")
+    p.add_argument("--prune", action="store_true")
     p = actions.add_parser("write"); p.add_argument("path")
     actions.add_parser("source-provenance")
     p = actions.add_parser("verify-macos-build"); p.add_argument("--profile", choices=("dev", "release"), default="dev")
@@ -471,6 +489,7 @@ def main():
     try:
         if args.action == "copy": copy(args.source, args.destination)
         elif args.action == "sync": sync(args.source, args.destination, args.prune, args.include)
+        elif args.action == "stage-runtime-scripts": stage_runtime_scripts(args.destination, args.prune)
         elif args.action == "write": write(args.path, sys.stdin.buffer.read())
         elif args.action == "source-provenance": print(json.dumps(source_provenance(), sort_keys=True))
         elif args.action == "verify-macos-build": print(json.dumps(verify_macos_build(args.profile)))

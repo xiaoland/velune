@@ -24,6 +24,13 @@ class Isolated:
         return path
 
 
+def resource_sources() -> dict[str, Path]:
+    sources = {script.name: script for script in RESOURCE_SCRIPTS.iterdir() if script.is_file()}
+    sources.update({name: RUNTIME_SUPPORT / name for name in ("node_modules", "xurl")
+                    if (RUNTIME_SUPPORT / name).exists()})
+    return sources
+
+
 def resources(root: Path, explicit: Path | None) -> Path:
     """Use a build's own resources when given; otherwise assemble the runtime
     helper scripts from the source tree and the installed runtime support."""
@@ -32,16 +39,12 @@ def resources(root: Path, explicit: Path | None) -> Path:
         target.symlink_to(explicit, target_is_directory=True)
         return target
     target.mkdir(mode=0o700)
-    for script in RESOURCE_SCRIPTS.iterdir():
-        if script.is_file():
-            (target / script.name).symlink_to(script)
-    for name in ("node_modules", "xurl"):
-        if (RUNTIME_SUPPORT / name).exists():
-            (target / name).symlink_to(RUNTIME_SUPPORT / name)
+    for name, source in resource_sources().items():
+        (target / name).symlink_to(source, target_is_directory=source.is_dir())
     return target
 
 
-def enter(root: Path, explicit_resources: Path | None, extra_environment: dict[str, str] | None = None) -> Isolated:
+def enter(root: Path, explicit_resources: Path | None) -> Isolated:
     """Create the directories and replace the process environment.
 
     Clients that honor the proxy environment reach loopback directly and use
@@ -59,5 +62,4 @@ def enter(root: Path, explicit_resources: Path | None, extra_environment: dict[s
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         os.environ[key] = os.environ[key.lower()] = "http://127.0.0.1:1"
     os.environ["NO_PROXY"] = os.environ["no_proxy"] = "localhost,127.0.0.1"
-    os.environ.update(extra_environment or {})
     return isolated

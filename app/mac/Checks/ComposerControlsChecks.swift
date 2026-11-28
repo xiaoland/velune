@@ -17,7 +17,6 @@ import VeluneBindings
     if CommandLine.arguments.contains("--check-editor-visual") { messageEditorVisualCheck(directory: directory); exit(0) }
 
     if CommandLine.arguments.contains("--check-visual-states") { composerVisualStateChecks(directory: directory); exit(0) }
-    if CommandLine.arguments.contains("--check-credits") { composerQuotaCreditChecks(directory: directory); exit(0) }
 
     var appearance = AppearanceValues()
     precondition(appearance.composerWidth(available: 420) == 420)
@@ -179,16 +178,20 @@ import VeluneBindings
     let workspace = ConversationWindowModel(application: device, kind: .workspace)
     let input = workspace.composer(for: workspace.focused)
     let beforeSelection = ModelSelection.managed(modelRecordKey: "sample-model")
-    var target = ComposerContext(tab: workspace.focused, model: input)
+    let target = ComposerContext(tab: workspace.focused, model: input)
     target.selectModel(beforeSelection)
-    target = ComposerContext(tab: workspace.focused, model: input)
-    let beforeRequest = target.composerQuotaRequest
+    let beforeRequest = ComposerContext(tab: workspace.focused, model: input).composerQuotaRequest
     precondition(beforeRequest.selection == beforeSelection)
     let afterSelection = ModelSelection.native(providerId: "sample", modelId: "sample-native")
     target.selectModel(afterSelection)
     let afterRequest = ComposerContext(tab: workspace.focused, model: input).composerQuotaRequest
     precondition(afterRequest.selection == afterSelection && beforeRequest != afterRequest)
-    note("PASS quota request follows the current target model selection without carrying an earlier account request")
+    device.invalidateProviderReports()
+    let reboundRequest = ComposerContext(tab: workspace.focused, model: input).composerQuotaRequest
+    precondition(reboundRequest != afterRequest && reboundRequest.selection == afterSelection,
+                 "换绑应失效旧额度请求并保留当前模型")
+    note("PASS quota request follows model selection and invalidates a prior provider binding")
+    composerQuotaPresentationChecks()
 
     let observation = QuotaObservation(freshness: .fresh, windows: [
         QuotaWindowObservation(id: "kimi:limit_5h", modelIds: nil, usedPercent: 35, resetAtMs: 1_800_000_000_000, windowMs: 18_000_000, observedAtMs: 1_799_999_000_000, expiresAtMs: 1_800_000_000_000, pace: nil),
@@ -210,54 +213,49 @@ import VeluneBindings
     exit(0)
 }
 
-@MainActor private func composerQuotaCreditChecks(directory: URL) {
-    let device = DeviceStore(preview: true)
-    let store = ConversationStore(device: device)
-    let previousRequest = store.composerQuotaRequest
-    device.invalidateProviderReports()
-    precondition(store.composerQuotaRequest != previousRequest, "换绑应使已有 credits 请求失效")
+@MainActor private func composerQuotaPresentationChecks() {
+    let windows = [
+        QuotaWindowObservation(id: "5h", modelIds: nil, usedPercent: 54, resetAtMs: 1_800_003_600_000,
+                               windowMs: 18_000_000, observedAtMs: 1_800_000_000_000, expiresAtMs: nil, pace: nil),
+        QuotaWindowObservation(id: "opus", modelIds: ["opus"], usedPercent: 20, resetAtMs: nil,
+                               windowMs: nil, observedAtMs: 1_800_000_000_000, expiresAtMs: nil, pace: nil),
+    ]
+    let observation = QuotaObservation(freshness: .fresh, windows: windows, balances: [],
+                                       available: true, refreshing: false, problem: nil)
+    let native = ComposerQuotaEntry(id: "login", name: "运行时", origin: .runtimeLogin, observation: observation,
+                                    limits: [QuotaLimit(windowId: "5h", maxUsedPercent: 80)], credits: nil)
+    precondition(native.windows == windows && native.limit(for: "5h") == 80 && native.limit(for: "opus") == nil)
+    precondition(native.title == "运行时的登录额度" && !native.isRecorded)
+    let recorded = ComposerQuotaEntry(id: "record", name: "运行时", origin: .conversationRecord,
+                                      observation: observation, limits: [], credits: nil)
+    precondition(recorded.isRecorded && recorded.title == "运行时会话记录中的限额")
+
+    let zone = TimeZone(secondsFromGMT: 8 * 3600)!
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    let reset = calendar.date(from: DateComponents(year: 2026, month: 11, day: 3, hour: 9, minute: 7))!
+    let text = QuotaResetFormat.text(reset, timeZone: zone)
+    precondition(text.contains("2026") && text.contains("11") && text.contains("03") && text.contains("09:07"), text)
+    precondition(QuotaResetFormat.text(reset, timeZone: TimeZone(secondsFromGMT: 0)!).contains("01:07"), "Use the viewer's local timezone")
+    precondition(QuotaResetFormat.text(nil) == "重置时间未知")
 
     let balance = ProviderAccountCredits(hasCredits: true, unlimited: false, balance: "12.7500")
     let zero = ProviderAccountCredits(hasCredits: false, unlimited: false, balance: "0")
     let unlimited = ProviderAccountCredits(hasCredits: true, unlimited: true, balance: nil)
-    let unreported = ProviderAccountCredits(hasCredits: false, unlimited: false, balance: nil)
     let fixtures: [(String, ComposerQuotaCredits, String, String)] = [
         ("balance", .init(observation: balance, stale: false, refreshing: false, failed: false), "12.7500", "12.7500 credits"),
         ("zero", .init(observation: zero, stale: false, refreshing: false, failed: false), "0", "0 credits"),
         ("unlimited", .init(observation: unlimited, stale: false, refreshing: false, failed: false), "不限量", "credits 不限量"),
+        ("stale-unlimited", .init(observation: unlimited, stale: true, refreshing: false, failed: false), "不限量（上次余额）", "credits 不限量（上次余额）"),
         ("stale", .init(observation: balance, stale: true, refreshing: true, failed: false), "12.7500（上次余额）", "12.7500 credits（上次）"),
         ("loading", .init(observation: nil, stale: false, refreshing: true, failed: false), "读取中…", "credits 读取中…"),
-        ("unknown", .init(observation: unreported, stale: false, refreshing: false, failed: false), "未报告", "credits 未报告"),
+        ("unknown", .init(observation: nil, stale: false, refreshing: false, failed: false), "未报告", "credits 未报告"),
         ("failed", .init(observation: nil, stale: false, refreshing: false, failed: true), "暂时无法读取", "credits 暂时无法读取")
     ]
-    let window = QuotaWindowObservation(id: "window:18000", modelIds: nil, usedPercent: 35,
-        resetAtMs: 1_800_000_000_000, windowMs: 18_000_000, observedAtMs: nil, expiresAtMs: nil, pace: nil)
     for (name, credits, detail, compact) in fixtures {
         precondition(credits.detailValue == detail && credits.compactValue == compact, "credits presentation: \(name)")
-        let quota = name == "balance"
-            ? QuotaObservation(freshness: .fresh, windows: [window], balances: [], available: true, refreshing: false, problem: nil)
-            : QuotaObservation(freshness: .unsupported, windows: [], balances: [], available: nil, refreshing: false, problem: nil)
-        let account = ComposerQuotaEntry(id: "provider:synthetic:chatgpt", name: "ChatGPT", origin: .provider,
-            observation: quota, limits: [], credits: credits)
-        for (appearance, theme) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
-            let view = NSHostingView(rootView: StatusDetails(status: ConversationStatus(), accounts: [account],
-                branch: nil, display: .used, quotaDisplay: .remaining)
-                .applicationAppearance().background(Color(nsColor: .windowBackgroundColor)))
-            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 215), styleMask: [.borderless], backing: .buffered, defer: false)
-            host.appearance = NSAppearance(named: appearance)
-            host.contentView = view
-            view.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-            view.layoutSubtreeIfNeeded(); view.display()
-            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-                preconditionFailure("无法绘制 credits 状态")
-            }
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            try! bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("credits-\(name)-\(theme).png"))
-            precondition(!host.isVisible && NSApp.activationPolicy() == .prohibited)
-        }
     }
-    FileHandle.standardError.write(Data("PASS credits formatting and offscreen quota details, seven states in both appearances\n".utf8))
+    FileHandle.standardError.write(Data("PASS quota origin, limits, local reset times and credits presentation\n".utf8))
 }
 
 /// Exercise the production inline editor over repeated layout/run-loop passes.

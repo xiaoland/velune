@@ -1,39 +1,5 @@
 use super::*;
 
-pub fn import_codex_conversation(
-    execution: &ExecutionTarget,
-    codex_home: &Path,
-    cwd: &Path,
-    context: &Context,
-    cli_version: &str,
-    provider: &str,
-) -> Result<ImportedConversation> {
-    import_codex_conversation_with_origins(
-        execution,
-        codex_home,
-        cwd,
-        context,
-        cli_version,
-        provider,
-    )
-    .map(|(imported, _)| imported)
-}
-
-pub fn import_codex_conversation_with_origins(
-    execution: &ExecutionTarget,
-    codex_home: &Path,
-    cwd: &Path,
-    context: &Context,
-    cli_version: &str,
-    provider: &str,
-) -> Result<(
-    ImportedConversation,
-    std::collections::BTreeMap<String, Vec<String>>,
-)> {
-    import_codex_conversation_owned(execution, codex_home, cwd, context, cli_version, provider)
-        .map(|(imported, origins, _)| (imported, origins))
-}
-
 pub fn import_codex_conversation_owned(
     execution: &ExecutionTarget,
     codex_home: &Path,

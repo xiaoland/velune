@@ -302,7 +302,7 @@ struct PaneTabBar: NSViewRepresentable {
         let at = insertion ?? order.count
         insertion = nil
         guard let model, let url = TabDrop.url(from: sender.draggingPasteboard) else { return false }
-        let source = ListDragWatch.shared.sourceWindow
+        let source = ListDragWatch.shared.dragged
         ListDragWatch.shared.accepted()
         model.drop(url, on: pane.id, zone: .center, at: at, from: source)
         return true

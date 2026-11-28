@@ -167,6 +167,5 @@ mod tests {
                 "vendor.retention"
             ]
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

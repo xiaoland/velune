@@ -19,53 +19,81 @@ fn empty_v3_state() -> Vec<u8> {
 }
 
 #[test]
-fn unknown_future_version_is_not_reset_or_overwritten() {
-    let (_directory, path) = state_path();
-    let bytes = br#"{"version":99,"synthetic":"preserve"}"#;
-    atomic_write(&path, bytes).unwrap();
-    assert!(DeviceStore::open(&path).is_err());
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
-}
-
-#[test]
 fn malformed_or_unknown_state_is_rejected_without_rewrite() {
+    // This is the complete published v4 envelope, independent of current serde.
+    let valid = serde_json::json!({
+        "version": 4, "contacts": {}, "grants": {}, "profile_grants": {},
+        "pending_pairings": {}, "pending": [], "reset_notice": null,
+        "legacy_reset_recorded": false
+    });
+    let (_directory, path) = state_path();
+    atomic_write(&path, &serde_json::to_vec(&valid).unwrap()).unwrap();
+    drop(DeviceStore::open(&path).expect("untouched v4 fixture must migrate"));
+    let mut unknown = valid;
+    unknown["future"] = serde_json::json!("preserve");
     for bytes in [
-        br#"{"version":4,"contacts":[]"#.as_slice(),
-        br#"{"version":4,"contacts":{},"future":"preserve"}"#,
+        br#"{"version":4,"contacts":[]"#.to_vec(),
+        serde_json::to_vec(&unknown).unwrap(),
     ] {
-        let (_directory, path) = state_path();
-        atomic_write(&path, bytes).unwrap();
-        assert!(DeviceStore::open(&path).is_err());
+        let (directory, path) = state_path();
+        atomic_write(&path, &bytes).unwrap();
+        assert!(matches!(
+            DeviceStore::open(&path),
+            Err(RemoteError::StateStorage)
+        ));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
 
 #[test]
 fn v3_with_v4_fields_is_rejected_without_overwrite_or_backup() {
-    let mut profile_grant = serde_json::from_slice::<serde_json::Value>(&empty_v3_state()).unwrap();
-    profile_grant["profile_grants"] = serde_json::json!({"synthetic": {}});
-
-    let mut pairing_contact =
-        serde_json::from_slice::<serde_json::Value>(&empty_v3_state()).unwrap();
-    pairing_contact["contacts"] = serde_json::json!({
-        "synthetic": {
-            "control_authorized": false,
-            "pairing_permission": "telemetryProfileRead"
+    let peer = crate::identity::DeviceIdentity::generate("Synthetic peer".into())
+        .unwrap()
+        .id();
+    let mut valid = serde_json::from_slice::<serde_json::Value>(&empty_v3_state()).unwrap();
+    valid["contacts"] = serde_json::json!({
+        peer.clone(): {
+            "peer_id": peer,
+            "name": "Synthetic peer",
+            "locator": {"relay_urls": [], "direct_addresses": [], "lookup_urls": []},
+            "confirmation": {"state": "confirmed", "attempt_id": "a".repeat(32)},
+            "paused": false,
+            "locator_source": "pairingOffer"
         }
     });
+    // The untouched legacy record must reach migration successfully. Each
+    // rejection below changes only the schema boundary being exercised.
+    let (_directory, path) = state_path();
+    atomic_write(&path, &serde_json::to_vec(&valid).unwrap()).unwrap();
+    assert_eq!(
+        DeviceStore::open(&path)
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .contacts
+            .len(),
+        1
+    );
 
-    for value in [profile_grant, pairing_contact] {
-        let (_directory, path) = state_path();
+    let mut profile_grant = valid.clone();
+    profile_grant["profile_grants"] = serde_json::json!({});
+    let mut control_authorized = valid.clone();
+    control_authorized["contacts"][&peer]["control_authorized"] = serde_json::json!(false);
+    let mut pairing_permission = valid;
+    pairing_permission["contacts"][&peer]["pairing_permission"] =
+        serde_json::json!("telemetryProfileRead");
+    for value in [profile_grant, control_authorized, pairing_permission] {
+        let (directory, path) = state_path();
         let source = serde_json::to_vec(&value).unwrap();
         atomic_write(&path, &source).unwrap();
 
-        assert!(DeviceStore::open(&path).is_err());
+        assert!(matches!(
+            DeviceStore::open(&path),
+            Err(RemoteError::StateStorage)
+        ));
         assert_eq!(std::fs::read(&path).unwrap(), source);
-        assert!(
-            !path
-                .with_file_name("remote-state.before-beta-v3.json")
-                .exists()
-        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
 

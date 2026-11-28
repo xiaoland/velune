@@ -9,6 +9,7 @@
 - **界面原则与平台约束**：[`DESIGN.md`](DESIGN.md)；平台实现细节见对应子树的 `AGENTS.md`、README 或 TDD。
 - **开发构建复用与缓存**：[`docs/development/builds.md`](docs/development/builds.md)。同工作树用具名SVC入口共享在途构建，按影响层验收并复用最终证据。
 - **构建、运行与验证**：[`docs/development.md`](docs/development.md) 和对应 unit 的说明。
+- 测试归属与验收证据见[验证方针](docs/development/validation.md#测试分层)。移除重复覆盖时，先核对正常调用者，并在保留的入口验证原用例独有的协议、落盘或平台行为。
 - **Android ADB 操作**：[`app/android/AGENTS.md`](app/android/AGENTS.md)，面向 Agent 的设备选择、文本粘贴、排障验收与临时资源恢复。
 - **Mac 自动验收与焦点**：[`app/mac/AGENTS.md`](app/mac/AGENTS.md)，开发进程范围、前台操作与视觉证据要求。
 - **当前任务、临时证据与未决事项**：任务对应的 `tasks/<name>/packet.md`。

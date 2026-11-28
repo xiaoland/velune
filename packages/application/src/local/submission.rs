@@ -150,11 +150,6 @@ impl CoreRuntime {
             snapshot.follow_up.can_compact = false;
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn apply_read_submission_admission(snapshot: &mut ConversationSnapshot) {
-        SubmissionAdmission::resolve(snapshot, SubmissionState::default()).apply(snapshot);
-    }
 }
 
 #[cfg(test)]
@@ -299,7 +294,7 @@ mod tests {
                 },
             });
         view.follow_up.can_resume = true;
-        CoreRuntime::apply_read_submission_admission(&mut view);
+        SubmissionAdmission::resolve(&view, SubmissionState::default()).apply(&mut view);
         assert!(!view.actions.can_send && !view.follow_up.can_resume);
         view.run_state = RunState::Running;
         view.actions.can_send = false; // The runtime's running source capability.
@@ -362,7 +357,8 @@ mod tests {
                     delete_following: false,
                 });
             let mut delivered = source.clone();
-            CoreRuntime::apply_read_submission_admission(&mut delivered);
+            SubmissionAdmission::resolve(&delivered, SubmissionState::default())
+                .apply(&mut delivered);
             assert!(!delivered.actions.can_send);
             assert!(!delivered.follow_up.can_queue && !delivered.follow_up.can_steer);
             assert!(!delivered.follow_up.can_resume && !delivered.follow_up.can_compact);
@@ -389,7 +385,7 @@ mod tests {
             view.follow_up.can_fork = true;
             view.transcript_turns
                 .push(fork_turn("completed", false, true));
-            CoreRuntime::apply_read_submission_admission(&mut view);
+            SubmissionAdmission::resolve(&view, SubmissionState::default()).apply(&mut view);
             assert!(!view.follow_up.can_fork);
             assert!(!view.transcript_turns[0].can_fork);
         }
@@ -696,10 +692,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual large-transcript admission timing"]
-    fn synthetic_long_send_measurement() {
+    fn acp_rejects_managed_submission_before_starting_a_native_process() {
         let root = std::env::temp_dir().join(format!(
-            "velune-send-measurement-{:x}",
+            "velune-acp-admission-{:x}",
             getrandom::u64().unwrap()
         ));
         std::fs::create_dir(&root).unwrap();
@@ -723,7 +718,7 @@ mod tests {
             )]),
         }];
         let mut source = snapshot(RunState::Idle);
-        for i in 0..192 {
+        for i in 0..2 {
             source.messages.push(velune_conversation::Message {
                 id: format!("m-{i}"),
                 completed: true,
@@ -734,7 +729,7 @@ mod tests {
                 },
                 timestamp_unix_ms: None,
                 blocks: vec![velune_conversation::MessageBlock::Text {
-                    text: "x".repeat(192 * 1024),
+                    text: format!("synthetic message {i}"),
                 }],
                 turn_settings: None,
                 turn_usage: None,
@@ -742,27 +737,29 @@ mod tests {
             });
         }
         core.session.set_history(source);
-        for _ in 0..5 {
-            let start = std::time::Instant::now();
-            let result = core.send_turn(super::super::conversations::TurnRequest {
-                submission_id: None,
-                conversation_id: "runtime:synthetic".into(),
-                source_runtime_id: "runtime".into(),
-                runtime_id: "runtime".into(),
-                selection: Some(crate::ModelSelection::Managed {
-                    model_record_key: "unsupported".into(),
-                }),
-                turn: crate::ComposedTurn {
-                    text: "hi".into(),
-                    effort: None,
-                    permission_mode: None,
-                    attachments: vec![],
-                },
-            });
-            let err = result.expect_err("ACP cannot take a managed selection");
-            assert!(err.to_string().contains("通用 ACP"), "{err}");
-            eprintln!("send_admission_ms={}", start.elapsed().as_millis());
-        }
+        let before = core.current_snapshot().unwrap().messages;
+        let result = core.send_turn(super::super::conversations::TurnRequest {
+            submission_id: None,
+            conversation_id: "runtime:synthetic".into(),
+            source_runtime_id: "runtime".into(),
+            runtime_id: "runtime".into(),
+            selection: Some(crate::ModelSelection::Managed {
+                model_record_key: "unsupported".into(),
+            }),
+            turn: crate::ComposedTurn {
+                text: "hi".into(),
+                effort: None,
+                permission_mode: None,
+                attachments: vec![],
+            },
+        });
+        let err = result.expect_err("ACP cannot take a managed selection");
+        assert!(
+            matches!(&err, RuntimeError::Unsupported(detail) if detail.contains("不支持 managed provider 注入")),
+            "{err}"
+        );
+        assert_eq!(core.current_snapshot().unwrap().messages, before);
+        assert!(matches!(core.session.active_state, ActiveState::History(_)));
         drop(application);
         std::fs::remove_dir_all(root).unwrap();
     }

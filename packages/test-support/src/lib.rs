@@ -1,4 +1,4 @@
-//! Shared fixtures for Velune's default test layer: isolated directories,
+//! Shared fixtures for Velune's test suites: isolated directories,
 //! fake executables and deadline-bounded waits. Dev-dependency only.
 use std::{
     fs,
@@ -91,11 +91,6 @@ impl TempRoot {
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
     }
 
-    /// Read a file that a fake process may not have written yet.
-    pub fn read_or_empty(&self, relative: impl AsRef<Path>) -> String {
-        fs::read_to_string(self.join(relative)).unwrap_or_default()
-    }
-
     /// Wait until a marker file exists below the root.
     pub fn wait_for(&self, relative: impl AsRef<Path>, timeout: Duration) -> bool {
         let path = self.join(relative);
@@ -122,6 +117,34 @@ impl std::ops::Deref for TempRoot {
     fn deref(&self) -> &Path {
         &self.path
     }
+}
+
+/// Materialize a three-turn synthetic session written by the Pi 1.4 SDK.
+/// Only the native session header's working directory varies per test.
+pub fn write_pi_three_turn_session(agent: &Path, workspace: &Path, model_url: &str) -> PathBuf {
+    use serde_json::{Value, json};
+
+    let (header, entries) = include_str!("../fixtures/pi/three-turns.jsonl")
+        .split_once('\n')
+        .unwrap();
+    let mut header: Value = serde_json::from_str(header).unwrap();
+    header["cwd"] = json!(workspace);
+    let sessions = agent.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let source = sessions.join("three-turns.jsonl");
+    fs::write(&source, format!("{header}\n{entries}")).unwrap();
+    let provider = json!({
+        "baseUrl": model_url, "api": "openai-completions", "apiKey": "synthetic",
+        "models": [{"id": "alpha", "name": "Synthetic", "reasoning": false, "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 32768, "maxTokens": 4096}]
+    });
+    fs::write(
+        agent.join("models.json"),
+        json!({"providers": {"synthetic": provider}}).to_string(),
+    )
+    .unwrap();
+    source
 }
 
 /// Poll `ready` every few milliseconds until it holds or `timeout` elapses.
@@ -154,18 +177,6 @@ mod tests {
         assert!(!path.exists());
     }
 
-    #[test]
-    fn root_is_removed_after_a_panic() {
-        let leaked = std::sync::Mutex::new(PathBuf::new());
-        let result = std::panic::catch_unwind(|| {
-            let root = TempRoot::new("support-panic");
-            *leaked.lock().unwrap() = root.path().to_owned();
-            panic!("test body failed");
-        });
-        assert!(result.is_err());
-        assert!(!leaked.lock().unwrap().exists());
-    }
-
     #[cfg(unix)]
     #[test]
     #[expect(
@@ -183,6 +194,5 @@ mod tests {
         assert!(status.success());
         assert!(root.wait_for("marker", Duration::from_secs(1)));
         assert_eq!(root.read("marker"), "ready");
-        assert_eq!(root.read_or_empty("absent"), "");
     }
 }

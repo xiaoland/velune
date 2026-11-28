@@ -5,13 +5,13 @@
 // message history, tools, and native provider authentication. This Rust client
 // never reads environment variables or Pi auth files.
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Stdio,
     sync::{
         Arc, Condvar, Mutex,
@@ -30,7 +30,6 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 // answering the readiness RPC. Keep startup more patient without extending
 // ordinary prompt, selection, and cancellation commands.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
-const BACKGROUND_STATUS_KEY: &str = "velune.background-work-v1";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -181,13 +180,11 @@ pub struct Client {
     stdin: Option<crate::transport::PipeWriter>,
     incoming: Receiver<Incoming>,
     pending: crate::transport::DeferredRecords,
-    snapshot_event_barrier: Option<usize>,
     prepared_snapshot: Option<Value>,
     next_id: u64,
     stderr: SharedStderr,
     terminal_error: Option<String>,
     terminal_reported: bool,
-    background_bridge_available: Option<bool>,
     pub config: Config,
     _mcp: crate::mcp::Prepared,
 }
@@ -409,13 +406,11 @@ impl Client {
             stdin: Some(stdin),
             incoming,
             pending: Default::default(),
-            snapshot_event_barrier: None,
             prepared_snapshot: None,
             next_id: 1,
             stderr,
             terminal_error: None,
             terminal_reported: false,
-            background_bridge_available: None,
             config,
             _mcp: mcp,
         })
@@ -501,20 +496,8 @@ impl Client {
         }
     }
 
-    fn write_command(&mut self, command: Value) -> Result<String> {
-        self.write_command_until(command, Instant::now() + RESPONSE_TIMEOUT)
-    }
-
-    fn write_command_until(&mut self, command: Value, deadline: Instant) -> Result<String> {
-        self.write_command_until_class(command, crate::transport::WriteClass::Ordinary, deadline)
-    }
-
-    fn write_command_until_class(
-        &mut self,
-        mut command: Value,
-        class: crate::transport::WriteClass,
-        deadline: Instant,
-    ) -> Result<String> {
+    fn write_command_until(&mut self, mut command: Value, deadline: Instant) -> Result<String> {
+        let class = crate::transport::WriteClass::Ordinary;
         if self.port.is_some() {
             return Err(Error::Transport(
                 "Pi typed port enabled; synchronous mutations disabled".into(),
@@ -545,61 +528,22 @@ impl Client {
             .filter(|id| !id.is_empty())
             .ok_or(Error::InvalidCommand)?
             .to_owned();
-        let frame = self.encode_frame(
+        let input = self.stdin.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Pi RPC input closed")
+        })?;
+        let frame = input.encode_json(
             &command,
             class,
             crate::transport::writer_policy_limit(),
             deadline,
         )?;
-        let receipt = self
-            .try_enqueue_owned_frame(frame, class, deadline)
+        let receipt = input
+            .try_enqueue(frame, class, deadline)
             .map_err(|rejected| Error::Io(rejected.into_error()))?;
         if let Err(error) = receipt.wait() {
             return Err(self.terminate(Some(format!("Pi RPC command send unconfirmed: {error}"))));
         }
         Ok(format!("{command_type}\0{id}"))
-    }
-
-    /// Finite streaming codec for typed Pi owners; caller-created input/base64
-    /// must be budgeted before this borrowed serialization boundary as well.
-    pub(crate) fn encode_frame(
-        &self,
-        frame: &impl serde::Serialize,
-        class: crate::transport::WriteClass,
-        allocation_limit: usize,
-        deadline: Instant,
-    ) -> std::io::Result<crate::transport::OwnedFrame> {
-        self.write_input()?
-            .encode_json(frame, class, allocation_limit, deadline)
-    }
-
-    /// Kind-neutral bridge for the Pi port. Classification and finite allocation
-    /// policy belong to the caller; a local refusal returns the identical frame.
-    #[allow(clippy::result_large_err)]
-    pub(crate) fn try_enqueue_owned_frame(
-        &self,
-        frame: crate::transport::OwnedFrame,
-        class: crate::transport::WriteClass,
-        deadline: Instant,
-    ) -> std::result::Result<crate::transport::WriteReceipt, crate::transport::NotAdmitted> {
-        match self.write_input() {
-            Ok(input) => input.try_enqueue(frame, class, deadline),
-            Err(error) => Err(crate::transport::NotAdmitted::new(
-                frame, class, deadline, error,
-            )),
-        }
-    }
-
-    fn write_input(&self) -> std::io::Result<&crate::transport::PipeWriter> {
-        if let Some(error) = &self.terminal_error {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                error.clone(),
-            ));
-        }
-        self.stdin.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Pi RPC input closed")
-        })
     }
 
     fn receive(&mut self, method: &str, deadline: Instant) -> Result<Value> {
@@ -635,27 +579,11 @@ impl Client {
         // Only fixed protocol commands enter diagnostics. Arbitrary caller
         // fields and unknown command names do not become log labels.
         let method = match command["type"].as_str() {
-            Some(
-                method @ ("abort"
-                | "clear_queue"
-                | "clone"
-                | "fork"
-                | "get_available_models"
-                | "get_commands"
-                | "get_messages"
-                | "get_state"
-                | "new_session"
-                | "prompt"
-                | "set_model"
-                | "set_session_name"
-                | "set_thinking_level"
-                | "steer"
-                | "switch_session"),
-            ) => method.to_owned(),
+            Some(method @ ("get_available_models" | "get_state" | "prompt")) => method.to_owned(),
             _ => "command".to_owned(),
         };
         let started = Instant::now();
-        let outcome = self.request_response(command, &method, timeout, false);
+        let outcome = self.request_response(command, &method, timeout);
         let elapsed_ms = started.elapsed().as_millis();
         if let Err(error) = &outcome {
             let failure_kind = match error {
@@ -677,7 +605,6 @@ impl Client {
         command: Value,
         method: &str,
         timeout: Duration,
-        yield_to_dialog: bool,
     ) -> Result<Value> {
         let projection_sync = command["type"] == "prompt"
             && command["message"]
@@ -685,7 +612,6 @@ impl Client {
                 .is_some_and(|message| message.starts_with("/velune-projection-sync "));
         if projection_sync {
             self.prepared_snapshot = None;
-            self.snapshot_event_barrier = None;
         }
         let deadline = Instant::now() + timeout;
         let key = self.write_command_until(command, deadline)?;
@@ -720,16 +646,9 @@ impl Client {
                     if let Err(error) = deferred.push(header) {
                         break Err(self.terminate(Some(error.to_string())));
                     }
-                    self.snapshot_event_barrier = Some(deferred.iter().count());
                     self.prepared_snapshot = Some(value);
                 }
                 continue;
-            }
-            if yield_to_dialog && crate::pi_dialogs::is_dialog(&value) {
-                if let Err(error) = deferred.push(value) {
-                    break Err(self.terminate(Some(error.to_string())));
-                }
-                break Ok(json!({"data":{"disposition":"awaiting_user","requestId":id}}));
             }
             let matches = value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id").and_then(Value::as_str) == Some(id);
@@ -755,7 +674,6 @@ impl Client {
         self.pending = deferred;
         if result.is_err() && projection_sync {
             self.prepared_snapshot = None;
-            self.snapshot_event_barrier = None;
             // A failed RPC returns no body. Withdraw only its synthetic header,
             // preserving unrelated native events and real extension diagnostics.
             let mut retained = crate::transport::DeferredRecords::default();
@@ -785,16 +703,6 @@ impl Client {
         self.request_with_timeout(command, RESPONSE_TIMEOUT)
     }
 
-    /// Extension UI responses are one-way; Pi does not acknowledge them.
-    pub fn respond_extension_ui(&mut self, response: Value) -> Result<()> {
-        self.write_command_until_class(
-            response,
-            crate::transport::WriteClass::ProtocolReplyCancel,
-            Instant::now() + RESPONSE_TIMEOUT,
-        )
-        .map(drop)
-    }
-
     /// Pi takes its fixed thinking levels for models marked `reasoning`.
     pub fn models(&mut self) -> Result<Vec<crate::native::ModelOption>> {
         let result = self.request(json!({"type":"get_available_models"}))?;
@@ -822,109 +730,7 @@ impl Client {
             })
             .collect()
     }
-    /// Pi clamps the thinking level to what the selected model supports.
-    pub fn prompt(&mut self, input: &crate::TurnInput) -> Result<Value> {
-        if let Some(level) = &input.effort {
-            if !PI_THINKING_LEVELS.contains(&level.as_str()) {
-                return Err(Error::Sdk("Pi 不接受此推理强度".into()));
-            }
-            self.request(json!({"type":"set_thinking_level","level":level}))?;
-        }
-        let images = input
-            .images
-            .iter()
-            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
-            .collect::<Vec<_>>();
-        self.request_response(
-            json!({"type":"prompt","message":input.text,"images":images}),
-            "prompt",
-            RESPONSE_TIMEOUT,
-            true,
-        )
-    }
-
-    /// Pi delivers a steering message after the running tool calls, before
-    /// the next model request.
-    pub fn steer(&mut self, input: &crate::TurnInput) -> Result<Value> {
-        let images = input
-            .images
-            .iter()
-            .map(|image| json!({"type":"image","data":image.base64(),"mimeType":image.kind.media_type()}))
-            .collect::<Vec<_>>();
-        self.request(json!({"type":"steer","message":input.text,"images":images}))
-    }
-
-    /// Move the session's leaf to just before the user entry `entry_id`, in
-    /// the same session: the next prompt replaces that message. Pi keeps the
-    /// earlier branch in its session tree.
-    pub fn rewind(&mut self, entry_id: &str) -> Result<()> {
-        let response =
-            self.request(json!({"type":"prompt","message":format!("/velune-rewind {entry_id}")}))?;
-        if response["data"]["disposition"] != "handled" {
-            return Err(Error::Sdk("消息回退未被扩展处理".into()));
-        }
-        let outcome = self
-            .pending
-            .iter()
-            .rev()
-            .find(|event| {
-                event["type"] == "extension_ui_request"
-                    && event["method"] == "setStatus"
-                    && event["statusKey"] == "velune.rewind"
-            })
-            .and_then(|event| event["statusText"].as_str())
-            .and_then(|text| serde_json::from_str::<Value>(text).ok())
-            .ok_or_else(|| Error::Sdk("消息回退没有结果".into()))?;
-        if let Some(reason) = outcome["fallback"].as_str() {
-            // The extension explicitly declined before navigating or writing.
-            return Err(Error::CommandFailed(reason.into()));
-        }
-        if outcome["entryId"].as_str() != Some(entry_id) {
-            return Err(Error::Sdk("Pi 未能回到这条消息之前".into()));
-        }
-        Ok(())
-    }
-
-    /// Continue in a new session holding what precedes the user entry
-    /// `entry_id`; this client then runs that session.
-    pub fn fork(&mut self, entry_id: &str) -> Result<()> {
-        let response = self.request(json!({"type":"fork","entryId":entry_id}))?;
-        if response["data"]["cancelled"] == true {
-            return Err(Error::Sdk("Pi 扩展取消了 fork".into()));
-        }
-        Ok(())
-    }
-
-    /// Continue in a new session holding the whole current branch; this
-    /// client then runs that session.
-    pub fn clone(&mut self) -> Result<()> {
-        let response = self.request(json!({"type":"clone"}))?;
-        if response["data"]["cancelled"] == true {
-            return Err(Error::Sdk("Pi 取消了会话复制".into()));
-        }
-        Ok(())
-    }
-
-    pub fn cancel(&mut self) -> Result<Vec<Value>> {
-        // Pi documents clear_queue before abort for interactive cancellation.
-        Ok(vec![
-            self.request(json!({"type":"clear_queue"}))?,
-            self.request(json!({"type":"abort"}))?,
-        ])
-    }
-
-    /// Compaction responds only after summarization; polling must remain available meanwhile.
-    pub fn compact(&mut self) -> Result<String> {
-        let key = self.write_command(json!({"type":"compact"}))?;
-        Ok(key
-            .split_once('\0')
-            .expect("internal command key")
-            .1
-            .to_owned())
-    }
-
     pub fn poll(&mut self) -> Vec<Value> {
-        self.snapshot_event_barrier = None;
         if self.port.is_some() {
             return vec![]; // typed owner must consume ordered poll_pi evidence
         }
@@ -956,15 +762,6 @@ impl Client {
             }
         }
         records
-    }
-
-    /// Events covered by the last native snapshot frame. Events between that
-    /// frame and its command receipt stay queued for poll after history install.
-    pub fn take_buffered_events(&mut self) -> Vec<Value> {
-        match self.snapshot_event_barrier.take() {
-            Some(count) => self.pending.drain_batch(count),
-            None => self.pending.drain(),
-        }
     }
 
     /// Blocking readiness/history preparation before handing the client to PiSession.
@@ -1054,57 +851,6 @@ impl Client {
         Ok(())
     }
 
-    /// Run Velune's structured Pi background host bridge without starting a
-    /// model turn. The extension calls the plugin's public Host EventBus API;
-    /// RPC stdin remains exclusively owned by Pi's SDK.
-    pub fn background_work_command(&mut self, command: &Value) -> Result<Value> {
-        if self.background_bridge_available.is_none() {
-            let commands = self.request(json!({"type":"get_commands"}))?;
-            self.background_bridge_available = Some(
-                commands["data"]["commands"]
-                    .as_array()
-                    .is_some_and(|commands| {
-                        commands
-                            .iter()
-                            .any(|entry| entry["name"] == "velune-background-work")
-                    }),
-            );
-        }
-        if self.background_bridge_available == Some(false) {
-            return Ok(json!({"version":1,"kind":"unsupported","supported":false,"tasks":[]}));
-        }
-        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(command)?);
-        let response = self.request_with_timeout(
-            json!({"type":"prompt","message":format!("/velune-background-work {encoded}")}),
-            RESPONSE_TIMEOUT,
-        )?;
-        if response["data"]["disposition"] != "handled" {
-            return Err(Error::Sdk("Pi 后台工作查询未被 Velune 扩展处理".into()));
-        }
-        let mut frame = None;
-        let mut retained = crate::transport::DeferredRecords::default();
-        while let Some(event) = self.pending.pop() {
-            if event["type"] == "extension_ui_request"
-                && event["method"] == "setStatus"
-                && event["statusKey"] == BACKGROUND_STATUS_KEY
-            {
-                if let Some(text) = event["statusText"].as_str()
-                    && let Ok(value) = serde_json::from_str::<Value>(text)
-                {
-                    frame = Some(value);
-                }
-            } else {
-                retained.push(event)?;
-            }
-        }
-        self.pending = retained;
-        frame.ok_or_else(|| Error::Sdk("Pi 后台工作桥接没有返回结构化状态".into()))
-    }
-
-    pub fn switch_session(&mut self, path: &Path) -> Result<Value> {
-        self.request(json!({"type":"switch_session","sessionPath":path}))
-    }
-
     pub fn shutdown(&mut self) -> Result<()> {
         self.cleanup_blocking()
     }
@@ -1128,9 +874,6 @@ impl Drop for Client {
         let _ = self.shutdown();
     }
 }
-
-#[cfg(test)]
-mod admission_tests;
 
 #[cfg(test)]
 mod snapshot_tests;

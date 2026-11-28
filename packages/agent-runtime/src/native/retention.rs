@@ -71,12 +71,6 @@ impl NativeData {
     pub(super) fn insert(&mut self, owner: DataOwner, piece: DataRetention) {
         self.owners.insert(owner, piece);
     }
-    pub(super) fn try_clone_current(&self) -> Result<DataRetention> {
-        self.current.as_ref().map_or_else(
-            || Ok(DataRetention::default()),
-            |retention| retention.try_clone().map_err(retention_error),
-        )
-    }
     pub(super) fn try_clone(&self, include: impl Fn(&DataOwner) -> bool) -> Result<DataRetention> {
         let mut result = DataRetention::default();
         for (owner, retention) in &self.owners {

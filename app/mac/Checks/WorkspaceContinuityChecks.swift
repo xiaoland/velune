@@ -334,12 +334,30 @@ import Foundation
     local.drop(TabDragSource.link(for: artifact.id, conversation: nil), on: local.focusedPaneID, zone: .center)
     precondition(target.focusedEditor === artifact && local.tabCount == count,
                  "跨执行设备拖放不能把远端标签接到本机 core")
-    local.drop(ConversationLink.url(runtimeID: "synthetic-runtime", conversationID: "sample-1"), on: local.focusedPaneID, zone: .center, from: source)
-    precondition(local.tabCount == count, "列表拖放也必须保留执行设备身份")
+    // The two rows have the same wire URL in aggregated windows. The source
+    // of the native row provider must determine which Core should open it.
+    let rowDevice = DeviceStore(preview: true, peerID: "row-owner")
+    let row = ListDragWatch.Row(conversationID: "sample-1", device: rowDevice, window: source)
+    let url = ConversationLink.url(runtimeID: "sample-instance", conversationID: "sample-1")
+    local.openInNewTab("sample-1", device: otherDevice)
+    let sameIDOnLocal = local.focused
+    let before = local.tabCount
+    local.drop(url, on: local.focusedPaneID, zone: .center, from: row)
+    precondition(local.tabCount == before + 1 && local.focused.store.device === rowDevice && local.focused.store.loadedConversationID == "sample-1"
+                 && sameIDOnLocal.store.device === otherDevice && local.tab(showing: "sample-1", device: otherDevice)?.1 === sameIDOnLocal,
+                 "聚合工作区列表拖放不能复用另一设备的同名会话或由本机打开远端行")
+    let matched = local.focused
+    local.drop(url, on: local.focusedPaneID, zone: .center, from: row)
+    precondition(local.tabCount == before + 1 && local.focused === matched)
+    let single = ConversationWindowModel(application: otherDevice, kind: .single)
+    let unchangedTab = single.focused
+    single.drop(url, on: single.focusedPaneID, zone: .center, from: row)
+    precondition(single.tabCount == 1 && single.focused === unchangedTab && otherDevice.problems.contains { $0.detail.contains("同一设备") },
+                 "单会话窗口拒绝其他设备的列表行并说明执行设备冲突")
     local.openArtifact(document)
     precondition(local.artifactSheet != nil && local.artifactSheet !== artifact,
                  "不同执行设备中相同消息 ID 不代表同一个 Artifact")
-    note("PASS window ownership: remote seeds preserve device; Artifact reuse survives window handoff and source selection; foreign-device drops preserve both windows")
+    note("PASS window ownership: remote seeds preserve device; Artifact reuse survives window handoff and source selection; aggregate drags preserve row device and same-ID local tabs; foreign-device single-window drops rejected")
 
     workspaceRecoveryChecks(home: home)
 

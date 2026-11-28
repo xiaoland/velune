@@ -104,7 +104,7 @@ fn blocked_large_prompt_reserves_real_reply_admission() {
         )
         .unwrap();
     assert_eq!(gate.line(), "notification");
-    assert!(prompt.try_complete().is_none());
+    assert!(prompt.try_outcome().is_none());
     let reply = writer
         .try_enqueue(
             OwnedFrame::new(b"{\"kind\":\"reply\"}\n".to_vec(), 1024),
@@ -113,8 +113,8 @@ fn blocked_large_prompt_reserves_real_reply_admission() {
         )
         .expect("reply must enter actual writer behind oversized prompt");
     let cancel = control(&writer, "cancel", deadline).unwrap();
-    assert!(reply.try_complete().is_none());
-    assert!(cancel.try_complete().is_none());
+    assert!(reply.try_outcome().is_none());
+    assert!(cancel.try_outcome().is_none());
     {
         let usage = writer.usage.lock().unwrap();
         assert_eq!((usage.ordinary_count, usage.control_count), (1, 2));
@@ -199,14 +199,15 @@ fn blocked_lease_survives_receipt_timeout_and_drop_and_queued_controls_expire() 
         assert!(Instant::now() < until);
         thread::sleep(Duration::from_millis(2));
     }
-    assert!(matches!(
-        reply.try_outcome(),
-        Some(WriteOutcome::NotWritten(_))
-    ));
-    assert!(matches!(
-        cancel.try_outcome(),
-        Some(WriteOutcome::NotWritten(_))
-    ));
+    for receipt in [&reply, &cancel] {
+        for _ in 0..2 {
+            let Some(WriteOutcome::NotWritten(error)) = receipt.try_outcome() else {
+                panic!("queued expiry must remain provably NotWritten");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(error.to_string(), "runtime write expired in queue");
+        }
+    }
     assert_eq!(writer.usage.lock().unwrap().ordinary_bytes, 0);
     assert!(gate.output.recv_timeout(Duration::from_millis(40)).is_err());
     // A skipped expired frame does not prevent subsequent valid FIFO writes.
@@ -416,6 +417,7 @@ fn timely_flush_is_timely_even_when_harvested_after_deadline() {
     assert_eq!(completion.deadline, deadline);
     assert!(completion.met_deadline());
     assert!(completion.started_at <= completion.completed_at);
+    assert_same_written(&receipt, completion);
     control(
         &writer,
         "future-control",
@@ -453,6 +455,7 @@ fn blocked_write_retains_late_written_fact_after_observation_timeout() {
                 assert!(completion.started_at < deadline);
                 assert!(completion.completed_at >= deadline);
                 assert!(!completion.met_deadline());
+                assert_same_written(&receipt, completion);
                 break;
             }
             Some(WriteOutcome::ObservationTimeout { .. }) | None => {}
@@ -518,144 +521,13 @@ fn bounded_codec_checks_slot_and_deadline_before_touching_source() {
     reply.wait().unwrap();
 }
 
-fn compatibility_then_physical_terminal(receipt: &WriteReceipt) -> (io::Result<()>, WriteOutcome) {
-    let until = Instant::now() + Duration::from_secs(3);
-    loop {
-        let compatibility = receipt.try_complete();
-        let outcome = receipt.try_outcome();
-        match (compatibility, outcome) {
-            (
-                Some(result),
-                Some(outcome @ (WriteOutcome::Written(_) | WriteOutcome::NotWritten(_))),
-            ) => {
-                return (result, outcome);
-            }
-            (_, Some(WriteOutcome::Indeterminate(error))) => {
-                panic!("known physical outcome lost after compatibility read: {error}");
-            }
-            _ => {}
-        }
-        assert!(
-            Instant::now() < until,
-            "physical terminal outcome did not arrive"
-        );
-        thread::sleep(Duration::from_millis(2));
-    }
-}
-
 fn assert_same_written(receipt: &WriteReceipt, expected: WriteCompletion) {
     for _ in 0..2 {
         let Some(WriteOutcome::Written(actual)) = receipt.try_outcome() else {
-            panic!("compatibility observation must not consume real Written");
+            panic!("observing the outcome must not consume real Written");
         };
         assert_eq!(actual.started_at, expected.started_at);
         assert_eq!(actual.completed_at, expected.completed_at);
         assert_eq!(actual.deadline, expected.deadline);
-        assert_eq!(actual.met_deadline(), expected.met_deadline());
     }
-}
-
-#[test]
-fn compatibility_receipt_preserves_timely_written_timestamps() {
-    let (mut gate, writer) = Gate::new();
-    assert_eq!(gate.line(), "notification");
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let receipt = control(&writer, "timely-compat", deadline).unwrap();
-    gate.release();
-    assert!(gate.line().contains("timely-compat"));
-    let (compatibility, outcome) = compatibility_then_physical_terminal(&receipt);
-    compatibility.unwrap();
-    let WriteOutcome::Written(completion) = outcome else {
-        panic!("actual timely flush must remain Written");
-    };
-    assert!(completion.met_deadline());
-    assert_eq!(completion.deadline, deadline);
-    assert_same_written(&receipt, completion);
-    receipt.try_complete().unwrap().unwrap();
-    assert_same_written(&receipt, completion);
-}
-
-#[test]
-fn compatibility_receipt_preserves_late_written_after_observation_timeout() {
-    let (mut gate, writer) = Gate::new();
-    let deadline = Instant::now() + Duration::from_millis(500);
-    let receipt = writer
-        .try_enqueue(
-            OwnedFrame::new(large(), 16 * 1024 * 1024),
-            WriteClass::Ordinary,
-            deadline,
-        )
-        .unwrap();
-    assert_eq!(gate.line(), "notification");
-    thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(20));
-    assert_eq!(
-        receipt.try_complete().unwrap().unwrap_err().kind(),
-        io::ErrorKind::TimedOut
-    );
-    assert!(matches!(
-        receipt.try_outcome(),
-        Some(WriteOutcome::ObservationTimeout { .. })
-    ));
-    assert_eq!(writer.usage.lock().unwrap().ordinary_count, 1);
-    gate.release();
-    assert!(gate.line().contains("prompt"));
-    let (compatibility, outcome) = compatibility_then_physical_terminal(&receipt);
-    assert_eq!(compatibility.unwrap_err().kind(), io::ErrorKind::TimedOut);
-    let WriteOutcome::Written(completion) = outcome else {
-        panic!("late physical flush must not become timeout-only evidence");
-    };
-    assert!(completion.started_at < deadline);
-    assert!(completion.completed_at >= deadline);
-    assert!(!completion.met_deadline());
-    assert_eq!(completion.deadline, deadline);
-    assert_same_written(&receipt, completion);
-    assert_eq!(
-        receipt.try_complete().unwrap().unwrap_err().kind(),
-        io::ErrorKind::TimedOut
-    );
-    assert_same_written(&receipt, completion);
-}
-
-#[test]
-fn compatibility_receipt_preserves_queued_expiry_known_not_written() {
-    let (mut gate, writer) = Gate::new();
-    let prompt = writer
-        .try_enqueue(
-            OwnedFrame::new(large(), 16 * 1024 * 1024),
-            WriteClass::Ordinary,
-            Instant::now() + Duration::from_secs(5),
-        )
-        .unwrap();
-    assert_eq!(gate.line(), "notification");
-    let deadline = Instant::now() + Duration::from_millis(150);
-    let receipt = control(&writer, "expired-compat", deadline).unwrap();
-    thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(20));
-    assert_eq!(
-        receipt.try_complete().unwrap().unwrap_err().kind(),
-        io::ErrorKind::TimedOut
-    );
-    assert_eq!(writer.usage.lock().unwrap().ordinary_count, 1);
-    assert_eq!(writer.usage.lock().unwrap().control_count, 1);
-    gate.release();
-    assert!(gate.line().contains("prompt"));
-    prompt.wait().unwrap();
-    let (compatibility, outcome) = compatibility_then_physical_terminal(&receipt);
-    assert_eq!(compatibility.unwrap_err().kind(), io::ErrorKind::TimedOut);
-    let WriteOutcome::NotWritten(expected) = outcome else {
-        panic!("queued expiry must remain provably NotWritten");
-    };
-    assert_eq!(expected.kind(), io::ErrorKind::TimedOut);
-    assert_eq!(expected.to_string(), "runtime write expired in queue");
-    for _ in 0..2 {
-        assert_eq!(
-            receipt.try_complete().unwrap().unwrap_err().kind(),
-            expected.kind()
-        );
-        let Some(WriteOutcome::NotWritten(actual)) = receipt.try_outcome() else {
-            panic!("known NotWritten cannot degrade after compatibility reads");
-        };
-        assert_eq!(actual.kind(), expected.kind());
-        assert_eq!(actual.to_string(), expected.to_string());
-    }
-    assert!(gate.output.recv_timeout(Duration::from_millis(40)).is_err());
 }

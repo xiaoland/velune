@@ -545,6 +545,14 @@ mod links_tests {
                 .as_mut()
                 .unwrap()
                 .summary_work_id = Some("work-1".into());
+            links.push(serde_json::from_value(serde_json::json!({
+                "id":"alias \"空间\"\n", "segments":[{
+                    "runtimeInstanceId":"pi", "runtimeTypeId":crate::conversation::RuntimeKind::Pi,
+                    "nativeConversationId":"pi:/synthetic/目录\t\\native.jsonl",
+                    "cwd":"/synthetic/路径 \"x\"", "cutoff":null,"handoff":null,"deleted":false,
+                    "messageOrigins":{"original \"id\"":["native-一", "native-二"]}
+                }]
+            })).unwrap());
             repository.store_conversation_links(&links).unwrap();
             assert!(
                 super::super::Repository::open(&home.0).is_err(),

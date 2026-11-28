@@ -155,10 +155,15 @@ fn newest_compaction_replacement_keeps_agent_context_and_suffix() {
 
 #[test]
 fn metadata_does_not_allow_unknown_rollout_or_response_items() {
-    rejected(
-        &[metadata(), record("future_context", json!({}))],
-        "unsupported Codex rollout record: future_context",
-    );
+    for kind in ["future_context", "inter_agent_communication"] {
+        rejected(
+            &[
+                metadata(),
+                record(kind, json!({"content":"must not disappear"})),
+            ],
+            &format!("unsupported Codex rollout record: {kind}"),
+        );
+    }
     rejected(
         &[metadata(), item(json!({"type":"future_item"}))],
         "unsupported Codex context item: future_item",

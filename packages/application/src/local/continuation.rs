@@ -141,18 +141,21 @@ mod prefix_digest_tests {
             "detail":"API Error: 503\nplease retry\nClaude Code 错误类型：overloaded_error",
             "retry":{"kind":"recovered"}
         }]));
-        let stored = prefix_digest(&old).unwrap();
+        // Persisted role/blocks encoding before 0e0ab698e; fixed independently
+        // of both current digest writers and the compatibility reader.
+        let stored = "76471574235bc8bc97c1c298ebf67660acf3c55e507fb0a509c73b3dfcedd825";
+        assert_eq!(prefix_digest(&old).unwrap(), stored);
         assert_ne!(prefix_digest(&current).unwrap(), stored);
-        assert!(prefix_digest_matches(&current, &stored).unwrap());
+        assert!(prefix_digest_matches(&current, stored).unwrap());
         assert!(prefix_digest_matches(&current, &prefix_digest(&current).unwrap()).unwrap());
         let mut changed = current.clone();
         changed[0].role = MessageRole::User;
-        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
+        assert!(!prefix_digest_matches(&changed, stored).unwrap());
         let changed = messages(serde_json::json!([{
             "kind":"runtimeFailure","failure":"other","detail":"different upstream error","retry":null
         }]));
-        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
-        assert!(!prefix_digest_matches(&[], &stored).unwrap());
+        assert!(!prefix_digest_matches(&changed, stored).unwrap());
+        assert!(!prefix_digest_matches(&[], stored).unwrap());
     }
 
     #[test]
@@ -165,13 +168,16 @@ mod prefix_digest_tests {
             {"kind":"runtimeFailure","failure":"other","detail":"API Error","retry":null},
             {"kind":"tool","toolID":"call-1","title":"read","state":"completed","output":"original","conversation_id":null}
         ]));
-        let stored = prefix_digest(&old).unwrap();
-        assert!(prefix_digest_matches(&current, &stored).unwrap());
+        // Persisted role/blocks encoding before 0e0ab698e; fixed independently
+        // of both current digest writers and the compatibility reader.
+        let stored = "054b362fa4df466ebb692106da061340a334b98c5e6716219455bbf51c1d29ef";
+        assert_eq!(prefix_digest(&old).unwrap(), stored);
+        assert!(prefix_digest_matches(&current, stored).unwrap());
         let mut changed = current;
         if let MessageBlock::Tool { output, .. } = &mut changed[0].blocks[1] {
             *output = Some("changed".into());
         }
-        assert!(!prefix_digest_matches(&changed, &stored).unwrap());
+        assert!(!prefix_digest_matches(&changed, stored).unwrap());
     }
 }
 

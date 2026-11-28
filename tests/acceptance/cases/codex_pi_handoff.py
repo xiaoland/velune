@@ -63,7 +63,6 @@ class LoopbackProvider:
             seed is None or (SEED_INPUT in json.dumps(entry["body"].get("input", []))) == seed)]
 
     def gate(self, stage: str, client: socket.socket) -> str:
-        (self.gates / f"{stage}-progress").touch()
         if stage == "seed":
             return "release"
         deadline = time.monotonic() + 600
@@ -266,14 +265,6 @@ def maintenance(snapshot, work_id: str):
     return matches[0]
 
 
-def summary_wire(model_id: str) -> tuple[str, str | None]:
-    prefix = "velune:codex-speed:"
-    if model_id.startswith(prefix):
-        base, tier = json.loads(model_id[len(prefix):])
-        return base, tier
-    return model_id, None
-
-
 def run(ctx: Context) -> None:
     b = ctx.bindings
     bindings, api, conversation = b.bindings, b.application_api, b.conversation
@@ -384,13 +375,11 @@ def run(ctx: Context) -> None:
         app.read_conversation(SOURCE, cid)
         input_ready(cid)
         catalog = requirements(cid).summary_basis.catalog or []
-        candidates = [(model.selection.provider_id, model.selection.model_id) for model in catalog
-                      if variant(model.selection, "NATIVE") and model.selection.provider_id == "synthetic"
-                      and model.selection.model_id != SOURCE_MODEL]
-        assert candidates, "summary picker offered no source-provider model other than the source's"
-        summary_model_id = candidates[0][1]
-        summary_model = native(summary_model_id)
-        ctx.facts["summary_model"] = summary_model_id
+        assert any(variant(model.selection, "NATIVE") and model.selection.provider_id == "synthetic"
+                   and model.selection.model_id == SUMMARY_MODEL for model in catalog), \
+            f"summary picker did not offer the fixture's {SUMMARY_MODEL}"
+        summary_model = native(SUMMARY_MODEL)
+        ctx.facts["summary_model"] = SUMMARY_MODEL
         ctx.passed("encrypted_context_requires_a_portable_summary")
 
         target_selection = native(TARGET_MODEL)
@@ -431,6 +420,7 @@ def run(ctx: Context) -> None:
         failed = app.retry_queued_handoff_summary(SOURCE, cid, head, summary_model, None)
         assert failed.queued_message_id == head, "retry added a duplicate queue item"
         failed_status = work_reaches(failed.work_id, "FAILED")
+        assert failed_status.code == "summary_requires_text_only_response", (failed_status.code, failed_status.detail)
         snapshot = wait_for(lambda: queue_is([head, tail], paused=True), "failed preparation lost or unpaused the queue")
         event = maintenance(snapshot, failed.work_id)
         diagnosis = next(block.text for block in event.blocks if variant(block, "CONTEXT_COMPACTION"))
@@ -484,10 +474,10 @@ def run(ctx: Context) -> None:
         assert first.count(SUMMARY_TEXT) == 1 and first.count(TARGET_INPUT) == 1, \
             "target did not receive the summary and the input exactly once"
         assert OPAQUE not in first, "target request carried the encrypted compaction"
-        summary_body = provider.calls("responses", seed=False)[-1]["body"]
-        wire_model, tier = summary_wire(summary_model_id)
-        assert summary_body.get("model") == wire_model and summary_body.get("service_tier") == tier, \
-            f"summary used {summary_body.get('model')!r}/{summary_body.get('service_tier')!r}"
+        for request in provider.calls("responses", seed=False):
+            body = request["body"]
+            assert body.get("model") == SUMMARY_MODEL and body.get("service_tier") is None, \
+                f"summary used {body.get('model')!r}/{body.get('service_tier')!r}"
         assert done.conversation.id == cid, f"logical identity changed: {done.conversation.id}"
         committed = maintenance(done, final.work_id)
         assert committed.completed, "committed handoff maintenance event remained running"
@@ -512,7 +502,9 @@ def run(ctx: Context) -> None:
             "if len(sys.argv) > 1 and pathlib.Path(sys.argv[1]).name == 'pi_rpc.mjs':\n"
             "    entered.write_text(str(os.getpid()))\n"
             "    deadline = time.monotonic() + 30\n"
-            "    while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
+            "    while not release.exists():\n"
+            "        if time.monotonic() >= deadline: sys.exit(2)\n"
+            "        time.sleep(.01)\n"
             f"os.execv({str(node)!r}, [{str(node)!r}, *sys.argv[1:]])\n")
         wrapper.chmod(0o700)
         try:
@@ -527,22 +519,24 @@ def run(ctx: Context) -> None:
                 summary_model=None, effort=None))
             wait_for(entered.exists, "the Pi SDK start did not reach its gate")
             outcome = []
+            cancel_call_started = threading.Event()
 
             def cancel():
                 try:
+                    cancel_call_started.set()
                     outcome.append(app.cancel_handoff_summary(started.work_id))
                 except BaseException as error:  # Reported below.
                     outcome.append(error)
 
             canceller = threading.Thread(target=cancel)
             canceller.start()
-            # The cancel sets its shared flag before waiting for the occupied
-            # owner; release the SDK only once it is waiting.
-            time.sleep(0.15)
+            # Start the caller while the SDK is held. Its receipt, the paused queue
+            # and the model wire below distinguish cancellation from a delivered prompt.
+            assert cancel_call_started.wait(timeout=5), "cancellation caller did not start"
             release.touch()
             canceller.join(timeout=30)
             assert not canceller.is_alive(), "cancel did not finish after the SDK start resumed"
-            assert outcome and not isinstance(outcome[0], BaseException), f"cancel failed: {outcome}"
+            assert len(outcome) == 1 and variant(outcome[0], "CANCELLED"), f"cancel was not confirmed: {outcome}"
             wait_for(lambda: queue_is([started.queued_message_id], paused=True),
                      "cancel before accept did not keep a paused queue head", 10.0)
             assert len(targets()) == sent_before, "a target prompt was sent after cancel during SDK start"
