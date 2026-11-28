@@ -239,6 +239,12 @@ fn codex_native_to_managed_import_preserves_inter_agent_context_and_source_bytes
     cleanup_owned_import(&config, &target).unwrap();
     // The source token predates the appended native records, so cleanup must
     // reject it instead of removing changed history.
-    assert!(cleanup_owned_import(&config, &source).is_err());
+    let error = cleanup_owned_import(&config, &source)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("owned import changed; original copy was retained"),
+        "{error}"
+    );
     assert_eq!(std::fs::read(source.source_path()).unwrap(), original);
 }
