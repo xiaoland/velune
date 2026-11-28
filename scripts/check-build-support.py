@@ -4,10 +4,12 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('support', Path(__file__).with_name('build-support.py'))
 support = importlib.util.module_from_spec(spec)
@@ -79,6 +81,38 @@ class BuildSupportChecks(unittest.TestCase):
             self.assertEqual(support.run(args),3, 'Restored bytes must not hide a source edit during compilation')
         finally:
             support.ROOT, support.STATE = old_root, old_state
+
+    def test_macos_doctor_requires_current_inputs_and_the_recorded_bundle(self):
+        from macos_identity import app_bundle_path, stamp
+
+        state = self.root / 'target/build-state'
+        bundle = app_bundle_path(self.root, 'dev')
+        executable = bundle / 'Contents/MacOS/VeluneDev'
+        bindings = bundle / 'Contents/Frameworks/libvelune_bindings.dylib'
+        manifest = bundle / 'Contents/Resources/build-manifest.json'
+        for path in (executable, bindings, manifest):
+            path.parent.mkdir(parents=True)
+        executable.write_text('app'); executable.chmod(0o700)
+        bindings.write_text('bindings')
+        manifest.write_text(json.dumps({'source_commit': 'test-revision'}))
+        (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps(stamp({}, self.root, 'development')))
+        source = self.root / 'Package.swift'
+        source.write_text('original')
+        args = argparse.Namespace(platform='macos', profile='dev', purpose='development', command=[sys.executable, '-c', 'pass'])
+
+        with patch.multiple(support, ROOT=self.root, STATE=state), patch.object(support, 'is_git_checkout', return_value=False):
+            self.assertEqual(support.run(args), 0)
+            with patch.object(support.subprocess, 'run') as codesign:
+                result = support.verify_macos_build('dev')
+                self.assertEqual(result['bindingsSHA256'], support.digest(bindings))
+                codesign.assert_called_once_with(['/usr/bin/codesign', '--verify', '--strict', str(bundle)], check=True)
+                bindings.write_text('another build')
+                with self.assertRaisesRegex(ValueError, '产物与构建回执不符'):
+                    support.verify_macos_build('dev')
+                bindings.write_text('bindings')
+                source.write_text('subsequent edit')
+                with self.assertRaisesRegex(ValueError, '回执与当前输入不符'):
+                    support.verify_macos_build('dev')
 
 
 if __name__=='__main__': unittest.main()
