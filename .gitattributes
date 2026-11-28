@@ -3,3 +3,4 @@
 app/mac/Assets/Artifacts/mermaid.min.js -whitespace
 app/mac/Licenses/Mermaid/Licenses/** -whitespace
 app/windows/Licenses/SourceLicenses/** -text
+app/windows/Licenses/Velopack/LICENSE -text
