@@ -1,7 +1,7 @@
 //! Scheduler dispatch reuses the ordinary session pool, control admission,
 //! model selection, gateway and native approval flow.
 use super::*;
-use crate::scheduled_tasks::{next_occurrence, now, verify_source};
+use crate::scheduled_tasks::{DispatchReceipt, next_occurrence, now, verify_source};
 use crate::{
     ScheduledRun, ScheduledRunPhase as Phase, ScheduledTarget as Target, ScheduledTask,
     ScheduledTaskStatus as Status, ScheduledTasksOperation as Operation, ScheduledTasksState,
@@ -275,11 +275,10 @@ impl CoreRuntime {
         self.scheduled_tasks.put_task(&task)
     }
     fn sweep_scheduled_tasks(&mut self) -> Result<(), RuntimeError> {
-        self.scheduled_tasks.retry_turn_results();
+        self.scheduled_tasks.retry_run_updates();
         let mut runs = self.scheduled_tasks.runs()?;
         for run in &mut runs {
-            if run.phase != Phase::Running || self.scheduled_tasks.has_pending_turn_result(&run.id)
-            {
+            if run.phase != Phase::Running || self.scheduled_tasks.has_pending_run_update(&run.id) {
                 continue;
             }
             let Some(id) = &run.conversation_id else {
@@ -488,22 +487,30 @@ impl CoreRuntime {
         };
         self.session.scheduled_run = Some((run.id.clone(), task.notify_only_failures));
         let sent = self.send_turn(request);
-        if sent.is_err() {
+        self.record_scheduled_dispatch(&run.id, sent)
+    }
+
+    fn record_scheduled_dispatch(
+        &mut self,
+        run_id: &str,
+        sent: Result<crate::SnapshotResult, RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        let receipt = match sent {
+            Ok(_) => DispatchReceipt::Admitted,
+            Err(error) if error.delivery_accepted() => DispatchReceipt::Admitted,
+            Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere" => {
+                DispatchReceipt::WaitingForControl
+            }
+            Err(error) => DispatchReceipt::Unconfirmed(format!(
+                "派发未能确认：{error}；请检查会话，未自动重发"
+            )),
+        };
+        if !matches!(receipt, DispatchReceipt::Admitted) {
             self.session.scheduled_run = None;
         }
-        match sent {
-            Ok(_) => run.phase = Phase::Running,
-            Err(RuntimeError::Contract(failure)) if failure.code == "control_held_elsewhere" => {
-                run.phase = Phase::Waiting;
-                run.detail = Some("等待外部客户端释放控制权；尚未发送".into());
-            }
-            Err(error) => {
-                run.phase = Phase::OutcomeUnknown;
-                run.detail = Some(format!("派发未能确认：{error}；请检查会话，未自动重发"));
-            }
-        }
-        self.scheduled_tasks.put_dispatch_result(run)
+        self.scheduled_tasks.put_dispatch_result(run_id, receipt)
     }
+
     fn schedule_worktree(
         &self,
         runtime_id: &str,
@@ -621,10 +628,8 @@ mod tests {
             "manual turn is not scheduled"
         );
 
-        let mut dispatch_result = run.clone();
-        dispatch_result.phase = Phase::OutcomeUnknown;
         core.scheduled_tasks
-            .put_dispatch_result(&dispatch_result)
+            .put_dispatch_result(&run.id, DispatchReceipt::Unconfirmed("late result".into()))
             .unwrap();
         core.sweep_scheduled_tasks().unwrap();
         let during = core.scheduled_tasks.run(&run.id).unwrap().unwrap();
@@ -701,5 +706,87 @@ mod tests {
             assert_eq!((stored.phase, stored.turn_outcome), (phase, outcome));
         }
         assert_eq!(reopened.runs().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn scheduled_dispatch_retries_its_receipt_and_preserves_an_accepted_turn() {
+        for terminal_before_retry in [false, true] {
+            let temp = TempRoot::new("scheduled-dispatch-retry");
+            let home = temp.dir("home");
+            let mut application = crate::Application::open(crate::Options {
+                home_directory: home.clone(),
+                resources_directory: temp.dir("resources"),
+            })
+            .unwrap();
+            let core = &mut application.runtime;
+            let task = paused_schedule(core);
+            let mut run = running_schedule(core, &task, now());
+            run.phase = Phase::Dispatching;
+            core.scheduled_tasks.put_run(&run).unwrap();
+            let fault = rusqlite::Connection::open(home.join("scheduled-tasks.sqlite3")).unwrap();
+            fault
+                .execute_batch(
+                    "
+                CREATE TABLE applied(phase TEXT NOT NULL);
+                CREATE TRIGGER audit_update AFTER UPDATE ON runs
+                BEGIN INSERT INTO applied VALUES (NEW.phase); END;
+                CREATE TRIGGER reject_receipt BEFORE UPDATE ON runs
+                WHEN NEW.phase IN ('Running', 'Completed')
+                BEGIN SELECT RAISE(FAIL, 'synthetic write failure'); END;
+            ",
+                )
+                .unwrap();
+
+            core.session.scheduled_run = Some((run.id.clone(), task.notify_only_failures));
+            let accepted = || Err(RuntimeError::after_delivery("synthetic snapshot failure"));
+            assert!(core.record_scheduled_dispatch(&run.id, accepted()).is_err());
+            assert_eq!(
+                core.session
+                    .scheduled_run
+                    .as_ref()
+                    .map(|(id, _)| id.as_str()),
+                Some(run.id.as_str()),
+            );
+            assert_eq!(
+                core.scheduled_tasks.run(&run.id).unwrap().unwrap().phase,
+                Phase::Dispatching
+            );
+            if terminal_before_retry {
+                assert!(core.settle_scheduled_turn(TurnOutcome::Completed));
+            }
+
+            fault.execute_batch("DROP TRIGGER reject_receipt").unwrap();
+            core.scheduled_tasks.retry_run_updates();
+            if !terminal_before_retry {
+                assert_eq!(
+                    core.scheduled_tasks.run(&run.id).unwrap().unwrap().phase,
+                    Phase::Running
+                );
+                assert!(core.settle_scheduled_turn(TurnOutcome::Completed));
+            }
+            core.record_scheduled_dispatch(&run.id, accepted()).unwrap();
+            core.sweep_scheduled_tasks().unwrap();
+            let finished = core.scheduled_tasks.run(&run.id).unwrap().unwrap();
+            assert_eq!(
+                (finished.phase, finished.turn_outcome),
+                (Phase::Completed, Some(TurnOutcome::Completed))
+            );
+            assert_eq!(core.scheduled_tasks.runs().unwrap().len(), 1);
+            let writes = fault
+                .prepare("SELECT phase FROM applied ORDER BY rowid")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                writes,
+                if terminal_before_retry {
+                    vec!["Completed"]
+                } else {
+                    vec!["Running", "Completed"]
+                },
+            );
+        }
     }
 }

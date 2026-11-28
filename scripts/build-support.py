@@ -344,11 +344,13 @@ def artifact_identity(platform, profile, command, purpose="development"):
     elif platform == "android":
         apk, output_metadata = android_apk_output(profile)
         paths = ["target/android-native/arm64-v8a/libvelune_bindings.so", str(apk.relative_to(ROOT)), str(output_metadata.relative_to(ROOT))]
+    elif platform == "windows":
+        app = "target/windows-dev/Velune" if profile == "dev" else "target/windows/Velune"
+        paths = [f"target/host-rust/{native_profile}/velune_bindings.dll",
+                 f"{app}/Velune.exe", f"{app}/Velune.dll"]
     else:
-        paths = {
-            "windows": [f"target/host-rust/{native_profile}/velune_bindings.dll", f"target/{'windows-dev' if profile == 'dev' else 'windows'}/Velune/Velune.exe"],
-            "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
-        }[platform]
+        paths = [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a",
+                 f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
 
 

@@ -146,7 +146,8 @@ pub enum DeliveredImageSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
 pub struct DeliveredMessage {
-    /// Sequence at which this content was first delivered; unchanged content keeps it.
+    /// Opaque value for matching a message with its deferred payload. It stays
+    /// equal for unchanged content in the same view and cannot order deliveries.
     pub stamp: u64,
     pub completed: bool,
     pub id: String,
