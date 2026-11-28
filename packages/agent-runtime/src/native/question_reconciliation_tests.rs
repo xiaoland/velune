@@ -1,6 +1,5 @@
 //! Exercise actual native request lifetimes without a model, account or user data.
 use super::*;
-use std::os::unix::fs::PermissionsExt;
 use velune_test_support::TempRoot;
 
 pub(super) struct Fixture {
@@ -11,21 +10,8 @@ pub(super) struct Fixture {
 impl Fixture {
     pub(super) fn new() -> Self {
         let root = TempRoot::new("question-lifecycle");
-        let binary = root.join("codex");
-        std::fs::write(
-            &binary,
-            r#"#!/usr/bin/python3
-import json,sys
-if '--version' in sys.argv:
- print('codex-cli 0.166.0');sys.exit(0)
-for line in sys.stdin:
- request=json.loads(line)
- if 'id' in request and 'method' in request:
-  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{}}),flush=True)
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/question_lifecycle_peer.py");
         let mut session = NativeSession::connect(NativeConfig {
             execution: crate::execution::ExecutionTarget::Local,
             os_home: Some(root.to_path_buf()),
