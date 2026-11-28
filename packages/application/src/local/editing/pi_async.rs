@@ -1687,7 +1687,7 @@ mod tests {
             gateway: Some(core.gateways[0].clone()),
             sources: Vec::new(),
             link: None,
-            revision: String::new(),
+            revision: EditRevision::parse(&format!("0::{}", "0".repeat(64))).unwrap(),
             conversation_id: conversation_id.clone(),
             message_id: String::new(),
             native_id: conversation_id,
