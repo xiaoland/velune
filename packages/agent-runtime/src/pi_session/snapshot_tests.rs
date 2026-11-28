@@ -144,7 +144,7 @@ for line in sys.stdin:
  with open(os.path.join(root,'requests.jsonl'),'a') as log: log.write(json.dumps(request)+'\n')
  if command=='get_commands': data={'commands':[]}
  elif command=='prompt' and request['message'].startswith('/velune-projection-sync '):
-  if mode=='timeout': time.sleep(3.5)
+  if mode=='timeout': continue
   elif mode=='missing-after-branch' and branched: pass
   else: emit(frame(request,after if branched else old,mode=='invalid-after-branch' and branched))
   if mode!='timeout': data={'disposition':'handled'}
@@ -216,7 +216,7 @@ fn edit_history_barrier_returns_typed_port_timeout_without_authorizing_continue(
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("Pi RPC transport ended") || error.contains("deadline"),
+        error.contains("Pi prompt deadline expired; delivery/outcome indeterminate"),
         "{error}"
     );
     assert!(start.elapsed() < Duration::from_secs(5));
@@ -299,10 +299,13 @@ fn edit_branch_does_not_complete_on_rewind_error_or_invalid_post_branch_frame() 
                 .unwrap_err()
                 .to_string()
         };
-        assert!(
-            !error.is_empty(),
-            "{mode} must fail the edit barrier rather than authorize a send"
-        );
+        let expected = match mode {
+            "rewind-error" => "synthetic rewind rejected",
+            "invalid-after-branch" => "原生会话消息身份不属于同一快照或重复",
+            "missing-after-branch" => "原生会话投影缺少同源快照",
+            _ => unreachable!(),
+        };
+        assert!(error.contains(expected), "{mode}: {error}");
         let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
         assert!(!requests.lines().any(|line| {
             serde_json::from_str::<Value>(line)

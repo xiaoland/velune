@@ -473,41 +473,6 @@ impl RpcClient {
         Ok(id)
     }
 
-    /// Typed command owners retain both request correlation and flush evidence.
-    pub(crate) fn enqueue_request_receipt(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        deadline: Instant,
-    ) -> Result<(u64, crate::transport::WriteReceipt)> {
-        self.enqueue_request_receipt_with_class(method, params, WriteClass::Ordinary, deadline)
-    }
-
-    pub(crate) fn enqueue_request_receipt_with_class(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        class: WriteClass,
-        deadline: Instant,
-    ) -> Result<(u64, crate::transport::WriteReceipt)> {
-        let id = self.next;
-        let next = id
-            .checked_add(1)
-            .ok_or_else(|| Error::new("运行时请求序号耗尽"))?;
-        let receipt = self.enqueue_owned_frame(
-            &RequestFrame {
-                jsonrpc: "2.0",
-                id: Some(id),
-                method,
-                params,
-            },
-            class,
-            deadline,
-        )?;
-        self.next = next;
-        Ok((id, receipt))
-    }
-
     /// Claude stream-json has its own envelope, not JSON-RPC. The port
     /// reserves the actual encoded allocation until the writer completes.
     pub(crate) fn enqueue_claude_frame_receipt(
@@ -534,45 +499,6 @@ impl RpcClient {
 
     pub(crate) fn enqueue_claude_automatic_reply(&mut self, frame: &Value) -> Result<()> {
         self.enqueue_automatic_reply(frame)
-    }
-
-    pub(crate) fn enqueue_notification_receipt_with_class(
-        &mut self,
-        method: &'static str,
-        params: &Value,
-        class: WriteClass,
-        deadline: Instant,
-    ) -> Result<crate::transport::WriteReceipt> {
-        self.enqueue_owned_frame(
-            &RequestFrame {
-                jsonrpc: "2.0",
-                id: None,
-                method,
-                params,
-            },
-            class,
-            deadline,
-        )
-    }
-
-    pub(crate) fn enqueue_rejection_receipt(
-        &mut self,
-        id: &Value,
-        message: &str,
-        deadline: Instant,
-    ) -> Result<crate::transport::WriteReceipt> {
-        self.enqueue_owned_frame(
-            &RejectionFrame {
-                jsonrpc: "2.0",
-                id,
-                error: Rejection {
-                    code: -32601,
-                    message,
-                },
-            },
-            WriteClass::ProtocolReplyCancel,
-            deadline,
-        )
     }
 
     /// Legacy receipt pressure hint only; physical count/byte admission is authoritative.

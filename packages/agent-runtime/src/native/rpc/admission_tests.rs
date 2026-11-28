@@ -32,37 +32,37 @@ for line in sys.stdin:
         RpcClient::spawn_at(command, &crate::execution::ExecutionTarget::Local, None).unwrap();
     rpc.defer_cleanup();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let (id, prompt) = rpc
-        .enqueue_request_receipt(
+    let id = rpc
+        .enqueue_request(
             "synthetic/prompt",
             &json!({"text":"x".repeat(9 * 1024 * 1024)}),
             deadline,
         )
         .unwrap();
+    let prompt = rpc.writes.pop().unwrap().1;
     let reply = rpc
         .enqueue_reply_receipt(&json!(900), &json!({}), deadline)
         .unwrap();
-    let reject = rpc
-        .enqueue_rejection_receipt(&json!(901), "unsupported", deadline)
-        .unwrap();
-    let cancel = rpc
-        .enqueue_notification_receipt_with_class(
-            "synthetic/cancel",
-            &json!({}),
-            WriteClass::ProtocolReplyCancel,
-            deadline,
-        )
-        .unwrap();
-    let (_, interrupt) = rpc
-        .enqueue_request_receipt_with_class(
-            "synthetic/interrupt",
-            &json!({}),
-            WriteClass::ProtocolReplyCancel,
-            deadline,
-        )
-        .unwrap();
+    rpc.enqueue_rejection(&json!(901), "unsupported").unwrap();
+    let reject = rpc.writes.pop().unwrap().1;
+    rpc.enqueue_notification_with_class(
+        "synthetic/cancel",
+        &json!({}),
+        WriteClass::ProtocolReplyCancel,
+        deadline,
+    )
+    .unwrap();
+    let cancel = rpc.writes.pop().unwrap().1;
+    rpc.enqueue_request_with_class(
+        "synthetic/interrupt",
+        &json!({}),
+        WriteClass::ProtocolReplyCancel,
+        deadline,
+    )
+    .unwrap();
+    let interrupt = rpc.writes.pop().unwrap().1;
     assert!(
-        rpc.enqueue_notification_receipt_with_class(
+        rpc.enqueue_notification_with_class(
             "synthetic/not-control",
             &json!({}),
             WriteClass::Ordinary,

@@ -22,13 +22,18 @@ if "--dump-config" in sys.argv:
     sys.exit(0)
 
 launch = {"launch": sys.argv}
+persistence = []
 for index, argument in enumerate(sys.argv[:-1]):
     if argument == "--patch":
         path = pathlib.Path(sys.argv[index + 1])
         if path.name == "compaction.patch.yml":
             launch["compactionPatch"] = path.read_text()
         else:
-            launch.setdefault("patch", json.loads(path.read_text()))
+            patch = json.loads(path.read_text())
+            launch.setdefault("patch", patch)
+            for plugin in patch:
+                if plugin["id"] in ("session-persistence-jsonl", "storage-json"):
+                    persistence.append(pathlib.Path(plugin["config"]["root"]))
 log(launch)
 catalog = [{"id": "model", "currentValue": '[ "provider", "model" ]', "options": [
     {"options": [{"value": '[ "provider", "model" ]', "name": "Model"},
@@ -67,6 +72,10 @@ for line in sys.stdin:
             "agentInfo": {"name": "synthetic-plugin", "version": "999.0.0"}}
         result(request, value)
     elif method in ("session/new", "session/resume"):
+        for directory in persistence:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "synthetic.json").write_text('{"session":"session"}')
+            log({"catalogPersisted": str(directory / "synthetic.json")})
         if MODE in ("early", "resume-reject"):
             permission("wrong", "early-wrong")
             permission("session", "early-session")

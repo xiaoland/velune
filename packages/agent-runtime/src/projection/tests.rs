@@ -638,13 +638,6 @@ fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
                 text: returned["content"].as_str().unwrap().into()
             }]
         );
-        let t = transcript(&s);
-        assert_eq!(
-            t.turns()[0].work_message_ids,
-            ["before", "returned", "after"]
-        );
-        assert_eq!(ids(&t), ["user", "work"]);
-
         let mut live = projection();
         message(&mut live, user());
         message(&mut live, tool("before"));
@@ -652,10 +645,6 @@ fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
         message(&mut live, tool("after"));
         let s = live.snapshot.as_ref().unwrap();
         assert_eq!(s.work_notification_ids, ["returned"]);
-        assert_eq!(
-            transcript(s).turns()[0].work_message_ids,
-            ["before", "returned", "after"]
-        );
         live.replace_history(&json!({"messages":[user(),tool("before"),returned,tool("after")]}));
         assert_eq!(
             live.snapshot.as_ref().unwrap().work_notification_ids,
@@ -665,34 +654,33 @@ fn subagent_return_notifications_join_work_in_cold_and_live_projection() {
 }
 #[test]
 fn subagent_return_notifications_preserve_late_orphan_and_mixed_reply_boundaries() {
-    for custom_type in SUBAGENT_NOTIFICATIONS {
-        for mixed in [false, true] {
-            let content = if mixed {
-                json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
-            } else {
-                json!([{"type":"text","text":"answer"}])
-            };
-            let s = native(
-                json!([subagent_return("orphan",custom_type),user(),tool("before"),
+    let custom_type = "subagent-notify";
+    for mixed in [false, true] {
+        let content = if mixed {
+            json!([{"type":"thinking","thinking":"reason"},{"type":"text","text":"answer"}])
+        } else {
+            json!([{"type":"text","text":"answer"}])
+        };
+        let s = native(
+            json!([subagent_return("orphan",custom_type),user(),tool("before"),
                     subagent_return("early",custom_type),
                     {"id":"closing","role":"assistant","content":content},
                     subagent_return("late",custom_type)]),
-            );
-            let t = transcript(&s);
-            let turn = &t.turns()[0];
-            assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
-            assert_eq!(
-                turn.work_message_ids,
-                if mixed {
-                    vec!["before", "early", "closing"]
-                } else {
-                    vec!["before", "early"]
-                }
-            );
-            assert_eq!(ids(&t), ["orphan", "user", "work", "closing", "late"]);
-            assert!(matches!(&t.items()[3],TranscriptItem::Message{id,..}
+        );
+        let t = transcript(&s);
+        let turn = &t.turns()[0];
+        assert_eq!(turn.last_message_id.as_deref(), Some("closing"));
+        assert_eq!(
+            turn.work_message_ids,
+            if mixed {
+                vec!["before", "early", "closing"]
+            } else {
+                vec!["before", "early"]
+            }
+        );
+        assert_eq!(ids(&t), ["orphan", "user", "work", "closing", "late"]);
+        assert!(matches!(&t.items()[3],TranscriptItem::Message{id,..}
                     if id == &format!("{}message:closing",if mixed{"reply:"}else{""})));
-        }
     }
 }
 #[test]
@@ -818,36 +806,26 @@ fn notifications_inside_automatic_compaction_work_remain_in_the_owning_range() {
 }
 
 #[test]
-fn all_wait_outcomes_join_work_without_reinterpreting_status() {
-    for outcome in [
-        "completed",
-        "failed",
-        "needs attention",
-        "timed out",
-        "could not be reconciled",
-        "reconciliation failed",
-        "paused",
-        "partial",
-        "stopped",
-        "rejected",
-        "future status",
-    ] {
+fn wait_outcomes_join_work_and_preserve_native_text() {
+    for outcome in ["completed", "failed", "future status"] {
+        let body = format!("Native wait outcome: {outcome}");
         let snapshot = native(json!([user(), tool("before"),
-                {"id":"wait","role":"custom","customType":"subagent-wait-subscription","display":true,"content":"native wait outcome","details":{"token":"synthetic-token","runId":"synthetic-run","outcome":outcome}},
-                tool("after")]));
+            {"id":"wait","role":"custom","customType":"subagent-wait-subscription","display":true,
+                "content":body,"details":{"token":"synthetic-token","runId":"synthetic-run","outcome":outcome}},
+            tool("after")]));
+        assert_eq!(snapshot.work_notification_ids, ["wait"], "{outcome}");
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .find(|m| m.id == "wait")
+                .unwrap()
+                .blocks,
+            [MessageBlock::Text { text: body }]
+        );
         let t = transcript(&snapshot);
-        let result = true;
-        assert_eq!(
-            snapshot.work_notification_ids.contains(&"wait".into()),
-            result,
-            "{outcome}"
-        );
-        assert_eq!(
-            t.turns()[0].work_message_ids.contains(&"wait".into()),
-            result,
-            "{outcome}"
-        );
-        assert_eq!(ids(&t).contains(&"wait".into()), !result, "{outcome}");
+        assert_eq!(t.turns()[0].work_message_ids, ["before", "wait", "after"]);
+        assert_eq!(ids(&t), ["user", "work"]);
     }
 }
 

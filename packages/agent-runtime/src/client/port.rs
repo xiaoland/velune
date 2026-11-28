@@ -46,7 +46,6 @@ pub enum PiOperation {
     Background(Value),
     Rewind(String),
     Fork(String),
-    Clone,
     NewSession,
     SetName(String),
     SwitchSession(PathBuf),
@@ -62,11 +61,7 @@ impl PiOperation {
     fn changes_scope(&self) -> bool {
         matches!(
             self,
-            Self::Fork(_)
-                | Self::Clone
-                | Self::NewSession
-                | Self::SwitchSession(_)
-                | Self::Rewind(_)
+            Self::Fork(_) | Self::NewSession | Self::SwitchSession(_) | Self::Rewind(_)
         )
     }
     fn command_type(&self) -> Result<&'static str> {
@@ -106,7 +101,6 @@ impl PiOperation {
                 "prompt"
             }
             Self::Fork(_) => "fork",
-            Self::Clone => "clone",
             Self::NewSession => "new_session",
             Self::SetName(_) => "set_session_name",
             Self::SwitchSession(_) => "switch_session",

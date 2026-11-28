@@ -1677,14 +1677,6 @@ impl PiSession {
         Ok(())
     }
 
-    /// Enqueue a native branch; its completion, not admission, resets history.
-    pub fn fork_at(&mut self, entry_id: Option<&str>) -> Result<()> {
-        self.enqueue(
-            entry_id.map_or(PiOperation::Clone, |id| PiOperation::Fork(id.into())),
-            PendingAction::Branch,
-        )
-        .map(drop)
-    }
     pub fn new_session(&mut self) -> Result<()> {
         self.enqueue(PiOperation::NewSession, PendingAction::Branch)
             .map(drop)

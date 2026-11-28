@@ -97,7 +97,7 @@ fn text_seen(session: &NativeSession, expected: &str) -> bool {
             message
                 .blocks
                 .iter()
-                .any(|block| matches!(block, MessageBlock::Text { text } if text == expected))
+                .any(|block| matches!(block, MessageBlock::Text { text } | MessageBlock::Notice { text } if text == expected))
         })
     })
 }
@@ -175,7 +175,7 @@ fn deepseek_normal_prompt_streams_and_replies_before_its_result() {
         );
         if mode == "turn-error" {
             assert!(f.session.snapshot().unwrap().messages.iter().flat_map(|m| &m.blocks)
-                .any(|b| matches!(b, MessageBlock::Text { text } if text.contains("Late tool failure"))));
+                .any(|b| matches!(b, MessageBlock::Notice { text } if text.contains("Late tool failure"))));
             assert!(
                 !f.session.failed,
                 "native turn rejection is not a transport disconnect"
@@ -238,6 +238,23 @@ fn deepseek_normal_create_routes_early_records_only_after_confirmed_identity() {
     let created = wire.iter().find(|r| r["method"] == "session/new").unwrap();
     assert_eq!(created["params"]["cwd"], f.root.to_string_lossy().as_ref());
     assert_eq!(created["params"]["mcpServers"], json!([]));
+}
+
+#[test]
+fn deepseek_normal_rejected_creation_has_no_active_identity_or_replay() {
+    let mut f = Fixture::new("reject");
+    let error = f.session.create(Some(&f.root), "runtime").err().unwrap();
+    assert!(error.to_string().contains("Synthetic rejection"), "{error}");
+    assert!(f.session.native_id.is_none());
+    assert!(f.session.snapshot().is_none());
+    let error = f.session.send(&input("must not reach native")).unwrap_err();
+    assert!(error.to_string().contains("没有活动会话"), "{error}");
+    let wire = f.wire();
+    assert_eq!(
+        wire.iter().filter(|r| r["method"] == "session/new").count(),
+        1
+    );
+    assert!(!wire.iter().any(|r| r["method"] == "session/prompt"));
 }
 
 #[test]
@@ -586,12 +603,9 @@ fn deepseek_blocking_catalog_keeps_private_persistence_lifecycle_and_removes_fai
                 assert_eq!(
                     models
                         .iter()
-                        .map(|model| (&model.model.id, model.model.provider_id.as_deref()))
+                        .map(|model| (model.model.id.as_str(), model.model.provider_id.as_deref()))
                         .collect::<Vec<_>>(),
-                    vec![
-                        (&"model".to_owned(), Some("provider")),
-                        (&"other".to_owned(), Some("provider"))
-                    ]
+                    vec![("model", Some("provider")), ("other", Some("provider"))]
                 );
             }
             Err(error) => {
@@ -615,6 +629,17 @@ fn deepseek_blocking_catalog_keeps_private_persistence_lifecycle_and_removes_fai
             directory.join("storages").to_string_lossy().as_ref()
         );
         assert_eq!(launch["patch"][2]["config"]["path"], ":memory:");
+        let persisted = wire
+            .iter()
+            .filter_map(|record| record["catalogPersisted"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            persisted,
+            [
+                directory.join("sessions/synthetic.json").to_string_lossy(),
+                directory.join("storages/synthetic.json").to_string_lossy()
+            ]
+        );
         assert_eq!(
             wire.iter()
                 .filter(|record| record["method"] == "session/new")

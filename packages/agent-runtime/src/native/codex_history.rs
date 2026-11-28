@@ -456,15 +456,6 @@ pub fn export_codex_context_before(
     export_codex_context_at(config, id, &[message_id.to_owned()], false, None)
 }
 
-/// Effective native input with exactly one uncompressed user prompt omitted.
-pub fn export_codex_context_without(
-    config: &crate::history::HistoryConfig,
-    id: &str,
-    message_id: &str,
-) -> Result<Retained<crate::import::Context>> {
-    export_codex_context_without_many(config, id, &[message_id.to_owned()])
-}
-
 pub fn export_codex_context_without_many(
     config: &crate::history::HistoryConfig,
     id: &str,

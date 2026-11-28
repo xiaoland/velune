@@ -12,14 +12,21 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     fn new(mode: &str) -> Self {
-        let root = TempRoot::new("claude-port");
+        let mut fixture = Self::connect(mode);
+        let mut input = Self::input("once");
+        input.permission_mode = Some("manual".into());
+        fixture.session.send(&input).unwrap();
+        fixture
+    }
+    fn connect(mode: &str) -> Self {
+        let root = TempRoot::new("claude-protocol");
         std::fs::write(root.join("mode"), mode).unwrap();
         let binary = root.join("claude");
         std::fs::write(&binary, r#"#!/usr/bin/python3
 import fcntl,json,sys,os
 root=os.path.dirname(__file__)
 if '--version' in sys.argv:
- print('2.1.292 (Claude Code)');sys.exit(0)
+ print('2.1.327 (Claude Code)');sys.exit(0)
 with open(os.path.join(root,'argv.json'),'w') as f: json.dump(sys.argv,f)
 mode=open(os.path.join(root,'mode')).read()
 started=False
@@ -80,9 +87,6 @@ for line in sys.stdin:
         .unwrap();
         session.replace_snapshot("parent", Some(root.path()), "runtime", vec![]);
         session.claude.start = claude::ClaudeStart::Fresh { name: None };
-        let mut input = Self::input("once");
-        input.permission_mode = Some("manual".into());
-        session.send(&input).unwrap();
         Self { root, session }
     }
     fn input(text: &str) -> crate::TurnInput {
@@ -461,4 +465,133 @@ fn claude_unknown_control_is_rejected_without_answering_existing_permission() {
         }})]
     );
     assert!(f.session.turn_running());
+}
+
+#[test]
+fn claude_normal_send_preserves_a_large_user_frame() {
+    let mut f = Fixture::connect("ordinary");
+    let text = format!("prefix{}suffix", "x".repeat(9 * 1024 * 1024));
+    f.session.send(&Fixture::input(&text)).unwrap();
+    f.fence();
+    let frames = f.requests();
+    let users: Vec<_> = frames
+        .iter()
+        .filter(|frame| frame["type"] == "user")
+        .collect();
+    assert_eq!(users.len(), 1);
+    assert_eq!(
+        users[0]["message"]["content"][0]["text"].as_str(),
+        Some(text.as_str())
+    );
+}
+
+#[test]
+fn claude_normal_restart_applies_model_effort_and_clears_auto_compaction() {
+    let mut f = Fixture::connect("ordinary");
+    f.session
+        .select_native_model(Retained::from_parts(
+            (None, "synthetic-model".into()),
+            DataRetention::default(),
+        ))
+        .unwrap();
+    f.session
+        .set_auto_compaction(Some(AutoCompactionSetting::Claude {
+            window_tokens: 700_000,
+        }));
+    let mut input = Fixture::input("first");
+    input.effort = Some("high".into());
+    input.permission_mode = Some("manual".into());
+    f.session.send(&input).unwrap();
+    f.fence();
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(f.root.join("argv.json")).unwrap()).unwrap();
+    for pair in [
+        ["--model", "synthetic-model"],
+        ["--effort", "high"],
+        ["--autocompact", "700000"],
+        ["--permission-mode", "manual"],
+    ] {
+        assert!(
+            argv.windows(2).any(|args| args == pair),
+            "{pair:?}: {argv:?}"
+        );
+    }
+    let permission = f.session.snapshot().unwrap().pending_interactions[0]
+        .id
+        .clone();
+    f.session
+        .reply(&permission, RuntimeInteractionReply::Cancel)
+        .unwrap();
+    f.emit(json!({"type":"result","subtype":"success","is_error":false}));
+    f.emit(json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    f.poll_until(|session| !session.turn_running());
+    f.session.set_auto_compaction(None);
+    f.session.send(&Fixture::input("second")).unwrap();
+    f.fence();
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(f.root.join("argv.json")).unwrap()).unwrap();
+    assert!(
+        argv.windows(2)
+            .any(|args| args == ["--model", "synthetic-model"])
+    );
+    for removed in ["--effort", "--autocompact"] {
+        assert!(
+            !argv.iter().any(|arg| arg == removed),
+            "{removed}: {argv:?}"
+        );
+    }
+}
+
+#[test]
+fn claude_portable_side_context_is_loaded_without_persistence_and_used_for_questions() {
+    let mut f = Fixture::connect("ordinary");
+    let context = "Reference context\nUTF-8: 合成来源\n";
+    f.session
+        .create_side_context(Some(f.root.path()), "runtime", context)
+        .unwrap();
+    f.session
+        .send(&Fixture::input("first side question"))
+        .unwrap();
+    f.poll_until(|session| !session.turn_running());
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(f.root.join("argv.json")).unwrap()).unwrap();
+    assert!(argv.iter().any(|arg| arg == "--no-session-persistence"));
+    assert!(!argv.iter().any(|arg| arg == "--resume"));
+    let context_path = argv
+        .windows(2)
+        .find(|args| args[0] == "--append-system-prompt-file")
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&context_path[1]).unwrap(), context);
+    f.session
+        .send(&Fixture::input("second side question"))
+        .unwrap();
+    f.poll_until(|session| !session.turn_running());
+    let requests = f.requests();
+    assert!(!requests.iter().any(|r| r["type"] == "user"));
+    let questions: Vec<_> = requests
+        .iter()
+        .filter(|r| r["request"]["subtype"] == "side_question")
+        .collect();
+    assert_eq!(questions.len(), 2);
+    assert_eq!(
+        questions[0]["request"],
+        json!({"subtype":"side_question","question":"first side question","history":[]})
+    );
+    assert_eq!(
+        questions[1]["request"],
+        json!({"subtype":"side_question","question":"second side question",
+        "history":[{"question":"first side question","response":"synthetic side answer"}]})
+    );
+    assert_eq!(
+        f.session
+            .snapshot()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .blocks,
+        [MessageBlock::Text {
+            text: "synthetic side answer".into()
+        }]
+    );
 }

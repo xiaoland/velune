@@ -604,35 +604,6 @@ pub fn export_context_before(
         .map(|context| Retained::from_parts(context, DataRetention::default()))
 }
 
-/// Effective context with exactly one native user prompt omitted. Later
-/// replies and tool records remain native context; no model turn is started.
-pub fn export_context_without(
-    config: &HistoryConfig,
-    native_id: &str,
-    message_id: &str,
-) -> NativeResult<Retained<crate::import::Context>> {
-    if config.kind == crate::version::RuntimeKind::Codex166 {
-        return codex_history::export_codex_context_without(config, native_id, message_id);
-    }
-    if config.kind != crate::version::RuntimeKind::ClaudeCode {
-        return Err(Error::with_code(
-            "此运行时尚未接入单条消息导出",
-            "unsupported",
-        ));
-    }
-    let bytes = execute_before(
-        config,
-        "export_context_without",
-        "",
-        Some(native_id),
-        &[],
-        Some(message_id),
-    )
-    .map_err(|error| Error::new(error.full_message()))?;
-    crate::import::Context::parse(&bytes)
-        .map(|context| Retained::from_parts(context, DataRetention::default()))
-}
-
 pub fn export_context_without_many(
     config: &HistoryConfig,
     native_id: &str,

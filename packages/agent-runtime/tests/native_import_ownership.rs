@@ -52,7 +52,13 @@ fn claude_owned_copy_cleanup_preserves_an_external_change() {
                 .write_all(b"external change\n")
                 .unwrap();
             let before = std::fs::read(&path).unwrap();
-            assert!(cleanup_owned_import(&config, &token).is_err());
+            let error = cleanup_owned_import(&config, &token)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("owned import changed; original copy was retained"),
+                "{error}"
+            );
             assert_eq!(std::fs::read(&path).unwrap(), before);
         } else {
             cleanup_owned_import(&config, &token).unwrap();

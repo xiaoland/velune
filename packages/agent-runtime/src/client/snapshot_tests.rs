@@ -84,27 +84,20 @@ for line in sys.stdin:
             .len(),
         9 * 1024 * 1024
     );
-    let covered = client.take_buffered_events();
+    let events = client.poll();
     assert!(
-        serde_json::to_vec(&covered).unwrap().len() < 2048,
+        serde_json::to_vec(&events).unwrap().len() < 2048,
         "snapshot body must not be retained as a deferred event"
     );
-    assert_eq!(
-        covered[0]["message"], "old-get-state-event",
-        "records deferred by get_state remain before the later snapshot barrier"
-    );
-    assert_eq!(covered[1]["message"], "covered");
-    assert!(covered.iter().any(|v| v["message"] == "covered"));
-    assert!(!covered.iter().any(|v| v["type"] == "message_start"));
-    let after = client.poll();
-    assert!(!after.iter().any(|v| v["message"] == "old-get-state-event"));
-    assert_eq!(
-        after
-            .iter()
-            .filter(|v| v["type"] == "message_start" || v["type"] == "message_end")
-            .count(),
-        2
-    );
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0]["message"], "old-get-state-event");
+    assert_eq!(events[1]["message"], "covered");
+    let header: Value = serde_json::from_str(events[2]["statusText"].as_str().unwrap()).unwrap();
+    assert_eq!(header["snapshotHeaderOnly"], true);
+    assert_eq!(header["sessionFile"], "/synthetic/new.jsonl");
+    assert_eq!(events[3]["type"], "message_start");
+    assert_eq!(events[4]["type"], "message_end");
+    assert!(client.poll().is_empty(), "events are consumed exactly once");
     let requests = std::fs::read_to_string(root.join("requests.jsonl")).unwrap();
     assert!(!requests.contains("get_messages"));
     client.child.stop();
@@ -150,8 +143,7 @@ for line in sys.stdin:
         );
         assert!(result.is_err());
         assert!(client.prepared_snapshot.is_none());
-        assert!(client.snapshot_event_barrier.is_none());
-        let events = client.take_buffered_events();
+        let events = client.poll();
         assert!(
             events
                 .iter()

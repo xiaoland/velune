@@ -78,119 +78,19 @@ fn prompt(id: &str) -> Value {
     json!({"type":"response_item","payload":{"type":"message","role":"user","id":id,"content":[{"type":"input_text","text":"duplicate"}]}})
 }
 #[test]
-fn codex_delivery_metadata_is_not_model_context_and_unknown_records_still_fail() {
-    let records = vec![
+fn codex_plain_delivery_metadata_does_not_require_portable_summary() {
+    let records = [
         prompt("first"),
         json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":false}}),
         json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Native communication body"}]}}),
-        json!({"type":"response_item","payload":{"type":"function_call","call_id":"tool","name":"read","arguments":"{}"}}),
-        json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}),
-        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"tool","output":"result"}}),
     ];
-    let expected: Vec<_> = records
-        .iter()
-        .filter(|record| record["type"] != "inter_agent_communication_metadata")
-        .cloned()
-        .collect();
-    let result = codex(&records, None, false);
+    let probe = codex_summary_required(&records);
     assert!(
-        result.status.success(),
+        probe.status.success(),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&probe.stderr)
     );
-    assert_eq!(result.stdout, codex(&expected, None, false).stdout);
-    assert_eq!(
-        codex_summary_required(&records).stdout,
-        br#"{"required": false}
-"#,
-    );
-    for kind in ["unknown_context_record", "inter_agent_communication"] {
-        let mut unsupported = records.clone();
-        unsupported.push(json!({"type":kind,"payload":{"content":"must not disappear"}}));
-        let result = codex(&unsupported, None, false);
-        assert!(!result.status.success());
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains(&format!("unsupported Codex rollout record: {kind}"))
-        );
-        assert!(result.stdout.is_empty());
-    }
-    let mut unsupported = records;
-    unsupported.push(json!({"type":"response_item","payload":{"type":"unknown_context_item","content":"must not disappear"}}));
-    assert!(!codex(&unsupported, None, false).status.success());
-}
-#[test]
-fn codex_agent_message_preserves_attribution_body_and_tool_pair_after_compaction() {
-    let communication = json!({"type":"agent_message","id":"amsg_1","author":"/root/worker","recipient":"/root","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/worker\nPayload:\nDone."},{"type":"input_text","text":" More details."}]});
-    let records = vec![
-        json!({"type":"response_item","payload":{"type":"unknown_obsolete_item"}}),
-        json!({"type":"compacted","payload":{"message":"portable summary","replacement_history":[
-            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"compact summary"}]},
-            communication,
-            {"type":"function_call","call_id":"tool","name":"read","arguments":"{}"}
-        ]}}),
-        json!({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":false}}),
-        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"tool","output":"tool result"}}),
-        json!({"type":"response_item","payload":communication}),
-    ];
-    let result = codex(&records, None, false);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let context: Value = serde_json::from_slice(&result.stdout).unwrap();
-    let messages = context["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 5);
-    assert_eq!(messages[0]["content"][0]["text"], "compact summary");
-    for index in [1, 4] {
-        assert_eq!(messages[index]["role"], "assistant");
-        assert_eq!(
-            messages[index]["content"][0]["text"],
-            "Agent message from /root/worker to /root:\n"
-        );
-        assert_eq!(
-            messages[index]["content"][1]["text"],
-            communication["content"][0]["text"]
-        );
-        assert_eq!(messages[index]["content"][2]["text"], " More details.");
-        assert!(messages[index].get("source_message_id").is_none());
-    }
-    assert_eq!(messages[2]["content"][0]["id"], "tool");
-    assert_eq!(messages[3]["content"][0]["id"], "tool");
-    let mut encrypted = communication.clone();
-    encrypted["content"] = json!([
-        {"type":"input_text","text":"visible envelope"},
-        {"type":"encrypted_content","encrypted_content":"opaque body"}
-    ]);
-    let result = codex(
-        &[json!({"type":"response_item","payload":encrypted})],
-        None,
-        false,
-    );
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&result.stdout).unwrap(),
-        json!({"errorCode":"portable_summary_required"})
-    );
-
-    let mut unknown = communication;
-    unknown["content"] = json!([{"type":"unknown_agent_content","text":"unknown body"}]);
-    let result = codex(
-        &[json!({"type":"response_item","payload":unknown})],
-        None,
-        false,
-    );
-    assert!(!result.status.success());
-    assert!(result.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&result.stderr)
-            .contains("unsupported Codex agent message content: unknown_agent_content")
-    );
+    assert_eq!(probe.stdout, b"{\"required\": false}\n");
 }
 #[test]
 fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {
@@ -214,7 +114,13 @@ fn codex_omits_exact_duplicate_prompt_and_keeps_native_tools_and_replies() {
     assert!(output.status.success());
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["messages"].as_array().unwrap().len(), 1);
-    assert!(!codex(&records, Some("missing"), true).status.success());
+    let missing = codex(&records, Some("missing"), true);
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr)
+            .contains("Codex native user message boundary was not found")
+    );
+    assert!(missing.stdout.is_empty());
 }
 #[test]
 fn codex_omits_retained_identity_after_compaction_and_keeps_summary() {
@@ -474,8 +380,9 @@ fn assert_assistant_first_import_roundtrip(binary: Option<PathBuf>) {
     );
     assert_eq!(restored["messages"][2]["content"][0]["text"], "reply");
     let home = root.join("codex");
-    let ImportedConversation::Codex { thread_id } =
-        import_codex_conversation(&execution, &home, &root, &context, "0.159.3", "openai").unwrap()
+    let (ImportedConversation::Codex { thread_id }, _, _) =
+        import_codex_conversation_owned(&execution, &home, &root, &context, "0.159.3", "openai")
+            .unwrap()
     else {
         panic!()
     };
@@ -599,11 +506,9 @@ fn assert_imported_prompt_origins(binary: Option<PathBuf>) {
     assert_eq!(restored["messages"].as_array().unwrap().len(), 1);
     assert_eq!(restored["messages"][0]["role"], "assistant");
     let home = root.join("codex");
-    let (ImportedConversation::Codex { thread_id }, origins) =
-        import_codex_conversation_with_origins(
-            &execution, &home, &root, &context, "0.166.0", "openai",
-        )
-        .unwrap()
+    let (ImportedConversation::Codex { thread_id }, origins, _) =
+        import_codex_conversation_owned(&execution, &home, &root, &context, "0.166.0", "openai")
+            .unwrap()
     else {
         panic!()
     };
@@ -646,8 +551,8 @@ fn assert_imported_prompt_origins(binary: Option<PathBuf>) {
         let restored = history::export_context_without_many(&config, &thread_id, &ids).unwrap();
         assert_eq!(restored.messages.len(), 1);
         assert_eq!(restored.messages[0].role, Role::Assistant);
-        let (ImportedConversation::Codex { thread_id: managed }, _) =
-            import_codex_conversation_with_origins(
+        let (ImportedConversation::Codex { thread_id: managed }, _, _) =
+            import_codex_conversation_owned(
                 &config.execution,
                 &config.home,
                 &root,

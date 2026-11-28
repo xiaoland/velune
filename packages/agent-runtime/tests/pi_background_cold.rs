@@ -1,12 +1,102 @@
 //! Opt-in regression through the installed Pi SDK and production Rust transport.
 //! Input must be the authorized synthetic fixture, which is cloned before use.
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use velune_agent_runtime::{
     Client, Config, PiProjection, PiSession,
     conversation::{ConversationSummary, RunState},
 };
 use velune_test_support::TempRoot;
+
+struct ModelProbe {
+    address: std::net::SocketAddr,
+    requests: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl ModelProbe {
+    fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (count, done) = (requests.clone(), stop.clone());
+        let worker = std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut bytes = [0; 4096];
+                        if stream.read(&mut bytes).unwrap_or(0) != 0 {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("model probe: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            requests,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for ModelProbe {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+fn settle_background(session: &mut PiSession) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while session.has_pending_metadata() {
+        session.poll();
+        assert!(
+            Instant::now() < end,
+            "background discovery must settle without a model turn"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn start_session(config: Config, workspace: &Path, source: &Path) -> PiSession {
+    let mut client = Client::spawn(config.clone()).unwrap();
+    let (_, messages) = client.state().unwrap();
+    let mut projection = PiProjection::new(ConversationSummary {
+        native_read_state: None,
+        id: format!("synthetic:{}", source.display()),
+        runtime_id: "synthetic".into(),
+        title: velune_agent_runtime::conversation::conversation_title(None, None),
+        cwd: workspace.to_str().map(str::to_owned),
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
+        can_rename: false,
+        can_delete: false,
+        parent_conversation_id: None,
+    });
+    projection.replace_history(&messages);
+    let mut session = PiSession::new(config);
+    session.start(client, projection);
+    settle_background(&mut session);
+    session
+}
 
 fn clone_fixture(source: &Path, target: &Path) {
     std::fs::create_dir_all(target).unwrap();
@@ -38,6 +128,12 @@ fn absent_optional_plugins_do_not_timeout_cold_bridge_or_create_model_work() {
     let root = TempRoot::new("pi-bridge-cold");
     let agent = root.join("agent");
     clone_fixture(&fixture.join("pi"), &agent);
+    let model = ModelProbe::start();
+    std::fs::write(agent.join("models.json"), json!({"providers":{"synthetic":{
+        "baseUrl":format!("http://{}/v1", model.address),"api":"openai-completions","apiKey":"synthetic",
+        "models":[{"id":"alpha","name":"Synthetic","reasoning":false,"input":["text"],
+            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":32768,"maxTokens":4096}]
+    }}}).to_string()).unwrap();
     let workspace = root.join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let source = agent
@@ -73,24 +169,7 @@ fn absent_optional_plugins_do_not_timeout_cold_bridge_or_create_model_work() {
         "agent_dir":agent,"working_dir":workspace,"provider":"synthetic","model":"alpha",
         "session_dir":agent.join("sessions"),"session":source,"side":false}))
         .unwrap();
-    let mut client = Client::spawn(config.clone()).unwrap();
-    let (_, messages) = client.state().unwrap();
-    let mut projection = PiProjection::new(ConversationSummary {
-        native_read_state: None,
-        id: format!("synthetic:{}", source.display()),
-        runtime_id: "synthetic".into(),
-        title: velune_agent_runtime::conversation::conversation_title(None, None),
-        cwd: workspace.to_str().map(str::to_owned),
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        can_rename: false,
-        can_delete: false,
-        parent_conversation_id: None,
-    });
-    projection.replace_history(&messages);
-    let mut session = PiSession::new(config.clone());
-    // start() performs the first bridge RPC with the production 3s deadline.
-    session.start(client, projection);
+    let mut session = start_session(config.clone(), &workspace, &source);
     assert!(
         !session.has_pending_metadata(),
         "optional absent plugins became unknown work"
@@ -113,29 +192,23 @@ export default function(pi) {
   });
 }
 "#).unwrap();
-    let mut failed_host = Client::spawn(config).unwrap();
-    failed_host.state().unwrap();
-    let failed = failed_host
-        .background_work_command(&json!({"operation":"snapshot"}))
-        .unwrap();
-    assert_eq!(failed["kind"], "unknown");
-    assert_eq!(failed["supported"], true);
+    let mut failed_host = start_session(config, &workspace, &source);
+    let tasks = failed_host.background_tasks();
+    assert!(!tasks.live);
     assert!(
-        failed["error"]
-            .as_str()
+        tasks
+            .issue
+            .as_deref()
             .unwrap()
             .contains("synthetic host refused")
     );
-    assert!(
-        !failed_host
-            .take_buffered_events()
-            .iter()
-            .any(|event| matches!(
-                event["type"].as_str(),
-                Some("agent_start" | "message_start" | "message_end")
-            ))
+    assert!(!failed_host.turn_running());
+    failed_host.stop().unwrap();
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        0,
+        "background control discovery must not contact the model endpoint"
     );
-    failed_host.shutdown().unwrap();
     let after = std::fs::read_to_string(&source)
         .unwrap()
         .lines()
