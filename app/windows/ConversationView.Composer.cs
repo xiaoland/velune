@@ -508,23 +508,29 @@ public sealed partial class ConversationView
             Clipboard.SetContent(data);
         }, text.Length > 0));
         var editable = Model.Editable(message.Id);
-        menu.Items.Add(Item("编辑…", () => EditMessage(message), editable != null && !Model.Busy && !Model.Running));
+        menu.Items.Add(Item("编辑…", () => EditMessage(message.Id), editable?.Revision != null && !Model.Busy && !Model.Running));
     }
 
     static string MessageText(DeliveredMessage message) =>
         string.Join("\n\n", message.Blocks.OfType<DeliveredBlock.Text>().Select(block => block.TextValue));
 
+    bool showingHistoricalEditor;
+
     // EditMessage edits a sent user message. The last one continues in
     // place; an earlier one continues in a new conversation from it, or in
     // place, which drops it and everything after it.
-    async void EditMessage(DeliveredMessage message)
+    async void EditMessage(string messageId)
     {
-        if (Model.Editable(message.Id) is not { } editable)
+        if (showingHistoricalEditor || window.IsClosed || Model.Snapshot?.Conversation is not { } source ||
+            Model.Editable(messageId) is not { Revision: { } revision } editable ||
+            Model.Messages.FirstOrDefault(shown => shown.Id == messageId) is not { } message)
         {
             return;
         }
-        var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == message.Id;
-        var box = new TextBox { Text = MessageText(message), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
+        var reference = new BindingMessageReference(source.RuntimeId, source.Id, messageId);
+        var last = Model.Messages.LastOrDefault(shown => shown.Role == MessageRole.User)?.Id == messageId;
+        var original = Model.Payloads.TryGetValue(messageId, out var loaded) && loaded.Stamp == message.Stamp ? loaded : message;
+        var box = new TextBox { Text = MessageText(original), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, MaxHeight = 320 };
         var about = last && editable.InPlace
             ? "编辑后作为新的一轮在原处继续，取代这条消息。"
             : editable.InPlace
@@ -533,15 +539,19 @@ public sealed partial class ConversationView
         var panel = new StackPanel { Spacing = 12, MinWidth = 420 };
         panel.Children.Add(box);
         panel.Children.Add(Ui.Muted(about + "原消息的附件不会随之发出。"));
+        var notice = Ui.Muted("");
+        notice.TextWrapping = TextWrapping.Wrap;
+        notice.Visibility = Visibility.Collapsed;
+        panel.Children.Add(notice);
         var dialog = new ContentDialog
         {
-            XamlRoot = XamlRoot,
             Title = "编辑消息",
             Content = panel,
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
         };
-        EditPlacement? primary, secondary = null;
+        EditPlacement primary;
+        EditPlacement? secondary = null;
         if (last && editable.InPlace)
         {
             dialog.PrimaryButtonText = "发送";
@@ -557,21 +567,75 @@ public sealed partial class ConversationView
                 secondary = EditPlacement.InPlace;
             }
         }
-        var placement = await dialog.ShowAsync() switch
+        bool saving = false;
+        bool needsFreshEditor = false;
+        string? continued = null;
+        EditPlacement? acceptedPlacement = null;
+        void RefreshButtons()
         {
-            ContentDialogResult.Primary => primary,
-            ContentDialogResult.Secondary => secondary,
-            _ => null,
+            var canSubmit = !saving && !needsFreshEditor && !string.IsNullOrWhiteSpace(box.Text);
+            dialog.IsPrimaryButtonEnabled = canSubmit;
+            dialog.IsSecondaryButtonEnabled = canSubmit && secondary != null;
+            box.IsReadOnly = saving;
+        }
+        void ShowFailure(string detail)
+        {
+            if (window.IsClosed) return;
+            notice.Text = detail;
+            notice.Visibility = Visibility.Visible;
+        }
+        async Task Submit(EditPlacement placement)
+        {
+            if (saving || needsFreshEditor || window.IsClosed || string.IsNullOrWhiteSpace(box.Text)) return;
+            saving = true;
+            RefreshButtons();
+            notice.Visibility = Visibility.Collapsed;
+            try
+            {
+                continued = await Model.Edit(reference, revision, placement, box.Text, ReportRejectedEdit);
+                if (window.IsClosed) return;
+                if (continued != null)
+                {
+                    acceptedPlacement = placement;
+                    dialog.Hide();
+                }
+                else if (notice.Visibility != Visibility.Visible)
+                {
+                    PreserveRejectedEdit("未能确认提交，当前编辑仍保留。");
+                }
+            }
+            catch (Exception failure) { ReportRejectedEdit(failure); }
+            finally
+            {
+                saving = false;
+                if (!window.IsClosed && continued == null) RefreshButtons();
+            }
+        }
+        void ReportRejectedEdit(Exception failure) => PreserveRejectedEdit(Core.Describe(failure));
+        void PreserveRejectedEdit(string detail)
+        {
+            needsFreshEditor = true;
+            ShowFailure(detail + "\n请先检查会话结果，确认后重新打开编辑器。");
+        }
+        dialog.PrimaryButtonClick += (sender, args) => { args.Cancel = true; _ = Submit(primary); };
+        dialog.SecondaryButtonClick += (sender, args) =>
+        {
+            args.Cancel = true;
+            if (secondary is { } placement) _ = Submit(placement);
         };
-        if (placement is not { } chosen || box.Text.Trim().Length == 0)
+        dialog.Closing += (_, args) => args.Cancel = saving && acceptedPlacement == null;
+        box.TextChanged += (_, _) => RefreshButtons();
+        RefreshButtons();
+        showingHistoricalEditor = true;
+        try
         {
-            return;
+            await window.ShowDialog(dialog);
+            if (window.IsClosed || continued == null) return;
+            if (acceptedPlacement == EditPlacement.Fork) window.OpenLinked(continued);
+            else ScrollToEnd();
         }
-        ScrollToEnd();
-        if (await Model.Edit(message.Id, chosen, box.Text) is { } continued && chosen == EditPlacement.Fork)
-        {
-            window.OpenLinked(continued);
-        }
+        catch (Exception failure) { Problems.Report("编辑消息", failure, Model.Device); }
+        finally { showingHistoricalEditor = false; }
     }
 
     readonly Button resumeQueue = new() { Content = "继续发送队列" };

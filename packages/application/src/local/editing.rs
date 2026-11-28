@@ -31,6 +31,45 @@ pub(super) struct RevisionCache {
     token: String,
 }
 
+/// A complete history baseline captured when the edit was opened.
+struct EditRevision {
+    retained: usize,
+    activity: String,
+    digest: String,
+}
+
+impl std::str::FromStr for EditRevision {
+    type Err = RuntimeError;
+
+    fn from_str(token: &str) -> Result<Self, Self::Err> {
+        let invalid = || edit_history_changed("edit_baseline");
+        let (retained, rest) = token.split_once(':').ok_or_else(invalid)?;
+        let (activity, digest) = rest.split_once(':').ok_or_else(invalid)?;
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            retained: retained.parse().map_err(|_| invalid())?,
+            activity: activity.into(),
+            digest: digest.into(),
+        })
+    }
+}
+
+impl std::fmt::Display for EditRevision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}:{}:{}",
+            self.retained, self.activity, self.digest
+        )
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct RevisionKey {
     session: session::SessionKey,
@@ -349,7 +388,7 @@ impl CoreRuntime {
             })
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
         self.check_handoff_input(&current)?;
-        self.check_edit_revision(&current, Some(expected_revision))?;
+        let revision = self.check_edit_revision(&current, Some(expected_revision))?;
         let tail_runtime = self.runtime_instance(&current.context_runtime_id)?.clone();
         if tail_runtime.type_id == RuntimeKind::Pi
             && self.deletion_source(&current, message_id).is_some()
@@ -357,7 +396,7 @@ impl CoreRuntime {
                 &current,
                 message_id,
                 &tail_runtime,
-                Some(expected_revision),
+                revision,
                 self.session.model_selection.clone().flatten(),
                 None,
                 Some(truncate),
@@ -598,13 +637,7 @@ impl CoreRuntime {
     /// An edit baseline follows settled history and user intent while streaming.
     pub(super) fn edit_revision(&self, snapshot: &ConversationSnapshot) -> Option<String> {
         let retained = stable_edit_prefix(snapshot);
-        let activity = snapshot
-            .executions
-            .current
-            .as_ref()
-            .filter(|activity| !activity.ended)
-            .map(|activity| activity.id.as_str())
-            .unwrap_or("");
+        let activity = edit_activity(snapshot);
         let raw = self.session.projected();
         let key = RevisionKey {
             session: self.session.key,
@@ -638,10 +671,12 @@ impl CoreRuntime {
         {
             return Some(cached.token.clone());
         }
-        let token = format!(
-            "{retained}:{activity}:{}",
-            self.edit_digest(snapshot, retained)?
-        );
+        let token = EditRevision {
+            retained,
+            activity: activity.into(),
+            digest: self.edit_digest(snapshot, retained)?,
+        }
+        .to_string();
         *self.session.edit_revision_cache.borrow_mut() = Some(RevisionCache {
             key,
             token: token.clone(),
@@ -683,31 +718,29 @@ impl CoreRuntime {
         &self,
         current: &ConversationSnapshot,
         expected: Option<&str>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<EditRevision, RuntimeError> {
         let Some(expected) = expected else {
             return Err(RuntimeError::invalid(
                 "编辑缺少会话版本，请重新打开消息编辑后再发送",
             ));
         };
-        let mut fields = expected.splitn(3, ':');
-        let retained = fields.next().and_then(|value| value.parse().ok());
-        let activity = fields.next();
-        let digest = fields.next();
-        let current_activity = current
-            .executions
-            .current
-            .as_ref()
-            .filter(|activity| !activity.ended)
-            .map(|activity| activity.id.as_str())
-            .unwrap_or("");
-        if activity != Some(current_activity)
-            || retained
-                .and_then(|count| self.edit_digest(current, count))
-                .as_deref()
-                != digest
+        let expected = expected.parse()?;
+        self.check_edit_baseline(current, &expected)?;
+        Ok(expected)
+    }
+
+    fn check_edit_baseline(
+        &self,
+        current: &ConversationSnapshot,
+        expected: &EditRevision,
+    ) -> Result<(), RuntimeError> {
+        let activity_changed = expected.activity != edit_activity(current);
+        if activity_changed
+            || self.edit_digest(current, expected.retained).as_deref()
+                != Some(expected.digest.as_str())
         {
             *self.session.edit_revision_cache.borrow_mut() = None;
-            tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "edit_baseline", activity_changed = activity != Some(current_activity));
+            tracing::warn!(target: "velune_application", event = "conversation_edit_conflict", phase = "edit_baseline", activity_changed);
             return Err(edit_history_changed("edit_baseline"));
         }
         Ok(())
@@ -1236,7 +1269,7 @@ impl CoreRuntime {
             })
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
         self.check_handoff_input(&current)?;
-        self.check_edit_revision(&current, expected_revision)?;
+        let revision = self.check_edit_revision(&current, expected_revision)?;
         let choice = self
             .editing_choices(&current)
             .into_iter()
@@ -1264,7 +1297,7 @@ impl CoreRuntime {
                 &current,
                 message_id,
                 &runtime,
-                expected_revision,
+                revision,
                 selection.clone(),
                 Some(turn.clone()),
                 None,
@@ -2457,6 +2490,16 @@ fn stable_edit_prefix(snapshot: &ConversationSnapshot) -> usize {
     } else {
         messages.len()
     }
+}
+
+fn edit_activity(snapshot: &ConversationSnapshot) -> &str {
+    snapshot
+        .executions
+        .current
+        .as_ref()
+        .filter(|activity| !activity.ended)
+        .map(|activity| activity.id.as_str())
+        .unwrap_or("")
 }
 
 fn edit_history_changed(phase: &'static str) -> RuntimeError {

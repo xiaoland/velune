@@ -28,7 +28,7 @@ pub(in crate::local) struct PiEdit {
     gateway: Option<GatewayConfig>,
     sources: Vec<runtime_source::RuntimeSourceKey>,
     link: Option<crate::config::ConversationLink>,
-    revision: String,
+    revision: EditRevision,
     conversation_id: String,
     message_id: String,
     native_id: String,
@@ -301,7 +301,7 @@ impl CoreRuntime {
         current: &ConversationSnapshot,
         message_id: &str,
         runtime: &RuntimeInstance,
-        revision: Option<&str>,
+        revision: EditRevision,
         selection: Option<crate::ModelSelection>,
         turn: Option<crate::ComposedTurn>,
         deletion: Option<bool>,
@@ -427,7 +427,7 @@ impl CoreRuntime {
             },
             sources,
             link,
-            revision: revision.unwrap_or_default().into(),
+            revision,
             conversation_id: current.conversation.id.clone(),
             message_id: native_message_id,
             native_id: self
@@ -738,7 +738,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let sources = loaded
                     .into_iter()
                     .map(|loaded| self.finish_history_read(loaded))
@@ -825,7 +825,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let (reads, _) = self.capture_pi_edit_sources(&current)?;
                 edit.phase = Phase::Sources(self.pi_edit_io(edit.application, move |_| {
                     Ok(PiEditIoValue::Sources(
@@ -1057,7 +1057,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 self.check_pi_edit_sources(&current, edit.link.as_ref(), &sources)?;
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
@@ -1116,7 +1116,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 let (mut reads, _) = self.capture_pi_edit_sources(&current)?;
                 reads.push(self.prepare_history_read(
                     &edit.runtime.id,
@@ -1149,7 +1149,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 self.check_pi_edit_sources(&current, edit.link.as_ref(), &sources)?;
                 if sources.last().is_none_or(|source| {
                     digest(&source.messages).ok().as_ref() != edit.native_digest.as_ref()
@@ -1177,7 +1177,7 @@ impl CoreRuntime {
                 let current = self
                     .current_snapshot()
                     .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-                self.check_edit_revision(&current, Some(&edit.revision))?;
+                self.check_edit_baseline(&current, &edit.revision)?;
                 if !edit.fallback_closed {
                     edit.fallback_closed = true;
                     let (mut reads, _) = self.capture_pi_edit_sources(&current)?;
@@ -1460,7 +1460,7 @@ impl CoreRuntime {
         let current = self
             .current_snapshot()
             .ok_or_else(|| RuntimeError::invalid("会话未打开"))?;
-        self.check_edit_revision(&current, Some(&edit.revision))?;
+        self.check_edit_baseline(&current, &edit.revision)?;
         let config = self.pi_history_configuration(&edit.runtime)?;
         let preparation = self.execution_preparation(&edit.runtime)?.1;
         let source = PathBuf::from(

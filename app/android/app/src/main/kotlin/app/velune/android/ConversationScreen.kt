@@ -120,7 +120,7 @@ class ConversationActions(
     val setConversationHandoff: (release: Boolean) -> Unit = {},
     val selectEffort: (String?) -> Unit = {},
     val selectPermissionMode: (String?) -> Unit = {},
-    val editMessage: (messageId: String, text: String, placement: EditPlacement, expectedRevision: String?, onDone: () -> Unit) -> Unit = { _, _, _, _, onDone -> onDone() },
+    val editMessage: (messageId: String, text: String, placement: EditPlacement, expectedRevision: String, onDone: () -> Unit) -> Unit = { _, _, _, _, onDone -> onDone() },
     val forkConversation: (userMessageId: String) -> Unit = {},
     val selectRuntime: (String) -> Unit = {},
     val addAttachments: (List<suspend () -> Pair<String, ByteArray>>) -> Unit = {},
@@ -199,6 +199,8 @@ fun ConversationScreen(
 
 private enum class ConversationPanel { BACKGROUND_TASKS, COLLABORATION }
 
+private data class HistoryEdit(val message: DeliveredMessage, val eligibility: EditableMessage, val revision: String)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationContent(
@@ -214,7 +216,7 @@ fun ConversationContent(
     val scope = rememberCoroutineScope()
     val outline = remember(state.entries) { outlineTurns(state.entries) }
     var showOutline by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<Pair<DeliveredMessage, EditableMessage>?>(null) }
+    var editing by remember { mutableStateOf<HistoryEdit?>(null) }
     var forking by remember { mutableStateOf<String?>(null) }
     var panel by remember { mutableStateOf<ConversationPanel?>(null) }
     val subtitle = remember(header) {
@@ -326,7 +328,11 @@ fun ConversationContent(
                     state.entries.isEmpty() && state.sending == null && state.conversation == null -> Unit
                     else -> Transcript(
                         state, list, actions.load,
-                        onEdit = { message -> state.editable[message.id]?.let { editing = message to it } },
+                        onEdit = edit@{ message ->
+                            val eligibility = state.editable[message.id] ?: return@edit
+                            val revision = eligibility.revision ?: return@edit
+                            editing = HistoryEdit(message, eligibility, revision)
+                        },
                         onFork = { userMessageId -> forking = userMessageId },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -378,7 +384,7 @@ fun ConversationContent(
             }
         }
     }
-    editing?.let { (message, info) ->
+    editing?.let { (message, info, revision) ->
         EditMessageSheet(
             initial = message.editableText(),
             preservedAttachments = message.originalAttachmentNames(),
@@ -388,7 +394,7 @@ fun ConversationContent(
             failure = state.failure,
             dismiss = { if (!state.busy) editing = null },
             submit = { updated, placement ->
-                actions.editMessage(message.id, updated, placement, info.revision) { editing = null }
+                actions.editMessage(message.id, updated, placement, revision) { editing = null }
             },
         )
     }

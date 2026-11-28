@@ -320,6 +320,7 @@ def artifact_identity(platform, profile, command, purpose="development"):
         info_path = bundle / "Contents/Info.plist"
         paths = [f"target/host-rust/{native_profile}/libvelune_bindings.dylib",
                  str(info_path.relative_to(ROOT)),
+                 str((bundle / "Contents/Frameworks/libvelune_bindings.dylib").relative_to(ROOT)),
                  str((bundle / "Contents/Resources/build-manifest.json").relative_to(ROOT))]
         if info_path.is_file():
             executable = plistlib.loads(info_path.read_bytes()).get("CFBundleExecutable")
@@ -334,6 +335,35 @@ def artifact_identity(platform, profile, command, purpose="development"):
             "ios": [f"target/cross-rust/{ios_target}/{native_profile}/libvelune_bindings.a", f"target/ios/Build/Products/{configuration}-{ios_sdk}/Velune.app/Velune"],
         }[platform]
     return {p: digest(ROOT / p) for p in paths if (ROOT / p).is_file()}
+
+
+def verify_macos_build(profile):
+    from macos_identity import app_bundle_path, identity, validate_bundle
+
+    bundle = app_bundle_path(ROOT, profile)
+    context = validate_bundle(bundle, purpose="development")
+    if context != identity(ROOT, "development")["context"]:
+        raise ValueError("Mac 开发包属于其他工作树")
+
+    receipt_path = STATE / "results" / f"macos-{profile}-development-success.json"
+    receipt = json.loads(receipt_path.read_text())
+    if receipt["exit_code"] != 0 or not receipt["current"] or receipt["input_after"] != source_identity("macos"):
+        raise ValueError("Mac 构建回执与当前输入不符，请重新请求构建")
+
+    artifacts = artifact_identity("macos", profile, receipt["command"])
+    executable = str((bundle / "Contents/MacOS" / context["executable"]).relative_to(ROOT))
+    bindings = str((bundle / "Contents/Frameworks/libvelune_bindings.dylib").relative_to(ROOT))
+    manifest = bundle / "Contents/Resources/build-manifest.json"
+    if not {executable, bindings, str(manifest.relative_to(ROOT))} <= artifacts.keys() or artifacts != receipt["artifacts"]:
+        raise ValueError("Mac 开发包产物与构建回执不符，请重新请求构建")
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(bundle)], check=True)
+    return {
+        "app": str(bundle),
+        "buildReceipt": str(receipt_path),
+        "source": json.loads(manifest.read_text())["source_commit"],
+        "executableSHA256": artifacts[executable],
+        "bindingsSHA256": artifacts[bindings],
+    }
 
 
 def android_apk_output(profile, root=None, require_signing=None):
@@ -416,6 +446,7 @@ def main():
     p = actions.add_parser("sync"); p.add_argument("source"); p.add_argument("destination"); p.add_argument("--prune", action="store_true"); p.add_argument("--include", action="append", default=[])
     p = actions.add_parser("write"); p.add_argument("path")
     actions.add_parser("source-provenance")
+    p = actions.add_parser("verify-macos-build"); p.add_argument("--profile", choices=("dev", "release"), default="dev")
     for name in ("bindgen", "verify-bindings"):
         p = actions.add_parser(name); p.add_argument("--library", required=True); p.add_argument("--language", choices=("swift", "kotlin", "python", "cs"), required=True); p.add_argument("--generator"); p.add_argument("--out-dir", required=True); p.add_argument("--artifact", action="append")
     p = actions.add_parser("run"); p.add_argument("--platform", choices=("macos", "ios", "android", "windows"), required=True); p.add_argument("--profile", choices=("dev", "release"), required=True); p.add_argument("--purpose", choices=("development", "daily"), default="development"); p.add_argument("command", nargs=argparse.REMAINDER)
@@ -425,9 +456,10 @@ def main():
         elif args.action == "sync": sync(args.source, args.destination, args.prune, args.include)
         elif args.action == "write": write(args.path, sys.stdin.buffer.read())
         elif args.action == "source-provenance": print(json.dumps(source_provenance(), sort_keys=True))
+        elif args.action == "verify-macos-build": print(json.dumps(verify_macos_build(args.profile)))
         elif args.action in ("bindgen", "verify-bindings"): bindings(args, args.action == "verify-bindings")
         elif args.action == "run": return run(args)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"构建失败：{error}", file=sys.stderr)
         return 1
     return 0

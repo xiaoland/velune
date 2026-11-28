@@ -1677,7 +1677,7 @@ final class ConversationStore: ObservableObject {
 
     /// A fork runs independently; only an in-place replacement stops the
     /// source turn, as the user confirmed in the editor.
-    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String? = nil, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String, String?) -> Void)? = nil) {
+    func editMessage(_ messageID: String, placement: EditPlacement, text: String, attachments: [String], choices: ConversationChoices? = nil, expectedRevision: String, forked: @escaping (SnapshotResult) -> Void, accepted: @escaping () -> Void, failed: ((String, String?) -> Void)? = nil) {
         guard editability(of: messageID) != nil, let runtimeID = snapshot?.conversation.runtimeID, let conversationID = loadedConversationID else {
             failed?("原消息暂时不能编辑，修改仍保留。", nil)
             return

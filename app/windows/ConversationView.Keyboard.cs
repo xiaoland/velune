@@ -518,7 +518,7 @@ public sealed partial class ConversationView
                 break;
             case VirtualKey.E when plain && message is { Role: MessageRole.User } && Model.Editable(message.Id) != null && !Model.Busy && !Model.Running:
                 e.Handled = true;
-                EditMessage(message);
+                EditMessage(message.Id);
                 break;
         }
     }

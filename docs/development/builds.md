@@ -36,7 +36,7 @@ svc run build-windows
 
 合并版本 PR 前，核对目标版本、`version.txt`、Release Please manifest 和生成的 `CHANGELOG.md`。需要显式选定版本时，在进入 `main` 的 Conventional Commit 正文中单独放一行 `Release-As: <目标版本>`。上次 Alpha 通过该方式指定版本。 [上游版本规则](https://github.com/googleapis/release-please/blob/main/src/versioning-strategies/prerelease.ts)
 
-release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，让 `PR checks / validate` 对该 PR head SHA 运行并通过后再合并。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
+release-please PR 和回流 PR 由 `GITHUB_TOKEN` 创建。GitHub 会将 bot 创建 PR 的 `pull_request` 检查置于待维护者批准状态。维护者须在 Actions 中选择 **Approve workflows to run**，等待 `PR checks / validate` 对 GitHub 为该次 `pull_request` 事件生成的合并候选运行并通过。检查由真实 `pull_request` 事件触发，因此也满足 main 规则集的必需检查。工作流不另行派发诊断检查。Release workflow 用第一个 tag 构建 run 的 `run_number` 作为 `VELUNE_BUILD_NUMBER`，并先写入草稿 Release 的 `release-build.json`。同 tag 的 `workflow_dispatch` 补跑从该文件恢复同一序号和 SHA。补跑只接受仍为草稿的 tag。不能为补跑另起序号、移动 tag 或替换已公开资产。
 
 PR 检查先验证版本、Release Please manifest、脚本语法和差异空白，再运行合成脚本检查。涉及 Rust 构建输入时，Linux CI 还会检查 Rust 格式、Clippy 和依赖边界，构建 `velune-bindings` 以核对共享 core 与 RelayKit 的链接，并运行默认测试。门禁范围与本地入口见[静态检查与 CI](validation.md#静态检查与-ci)。
 
