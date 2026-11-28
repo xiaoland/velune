@@ -16,7 +16,7 @@ svc run build-windows
 
 对应 `build-macos-release`、`build-ios-release`、`build-android-release`、`build-windows-release` 选择优化构建。Android release 产生未签名 APK，分发签名另行处理。Mac 普通／优化开发 bundle 分别在 `target/macos-dev/Velune Dev.app`、`target/macos-dev-release/Velune Dev.app`；日常用途只由 `package-macos` 或重装入口显式生成至 `target/macos/Velune.app`。运行用途与优化 profile 独立；Windows分别是 `target/windows-dev/Velune` 和 `target/windows/Velune`。构建不会安装或退出正在使用的应用。Mac 日常重装仍通过 `svc run reinstall-macos`，明确构建 release 优化的 daily 用途后再安装、迁移和后台启动。开发启动与停止归[实例隔离](environment.md#mac-开发实例)。
 
-每个脚本也接受显式 profile；Mac 的旧 `--build-only` 参数保留为兼容的无操作标志。需要 SDK、设备或 Gradle 参数时看平台 README。直接 Xcode 与 CLI 在同工作树并行使用的边界见[iOS说明](../../app/ios/README.md#构建)。
+每个脚本也接受显式 profile。需要 SDK、设备或 Gradle 参数时看平台 README。直接 Xcode 与 CLI 在同工作树并行使用的边界见[iOS说明](../../app/ios/README.md#构建)。
 
 ## 产品版本与构建号
 

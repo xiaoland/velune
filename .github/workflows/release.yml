@@ -280,7 +280,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/build-macos.sh --profile release --purpose daily --build-only
+          bash scripts/build-macos.sh --profile release --purpose daily
           python3 scripts/package-release.py macos --input target/macos/Velune.app --output-dir target/release \
             --tag "$TAG" --version "$VERSION" --commit "$SHA" --build-number "$VELUNE_BUILD_NUMBER" --arch '${{ matrix.architecture }}'
       - name: Prepare fixed Android release keystore

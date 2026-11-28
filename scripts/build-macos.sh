@@ -3,7 +3,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 profile=dev
 purpose=development
-build_only=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -12,8 +11,7 @@ while [[ $# -gt 0 ]]; do
     --purpose)
       [[ $# -ge 2 ]] || { echo '缺少 --purpose 的值' >&2; exit 2; }
       purpose="$2"; shift 2 ;;
-    --build-only) build_only=true; shift ;;
-    *) echo '用法：scripts/build-macos.sh [--profile dev|release] [--purpose development|daily] [--build-only]' >&2; exit 2 ;;
+    *) echo '用法：scripts/build-macos.sh [--profile dev|release] [--purpose development|daily]' >&2; exit 2 ;;
   esac
 done
 [[ "$profile" == dev || "$profile" == release ]] || { echo 'profile 必须是 dev 或 release' >&2; exit 2; }
@@ -23,9 +21,7 @@ command -v cargo >/dev/null
 command -v go >/dev/null
 xcrun --find swiftc >/dev/null
 if [[ "${VELUNE_BUILD_MANAGED:-}" != macos ]]; then
-  args=(--profile "$profile" --purpose "$purpose")
-  [[ "$build_only" == true ]] && args+=(--build-only)
-  exec python3 scripts/build-support.py run --platform macos --profile "$profile" --purpose "$purpose" -- bash "$0" "${args[@]}"
+  exec python3 scripts/build-support.py run --platform macos --profile "$profile" --purpose "$purpose" -- bash "$0" --profile "$profile" --purpose "$purpose"
 fi
 identity_json=$(python3 scripts/macos_identity.py describe --purpose "$purpose" --profile "$profile" --root "$PWD")
 app=$(printf '%s' "$identity_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bundlePath"])')
