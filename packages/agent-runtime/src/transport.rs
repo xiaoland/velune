@@ -103,9 +103,6 @@ impl DeferredRecords {
         other.bytes = 0;
         Ok(())
     }
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &serde_json::Value> {
-        self.memory.iter().map(|(value, _)| value)
-    }
     pub(crate) fn drain_batch(&mut self, maximum: usize) -> Vec<serde_json::Value> {
         let mut values = Vec::new();
         while values.len() < maximum {

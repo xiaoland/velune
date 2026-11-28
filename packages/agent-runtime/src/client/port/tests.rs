@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 use velune_test_support::TempRoot;
 
 struct Fixture {

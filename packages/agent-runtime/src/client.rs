@@ -5,7 +5,7 @@
 // message history, tools, and native provider authentication. This Rust client
 // never reads environment variables or Pi auth files.
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
