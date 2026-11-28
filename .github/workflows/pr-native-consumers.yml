@@ -111,6 +111,9 @@ jobs:
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025-vs2026
     timeout-minutes: 50
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
         with:
