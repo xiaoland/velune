@@ -510,24 +510,14 @@ impl NativeSession {
         runtime_id: &str,
         history: Vec<Message>,
     ) -> Result<()> {
-        let empty_import = if history.is_empty() && !id.contains('/') {
-            if let Some(cwd) = cwd {
-                let path = crate::import::claude_project_directory(&self.config.agent_dir, cwd)
-                    .join(format!("{id}.jsonl"));
-                let bytes = self.config.execution.read_file(&path)?;
-                claude_empty_import(&bytes, id, cwd)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        if history.is_empty()
+            && !id.contains('/')
+            && let Some(cwd) = cwd
+        {
+            claude_prepare_empty_import(&self.config, id, cwd)?;
+        }
         self.replace_snapshot(id, cwd, runtime_id, history);
-        self.claude.start = if empty_import {
-            ClaudeStart::Fresh { name: None }
-        } else {
-            ClaudeStart::Resume
-        };
+        self.claude.start = ClaudeStart::Resume;
         Ok(())
     }
     /// A side chat answers each question in a child that reads the session
@@ -1972,9 +1962,38 @@ fn claude_usage(usage: &Value) -> TurnUsage {
     }
 }
 
-/// What one reply's request held: its input, cache included, and its output.
-/// Recognize only our single empty import metadata record. Other empty or
-/// damaged histories must never silently become a new model conversation.
+/// Upgrade only our exact legacy empty import. Other empty or damaged
+/// histories stay on the normal native resume path and are never replaced.
+fn claude_prepare_empty_import(config: &NativeConfig, id: &str, cwd: &Path) -> Result<()> {
+    let path =
+        crate::import::claude_project_directory(&config.agent_dir, cwd).join(format!("{id}.jsonl"));
+    let bytes = config.execution.read_file(&path)?;
+    if claude_empty_import(&bytes, id, cwd) {
+        claude_upgrade_empty_import(config, &path, &bytes, id, cwd)?;
+    }
+    Ok(())
+}
+
+fn claude_upgrade_empty_import(
+    config: &NativeConfig,
+    path: &Path,
+    expected: &[u8],
+    id: &str,
+    cwd: &Path,
+) -> Result<()> {
+    let record = crate::import::empty_claude_record(id, cwd)?;
+    let input = serde_json::to_vec(&json!({"expected":expected,"record":record}))
+        .map_err(|error| Error::new(error.to_string()))?;
+    let mut command = config.execution.python();
+    command
+        .args(["-c", include_str!("../../resources/claude_empty_import.py")])
+        .arg(path);
+    config
+        .execution
+        .output(command, Some(input), config.os_home.as_deref())?;
+    Ok(())
+}
+
 fn claude_empty_import(bytes: &[u8], id: &str, cwd: &Path) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
@@ -1989,7 +2008,19 @@ fn claude_empty_import(bytes: &[u8], id: &str, cwd: &Path) -> bool {
     let Ok(record) = serde_json::from_str::<Value>(line) else {
         return false;
     };
-    record["type"] == "queue-operation"
+    record.as_object().is_some_and(|record| {
+        record.len() == 6
+            && record.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "type" | "operation" | "veluneEmptyImport" | "sessionId" | "cwd" | "timestamp"
+                )
+            })
+    }) && bytes.ends_with(b"\n")
+        && record["timestamp"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+        && record["type"] == "queue-operation"
         && record["operation"] == "dequeue"
         && record["veluneEmptyImport"] == true
         && record["sessionId"] == id

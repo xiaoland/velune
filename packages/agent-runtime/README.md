@@ -219,6 +219,8 @@ Codex 使用 `thread/compact/start` 并消费独立 turn 与 `contextCompaction`
 
 `import` 模块接收独立于展示消息的 `Context`。`history::export_context` 由来源 adapter 还原有效分支：Pi 使用 SDK `buildSessionContext` 和 `convertToLlm`，Claude 保留 compact summary 与 retained segment，Codex 消费 rollout 的 replacement history。未知记录、无法配对的工具调用、旧引用载荷以及尚不能解析的继承／回滚历史明确失败，不静默删除上下文。目标写入器分别生成 Claude JSONL、Codex rollout、Pi v3 session；保留文本、内嵌图片、工具参数／结果，丢弃不能迁移的推理签名。Claude 的项目目录使用进程的物理 cwd。应用负责展示转录与导入上下文的边界，见 [architecture](../../docs/product-tdd/conversations.md#下一轮选择与跨-harness-接续)。实际版本与验证范围记录在对应任务包。
 
+Claude 空上下文导入使用带会话身份和工作目录的原生 `system/turn_duration` 记录。首次发送按原身份 `--resume`，这条记录不向模型历史加入用户或助手消息。旧版只写入一条 Velune 标记的 `queue-operation/dequeue`。首次打开这种会话时，运行时先在原 JSONL 旁保存并核验 `.velune-empty-import.bak` 原字节备份，再向原文件追加可恢复记录。已有用户消息或未知记录走正常的原生恢复路径。
+
 ## 侧聊
 
 `RuntimeVariant.side_chat` 统一声明适配策略，原生侧聊操作据此分派。application 将是否支持投影为 `RuntimeTypeDescriptor.can_side_chat`，打开及切换侧聊运行时使用同一策略校验。平台消费能力描述。启用状态和会话是否已首发分别由实例及会话准入决定。

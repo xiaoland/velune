@@ -675,7 +675,36 @@ fn empty_claude_import_is_discoverable() {
 fn installed_claude_accepts_empty_import_identity() {
     let binary = std::env::var_os("VELUNE_TEST_CLAUDE_BINARY")
         .expect("enabled native test requires VELUNE_TEST_CLAUDE_BINARY");
-    assert_empty_claude_import(Some(binary.into()));
+    if std::env::var_os("VELUNE_TEST_CLAUDE_ISOLATED_CHILD").is_some() {
+        assert_empty_claude_import(Some(binary.into()));
+        return;
+    }
+    // NativeSession inherits its host environment. Give the production owner
+    // a clean test process, rather than reproducing its CLI command here.
+    let home = TempRoot::new("claude-native-owner");
+    let output = command(std::env::current_exe().unwrap())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home.as_os_str())
+        .env("CLAUDE_CONFIG_DIR", home.join("claude"))
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+        .env("DISABLE_AUTOUPDATER", "1")
+        .env("VELUNE_TEST_CLAUDE_BINARY", binary)
+        .env("VELUNE_TEST_CLAUDE_ISOLATED_CHILD", "1")
+        .args([
+            "--ignored",
+            "--exact",
+            "installed_claude_accepts_empty_import_identity",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn assert_empty_claude_import(binary: Option<PathBuf>) {
@@ -689,7 +718,7 @@ fn assert_empty_claude_import(binary: Option<PathBuf>) {
     else {
         panic!()
     };
-    let config = history::HistoryConfig {
+    let history_config = history::HistoryConfig {
         kind: velune_agent_runtime::version::RuntimeKind::ClaudeCode,
         execution: ExecutionTarget::Local,
         os_home: Some(root.to_path_buf()),
@@ -699,49 +728,88 @@ fn assert_empty_claude_import(binary: Option<PathBuf>) {
         root: home.clone(),
         home: home.clone(),
     };
-    let history = velune_agent_runtime::history::read(&config, "synthetic", &session_id).unwrap();
+    let history =
+        velune_agent_runtime::history::read(&history_config, "synthetic", &session_id).unwrap();
     assert!(history.messages.is_empty());
     assert_eq!(history.cwd.as_deref(), root.to_str());
+    assert!(
+        history::export_context(&history_config, &session_id)
+            .unwrap()
+            .messages
+            .is_empty()
+    );
     if let Some(binary) = binary {
-        let mut child = command(binary)
-            .env_clear()
-            .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
-            .env("HOME", root.as_os_str())
-            .env("CLAUDE_CONFIG_DIR", &home)
-            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .env("DISABLE_AUTOUPDATER", "1")
-            .env("CLAUDE_CODE_ENTRYPOINT", "velune")
-            .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
-            .current_dir(&root)
-            .args([
-                "--print",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--session-id",
-                &session_id,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(b"{\"type\":\"control_request\",\"request_id\":\"empty-import-check\",\"request\":{\"subtype\":\"initialize\"}}\n").unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        use velune_agent_runtime::native::{NativeConfig, NativeKind, NativeSession};
+        let config = NativeConfig {
+            execution: ExecutionTarget::Local,
+            os_home: Some(root.to_path_buf()),
+            kind: NativeKind::ClaudeCode,
+            binary,
+            node_binary: None,
+            agent_dir: home.clone(),
+            resources_directory: root.to_path_buf(),
+            projection_directory: root.join("projection"),
+            gateway: None,
+            auto_compaction: None,
+            mcp_servers: Vec::new(),
+            session_agents: Vec::new(),
+        };
+        let assert_reopens = |session_id: &str| {
+            // Both launches execute the same open → launch → initialize path as
+            // the application, including an open after native metadata exists.
+            for _ in 0..2 {
+                let mut session = NativeSession::connect(config.clone()).unwrap();
+                session
+                    .open(
+                        session_id,
+                        Some(&root),
+                        "synthetic",
+                        history::read(&history_config, "synthetic", session_id)
+                            .unwrap()
+                            .map(|history| history.messages),
+                    )
+                    .unwrap();
+                session
+                    .prepare_claude_commands(None, None, 1024 * 1024)
+                    .unwrap();
+                assert!(session.snapshot().unwrap().messages.is_empty());
+                session.shutdown().unwrap();
+            }
+        };
+        assert_reopens(&session_id);
+        let (ImportedConversation::ClaudeCode { session_id: legacy }, _, ownership) =
+            import_claude_conversation_owned(
+                &ExecutionTarget::Local,
+                &home,
+                &root,
+                &context,
+                "synthetic",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let original = format!(
+            "{}\n",
+            json!({"type":"queue-operation","operation":"dequeue",
+                "sessionId":legacy,"cwd":root.to_path_buf(),"timestamp":"2026-11-28T00:00:00.000Z",
+            "veluneEmptyImport":true})
         );
+        std::fs::write(ownership.source_path(), &original).unwrap();
+        assert_reopens(&legacy);
         assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .any(|message| message["type"] == "control_response"
-                    && message["response"]["request_id"] == "empty-import-check"
-                    && message["response"]["subtype"] == "success")
+            std::fs::read(ownership.source_path())
+                .unwrap()
+                .starts_with(original.as_bytes())
+        );
+        assert_eq!(
+            std::fs::read(
+                ownership
+                    .source_path()
+                    .with_extension("jsonl.velune-empty-import.bak")
+            )
+            .unwrap(),
+            original.as_bytes()
         );
     }
 }

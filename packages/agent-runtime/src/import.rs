@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 mod claude;
+pub(crate) use claude::empty_claude_record;
 mod codex;
 mod context;
 mod ownership;
