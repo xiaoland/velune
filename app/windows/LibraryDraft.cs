@@ -296,5 +296,6 @@ static class Library
         return key;
     }
 
-    public static IReadOnlyList<string> Unsaved => [.. Drafts.Values.Where(draft => draft.Dirty).Select(draft => draft.Name.Trim() is { Length: > 0 } name ? name : "未命名")];
+    public static IReadOnlyList<string> Unsaved => Drafts.Values.Where(draft => draft.Dirty)
+        .Select(draft => draft.Name.Trim() is { Length: > 0 } name ? name : "未命名").ToArray();
 }

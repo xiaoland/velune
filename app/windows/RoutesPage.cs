@@ -41,7 +41,7 @@ sealed class RoutesPage : UserControl
                 Open(Chosen());
             }
         };
-        routeList = Ui.ListPage("模型路由", null, list, [add, remove], [edit]);
+        routeList = Ui.ListPage("模型路由", null, list, new[] { add, remove }, new[] { edit });
         shown.Content = routeList;
         Content = shown;
         Reload();

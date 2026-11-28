@@ -238,9 +238,9 @@ sealed class Editor
 
     static IEnumerable<Pane> Panes(EditorNode node) => node switch
     {
-        Pane pane => [pane],
+        Pane pane => new[] { pane },
         Split split => split.Children.SelectMany(Panes),
-        _ => [],
+        _ => Array.Empty<Pane>(),
     };
 
     public IEnumerable<Tab> Tabs() => Panes().SelectMany(pane => pane.Tabs);
@@ -577,8 +577,8 @@ sealed class Editor
         {
             var split = new Split(vertical) { Parent = pane.Parent };
             Replace(pane, split);
-            split.Children.AddRange(before ? [added, pane] : [pane, added]);
-            split.Ratios.AddRange([1, 1]);
+            split.Children.AddRange(before ? new[] { added, pane } : new[] { pane, added });
+            split.Ratios.AddRange(new[] { 1d, 1d });
             pane.Parent = split;
             added.Parent = split;
         }

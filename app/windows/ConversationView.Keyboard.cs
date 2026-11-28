@@ -166,7 +166,8 @@ public sealed partial class ConversationView
             completionStart = 0;
             // The name first, then the title and the command's other names, so /模型 finds /model too.
             var matched = query.Length == 0 ? Commands.Slash.ToList() : Commands.Slash
-                .Select((entry, index) => (Entry: entry, Index: index, Score: FuzzyMatch.Score(query, [entry.Name, Commands.Table[entry.Command].Name, .. Commands.SearchTerms(entry.Command)])))
+                .Select((entry, index) => (Entry: entry, Index: index,
+                    Score: FuzzyMatch.Score(query, (string?[])[entry.Name, Commands.Table[entry.Command].Name, .. Commands.SearchTerms(entry.Command)])))
                 .Where(match => match.Score != null)
                 .OrderByDescending(match => match.Score).ThenBy(match => match.Index)
                 .Select(match => match.Entry).ToList();
@@ -564,7 +565,7 @@ static class WorkingFiles
             return files.Take(50);
         }
         return files
-            .Select(path => (Path: path, Score: FuzzyMatch.Score(query, [Path.GetFileName(path), path])))
+            .Select(path => (Path: path, Score: FuzzyMatch.Score(query, new[] { Path.GetFileName(path), path })))
             .Where(entry => entry.Score != null)
             .OrderByDescending(entry => entry.Score).ThenBy(entry => entry.Path.Length)
             .Take(50)
@@ -598,7 +599,8 @@ static class WorkingFiles
             }
         }
         var files = new List<string>();
-        var folders = new Stack<string>([directory]);
+        var folders = new Stack<string>();
+        folders.Push(directory);
         while (folders.Count > 0 && files.Count < Limit)
         {
             var folder = folders.Pop();

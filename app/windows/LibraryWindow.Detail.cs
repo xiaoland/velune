@@ -622,7 +622,7 @@ sealed partial class LibraryWindow
                 panel.Children.Add(SubagentModelField(draft, touched, readOnly));
                 var effort = new ComboBox { Header = "推理强度", MinWidth = 200, IsEnabled = !readOnly };
                 effort.Items.Add(new ComboBoxItem { Content = "不指定", Tag = "" });
-                foreach (var level in Efforts.Union(draft.Effort.Length > 0 ? [draft.Effort] : []))
+                foreach (var level in Efforts.Union(draft.Effort.Length > 0 ? new[] { draft.Effort } : Array.Empty<string>()))
                 {
                     effort.Items.Add(new ComboBoxItem { Content = level, Tag = level });
                 }
