@@ -1,10 +1,11 @@
 //! Durable definitions and run ledger. The application-home lock elects the
 //! only scheduler; a trigger is committed before any runtime can accept input.
 use crate::{
-    Error, ScheduledRun, ScheduledRunPhase, ScheduledTask, ScheduledTaskStatus, ScheduledTasksState,
+    Error, ScheduledRun, ScheduledRunPhase, ScheduledTask, ScheduledTaskStatus,
+    ScheduledTasksState, TurnOutcome,
 };
-use rusqlite::{Connection, params};
-use std::path::Path;
+use rusqlite::{Connection, OptionalExtension, params};
+use std::{collections::BTreeMap, path::Path};
 mod import;
 mod migration;
 mod schedule;
@@ -91,8 +92,15 @@ pub(crate) fn anchor(task: &mut ScheduledTask) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct TurnSettlement {
+    outcome: TurnOutcome,
+    work_pending: bool,
+}
+
 pub(crate) struct Store {
     connection: Connection,
+    pending_settlements: BTreeMap<String, TurnSettlement>,
 }
 impl Store {
     pub(crate) fn open(home: &Path) -> Result<Self, Error> {
@@ -105,7 +113,10 @@ impl Store {
         connection
             .execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(db)?;
-        let mut store = Self { connection };
+        let mut store = Self {
+            connection,
+            pending_settlements: BTreeMap::new(),
+        };
         // A prior owner may have crossed the native acceptance boundary. Never
         // replay it, even when the process died before recording its reply.
         for mut run in store.runs()? {
@@ -236,6 +247,81 @@ impl Store {
         }
         Ok(())
     }
+    pub(crate) fn run(&self, id: &str) -> Result<Option<ScheduledRun>, Error> {
+        self.connection
+            .query_row("SELECT body FROM runs WHERE id=?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+            .map_err(db)?
+            .map(|body| serde_json::from_str(&body).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Accept a fact once from the turn owner. Storage retries only the ledger write.
+    pub(crate) fn note_turn_result(
+        &mut self,
+        id: String,
+        outcome: TurnOutcome,
+        work_pending: bool,
+    ) {
+        self.persist_or_retain(
+            id,
+            TurnSettlement {
+                outcome,
+                work_pending,
+            },
+        );
+    }
+
+    pub(crate) fn retry_turn_results(&mut self) {
+        for (id, settlement) in std::mem::take(&mut self.pending_settlements) {
+            self.persist_or_retain(id, settlement);
+        }
+    }
+
+    pub(crate) fn has_pending_turn_result(&self, id: &str) -> bool {
+        self.pending_settlements.contains_key(id)
+    }
+
+    fn persist_or_retain(&mut self, id: String, settlement: TurnSettlement) {
+        if let Err(error) = self.persist_turn_result(&id, settlement) {
+            tracing::warn!(target: "velune_application", event="scheduled_run_settlement_failed", detail=%error);
+            self.pending_settlements.insert(id, settlement);
+        }
+    }
+
+    fn persist_turn_result(&mut self, id: &str, settlement: TurnSettlement) -> Result<(), Error> {
+        let Some(mut run) = self.run(id)? else {
+            return Ok(());
+        };
+        run.turn_outcome = Some(settlement.outcome);
+        run.phase = if settlement.work_pending {
+            ScheduledRunPhase::Running
+        } else if settlement.outcome == TurnOutcome::Completed {
+            ScheduledRunPhase::Completed
+        } else {
+            ScheduledRunPhase::Failed
+        };
+        if settlement.outcome == TurnOutcome::Cancelled {
+            run.detail = Some("运行已由用户停止".into());
+        }
+        self.put_run(&run)
+    }
+
+    pub(crate) fn put_dispatch_result(&mut self, run: &ScheduledRun) -> Result<(), Error> {
+        // A short turn can settle before send returns. Its terminal result
+        // wins over the send receipt, including when storage is retrying it.
+        if self.has_pending_turn_result(&run.id)
+            || self
+                .run(&run.id)?
+                .is_some_and(|record| record.turn_outcome.is_some())
+        {
+            return Ok(());
+        }
+        self.put_run(run)
+    }
+
     pub(crate) fn put_run(&mut self, run: &ScheduledRun) -> Result<(), Error> {
         self.connection
             .execute(
