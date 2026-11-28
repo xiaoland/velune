@@ -298,30 +298,32 @@ fn pi_port_written_does_not_ack_prompt_or_renew_explicit_deadline() {
 fn pi_port_pending_and_unconsumed_evidence_reserve_replies_and_count_encoded_bytes() {
     let mut fixture = Fixture::new();
     let _sender = fixture.incoming();
+    let assert_capacity_full = |result: Result<PiTicket>| {
+        assert!(
+            matches!(&result, Err(Error::Transport(detail))
+                if detail == "Pi operation/evidence capacity full"),
+            "expected capacity rejection: {result:?}"
+        );
+    };
     for _ in 0..OPERATIONS - RESERVED {
         fixture.client.enqueue_pi(prompt(), None).unwrap();
     }
-    assert!(fixture.client.enqueue_pi(prompt(), None).is_err());
+    assert_capacity_full(fixture.client.enqueue_pi(prompt(), None));
     for index in 0..RESERVED - 2 {
         fixture.client.enqueue_pi(PiOperation::DialogReply(json!({"type":"extension_ui_response","id":format!("reply-{index}"),"value":"answer"})),None).unwrap();
     }
-    assert!(
-        fixture
-            .client
-            .enqueue_pi(
-                PiOperation::DialogReply(
-                    json!({"type":"extension_ui_response","id":"overflow","value":"answer"})
-                ),
-                None
-            )
-            .is_err()
-    );
+    assert_capacity_full(fixture.client.enqueue_pi(
+        PiOperation::DialogReply(
+            json!({"type":"extension_ui_response","id":"overflow","value":"answer"}),
+        ),
+        None,
+    ));
     fixture
         .client
         .enqueue_pi(PiOperation::ClearQueue, None)
         .unwrap();
     fixture.client.enqueue_pi(PiOperation::Abort, None).unwrap();
-    assert!(fixture.client.enqueue_pi(PiOperation::Abort, None).is_err());
+    assert_capacity_full(fixture.client.enqueue_pi(PiOperation::Abort, None));
     let port = fixture.client.port.as_ref().unwrap();
     assert_eq!(
         port.bytes,
@@ -332,14 +334,43 @@ fn pi_port_pending_and_unconsumed_evidence_reserve_replies_and_count_encoded_byt
     );
     // Abandonment leaves evidence owning a slot until the owner consumes it.
     let ticket = port.operations.values().next().unwrap().ticket;
-    fixture.client.abandon_queued_pi(ticket);
-    assert!(fixture.client.enqueue_pi(PiOperation::Abort, None).is_err());
-    fixture.client.poll_pi();
-    assert!(fixture.client.enqueue_pi(PiOperation::Abort, None).is_ok());
+    assert!(fixture.client.abandon_queued_pi(ticket));
+    assert_capacity_full(fixture.client.enqueue_pi(PiOperation::Abort, None));
+    // Poll also dispatches writes. A later enqueue can harvest fresh Written
+    // evidence after that poll returned, so keep consuming until capacity is
+    // available rather than assuming one poll consumed every physical receipt.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut abandoned_receipts = 0;
+    loop {
+        abandoned_receipts += fixture
+            .client
+            .poll_pi()
+            .iter()
+            .filter(|item| {
+                matches!(item, PiPortItem::Receipt(receipt)
+                    if receipt.ticket == ticket && matches!(receipt.phase, PiReceiptPhase::NotSent))
+            })
+            .count();
+        let admitted = fixture.client.enqueue_pi(PiOperation::Abort, None);
+        if admitted.is_ok() {
+            break;
+        }
+        assert_capacity_full(admitted);
+        assert!(
+            Instant::now() < deadline,
+            "consumed evidence did not release capacity"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(abandoned_receipts, 1);
     fixture.client.port.as_mut().unwrap().next = u64::MAX;
     // Exhaustion is checked, never wrapped into an existing wire id.
     fixture.client.port.as_mut().unwrap().operations.clear();
-    assert!(fixture.client.enqueue_pi(PiOperation::Abort, None).is_err());
+    let exhausted = fixture.client.enqueue_pi(PiOperation::Abort, None);
+    assert!(
+        matches!(&exhausted, Err(Error::Transport(detail)) if detail == "Pi sequence exhausted"),
+        "expected checked sequence exhaustion: {exhausted:?}"
+    );
 }
 
 #[test]
