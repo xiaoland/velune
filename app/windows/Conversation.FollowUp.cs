@@ -258,7 +258,7 @@ sealed partial class Conversation
     // Edit replaces a sent user message: in place, dropping it and all after
     // it, or in a new conversation from what precedes it. It returns the
     // conversation that continues, or null when it did not.
-    public async Task<string?> Edit(BindingMessageReference message, string expectedRevision, EditPlacement placement, string text)
+    public async Task<string?> Edit(BindingMessageReference message, string expectedRevision, EditPlacement placement, string text, Action<Exception> failed)
     {
         if (Snapshot is not { } snapshot || snapshot.Conversation.Id != message.ConversationId ||
             snapshot.Conversation.RuntimeId != message.RuntimeId)
@@ -273,7 +273,7 @@ sealed partial class Conversation
             result = edited.Snapshot;
             // A fork's snapshot is the new conversation's, which this one does not take.
             return placement == EditPlacement.Fork ? new SnapshotResult(null) : edited;
-        });
+        }, failed);
         return !done ? null : placement == EditPlacement.Fork ? result?.Conversation.Id : snapshot.Conversation.Id;
     }
 
