@@ -78,13 +78,14 @@ def main() -> int:
         link = cache / "shared"
         try:
             link.symlink_to(repo, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            link = None
-        if link is not None:
+        except (OSError, NotImplementedError) as error:
+            print(f"SKIP symlink refusal: could not create the fixture link ({error})")
+        else:
             result = run(repo, "prune", "--domain", "host-rust", "--budget-gib", "0", "--apply")
             assert_refused(result, "缓存域内含 1 个符号链接或 junction")
             assert link.is_symlink(), "symlink refusal removed the link"
             link.unlink()
+            print("PASS refusal leaves the symlink and cached artifact intact")
 
         # A real idle Cargo cache retains this file. Windows must delete it
         # without releasing the acquired lock before the removal completes.
@@ -99,7 +100,7 @@ def main() -> int:
         result = run(repo, "report")
         assert result.returncode == 0 and "用途域以外：2 个目录" in result.stdout, "report must count directories outside the domains"
 
-        print("PASS synthetic cache preview, active platform/Cargo/base/cross-target locks, links, explicit domain apply, and directories outside the domains")
+        print("PASS synthetic cache preview, active platform/Cargo/base/cross-target locks, explicit domain apply, and directories outside the domains")
     return 0
 
 
